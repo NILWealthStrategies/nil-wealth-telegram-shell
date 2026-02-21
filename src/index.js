@@ -1,16 +1,17 @@
 /**
- * NIL Wealth Telegram Ops Shell — SUPABASE OPS (Index.js v2.6)
+ * NIL Wealth Telegram Ops Shell — SUPABASE OPS (Index.js v2.7)
  *
- * Updates from v2.5 (per Andrew’s requirements):
- * - Daily Ops Digest (8:30am NY) is HARD-LOCKED to ALL (text counts always use source: "all")
- *   but digest buttons are NOT locked (buttons behave normally).
- * - Send button label changed:
- *   -> "⚪️Reply" and "🟢Reply + CC"
- * - Identity-first emojis changed:
- *   -> Outreach = 📣
- *   -> Support  = 🧑‍🧒
- * - URGENT emoji changed globally:
- *   -> "‼️" replaces prior "🔥"
+ * Updates from v2.6 (per Andrew’s requirements):
+ * - ✅ EMOJIS RESTORED across UI (dashboard, buttons, labels, views).
+ * - ✅ "Completed Reply’s" renamed to "👍Completed" AND removed as a dashboard button.
+ *   (Still appears on dashboard under Queues.)
+ * - ✅ Metrics section on MAIN dashboard now lists:
+ *   Engagement
+ *   Exploration
+ *   (stacked like the queue list)
+ * - ✅ Main button label changed to "📅Today" (not "📅TODAY" / not "TODAY 📅")
+ * - ✅ Metrics screen: remove BOTH Today options entirely.
+ *   Only Week / Month / Year windows. No Today button. No Today window.
  *
  * Node 18+ recommended (for fetch)
  */
@@ -23,7 +24,7 @@ const { v4: uuidv4 } = require("uuid");
 const { createClient } = require("@supabase/supabase-js");
 
 // -------------------- VERSION MARKERS --------------------
-const CODE_VERSION = "Index.js v2.6";
+const CODE_VERSION = "Index.js v2.7";
 const BUILD_VERSION =
   process.env.BUILD_VERSION ||
   process.env.RENDER_GIT_COMMIT ||
@@ -486,6 +487,7 @@ async function sbInsertCoachEvent({ coach_id, kind, link, person_id, meta }) {
 
 // -------------------- METRICS (ops.metric_events) --------------------
 function timeWindowSinceISO(which) {
+  // NOTE: "today" intentionally removed from Metrics UI, but kept for internal flexibility.
   if (which === "today") return startOfNYDayISO(new Date());
   if (which === "week") return startOfNYWeekISO(new Date());
   if (which === "month") return startOfNYMonthISO(new Date());
@@ -687,25 +689,25 @@ async function buildConversationText(conv) {
     ? `🔗 Linked · 🪞 ${idShort(conv.mirror_conversation_id)}`
     : "";
 
-  const gmailLine = conv.gmail_url ? `🔗 Gmail ready` : "";
+  const gmailLine = conv.gmail_url ? `📬 Gmail ready` : "";
 
-  const createdLine = conv.created_at ? `Created: ${fmtISOShort(conv.created_at)}` : "";
-  const updatedLine = conv.updated_at ? `Updated: ${fmtISOShort(conv.updated_at)}` : "";
-  const doneLine = conv.completed_at ? `Done: ${fmtISOShort(conv.completed_at)}` : "";
+  const createdLine = conv.created_at ? `🕒 Created: ${fmtISOShort(conv.created_at)}` : "";
+  const updatedLine = conv.updated_at ? `🕒 Updated: ${fmtISOShort(conv.updated_at)}` : "";
+  const doneLine = conv.completed_at ? `✅ Done: ${fmtISOShort(conv.completed_at)}` : "";
   const tsBlock = [createdLine, updatedLine, doneLine].filter(Boolean).join("\n");
 
   const urgentBadge = conv.urgent ? "‼️ URGENT" : "";
   const laneLine = `${laneLabel(sourceSafe(conv.source))}`;
 
   const lockLine = conv.owned_by
-    ? `🔒 Owned by ${conv.owned_by === "support" ? "Support" : "Outreach"}`
+    ? `🔒 Owned by ${conv.owned_by === "support" ? "🧑‍🧒 Support" : "📣 Outreach"}`
     : "";
 
   const summary = await buildConversationSummary(conv);
   const summaryBlock = [
-    `Messages: ${summary.msgCount}`,
-    summary.lastInboundPreview ? `Inbound: ${summary.lastInboundPreview}` : null,
-    summary.lastOutboundPreview ? `Outbound: ${summary.lastOutboundPreview}` : null,
+    `💬 Messages: ${summary.msgCount}`,
+    summary.lastInboundPreview ? `⬅️ Inbound: ${summary.lastInboundPreview}` : null,
+    summary.lastOutboundPreview ? `➡️ Outbound: ${summary.lastOutboundPreview}` : null,
   ]
     .filter(Boolean)
     .join("\n");
@@ -726,7 +728,6 @@ ${tsBlock}`.trim();
 function buildConversationKeyboard(conv) {
   const ccSuggested = !!conv.cc_support_suggested;
 
-  // UPDATED labels per Andrew
   const sendLabel = ccSuggested ? "🟢Reply + CC" : "⚪️Reply";
   const sendCb = ccSuggested ? `SEND:${conv.id}:1` : `SEND:${conv.id}:0`;
 
@@ -734,7 +735,7 @@ function buildConversationKeyboard(conv) {
     ? Markup.button.callback("🪞 Open Mirror", `OPENMIRROR:${conv.id}`)
     : null;
 
-  const gmailBtn = conv.gmail_url ? Markup.button.url("🔗 Open in Gmail", conv.gmail_url) : null;
+  const gmailBtn = conv.gmail_url ? Markup.button.url("📬 Open in Gmail", conv.gmail_url) : null;
   const rowMirrorGmail = [mirrorBtn, gmailBtn].filter(Boolean);
 
   return Markup.inlineKeyboard([
@@ -757,20 +758,20 @@ function oneLineSummary(conv, idx) {
   const who = conv.coach_name ? ` — ${conv.coach_name}` : "";
   const subj = shorten(conv.subject || "Thread", 52);
   const sla = slaBadge(conv.updated_at || conv.created_at);
-  const lane = sourceSafe(conv.source) === "support" ? "Support" : "Programs";
+  const lane = sourceSafe(conv.source) === "support" ? "🧑‍🧒 Support" : "🏈 Programs";
   return `${idx}. ${subj}${who} · ${lane} · ${sla}`;
 }
 
 function viewTitle(key) {
   const map = {
-    urgent: "Urgent",
-    needs_reply: "Needs Reply",
-    actions_waiting: "Actions Waiting",
-    active: "Active Conversations",
-    followups: "Follow-Ups Needed",
-    forwarded: "Forwarded Messages",
-    completed: "Completed Replys 👍",
-    search: "Search Results",
+    urgent: "‼️ Urgent",
+    needs_reply: "⚪️ Needs Reply",
+    actions_waiting: "⏳ Actions Waiting",
+    active: "🟦 Active Conversations",
+    followups: "🔁 Follow-Ups Needed",
+    forwarded: "📨 Forwarded Messages",
+    completed: "👍Completed",
+    search: "🔎 Search Results",
   };
   return map[key] || key;
 }
@@ -825,7 +826,7 @@ async function showThread(ctx, convId, offset = 0) {
 
   const header = `🧾 Thread (Full)\n${conv.subject || "Thread"}\n${laneLabel(
     sourceSafe(conv.source)
-  )}\nMessages: ${total}\nShowing: ${offset + 1}-${Math.min(offset + limit, total)}`;
+  )}\n💬 Messages: ${total}\nShowing: ${offset + 1}-${Math.min(offset + limit, total)}`;
 
   const body = msgs.length
     ? msgs.map(formatMessageLineFull).join("\n\n--------------------\n\n")
@@ -879,13 +880,12 @@ async function dashboardCounts(filterSource = "all") {
     source: filterSource,
   });
 
-  // Completed Replys 👍 is support-only completed queue.
-  const completedRepliesCount =
+  // 👍Completed is support-only completed queue (count only)
+  const completedCount =
     filterSource === "programs"
       ? 0
       : await sbCountConversations({ pipeline: "completed", source: "support" });
 
-  // Dashboard metrics: keep minimal caption (no long list of click-type names).
   const scope = scopeFromFilter(filterSource);
   const metricsTop = await sbMetricsSummary({
     scope,
@@ -899,7 +899,7 @@ async function dashboardCounts(filterSource = "all") {
     activeCount,
     followCount,
     forwardedCount,
-    completedRepliesCount,
+    completedCount,
     metricsTop,
   };
 }
@@ -910,71 +910,70 @@ async function dashboardText(filterSource = "all") {
 
   const filterLabel =
     filterSource === "support"
-      ? "Support"
+      ? "🧑‍🧒 Support"
       : filterSource === "programs"
-      ? "Programs"
-      : "All";
+      ? "🏈 Programs"
+      : "🌐 All";
 
   const scopeTitle =
     filterSource === "support"
-      ? "Metrics (Support)"
+      ? "📊 Metrics (Support)"
       : filterSource === "programs"
-      ? "Metrics (Programs)"
-      : "Metrics (Company)";
+      ? "📊 Metrics (Programs)"
+      : "📊 Metrics (Company)";
 
   const m = counts.metricsTop;
 
-  // Minimal caption only (no enumerating click names here).
-  const engagementCaption = `Engagement: ${m.programLinkOpens} opens · ${m.coverageExploration} exploration`;
-
-  return `NIL Wealth Ops Dashboard
+  return `🏈 NIL Wealth Ops Dashboard
 ${CODE_VERSION} · Build: ${String(BUILD_VERSION).slice(0, 8)}
 
-Today: ${new Date().toLocaleString()}
-NY Time: ${ny.dayKey} ${ny.time}
-Filter: ${filterLabel}
+🗓️ Today: ${new Date().toLocaleString()}
+🕒 NY Time: ${ny.dayKey} ${ny.time}
+🎛️ Filter: ${filterLabel}
 
-Queues
-Urgent: ${counts.urgentCount}
-Needs Reply: ${counts.needsReplyCount}
-Waiting: ${counts.waitingCount}
-Active: ${counts.activeCount}
-Follow-Ups: ${counts.followCount}
-Forwarded: ${counts.forwardedCount}
-Completed Replys 👍: ${counts.completedRepliesCount}
+📥 Queues
+‼️ Urgent: ${counts.urgentCount}
+⚪️ Needs Reply: ${counts.needsReplyCount}
+⏳ Waiting: ${counts.waitingCount}
+🟦 Active: ${counts.activeCount}
+🔁 Follow-Ups: ${counts.followCount}
+📨 Forwarded: ${counts.forwardedCount}
+👍Completed: ${counts.completedCount}
 
 ${scopeTitle}
-• ${engagementCaption}
-(Tap Metrics for full breakdown)
+Engagement: ${m.programLinkOpens} opens
+Exploration: ${m.coverageExploration}
+
+(Tap 📊 Metrics for full breakdown)
 
 Use buttons below.`;
 }
 
 function dashboardKeyboard(_filterSource = "all") {
-  const srcBtn = Markup.button.callback("All", "FILTER:all");
-  const progBtn = Markup.button.callback("Programs", "FILTER:programs");
-  const supBtn = Markup.button.callback("Support", "FILTER:support");
+  const srcBtn = Markup.button.callback("🌐 All", "FILTER:all");
+  const progBtn = Markup.button.callback("🏈 Programs", "FILTER:programs");
+  const supBtn = Markup.button.callback("🧑‍🧒 Support", "FILTER:support");
 
   return Markup.inlineKeyboard([
     [srcBtn, progBtn, supBtn],
     [
-      Markup.button.callback("TODAY 📅", "TODAY:open"),
-      Markup.button.callback("Metrics", "METRICS:open"),
-      Markup.button.callback("Search", "SEARCH:help"),
+      Markup.button.callback("📅Today", "TODAY:open"),
+      Markup.button.callback("📊 Metrics", "METRICS:open"),
+      Markup.button.callback("🔎 Search", "SEARCH:help"),
     ],
     [
-      Markup.button.callback("Urgent", "VIEW:urgent"),
-      Markup.button.callback("Reply", "VIEW:needs_reply"),
-      Markup.button.callback("Waiting", "VIEW:actions_waiting"),
+      Markup.button.callback("‼️ Urgent", "VIEW:urgent"),
+      Markup.button.callback("⚪️ Reply", "VIEW:needs_reply"),
+      Markup.button.callback("⏳ Waiting", "VIEW:actions_waiting"),
     ],
     [
-      Markup.button.callback("Active", "VIEW:active"),
-      Markup.button.callback("Follow-Ups", "VIEW:followups"),
-      Markup.button.callback("Completed Replys 👍", "VIEW:completed"),
+      Markup.button.callback("🟦 Active", "VIEW:active"),
+      Markup.button.callback("🔁 Follow-Ups", "VIEW:followups"),
+      Markup.button.callback("📨 Forwarded", "VIEW:forwarded"),
     ],
     [
-      Markup.button.callback("Calls", "CALLS:hub"),
-      Markup.button.callback("Refresh", "DASH:refresh"),
+      Markup.button.callback("📞 Calls", "CALLS:hub"),
+      Markup.button.callback("🔄 Refresh", "DASH:refresh"),
     ],
   ]);
 }
@@ -996,22 +995,22 @@ async function todayText(filterSource = "all") {
   const ny = nyParts(new Date());
   const filterLabel =
     filterSource === "support"
-      ? "Support"
+      ? "🧑‍🧒 Support"
       : filterSource === "programs"
-      ? "Programs"
-      : "All";
+      ? "🏈 Programs"
+      : "🌐 All";
 
   const c = await todayCounts(filterSource);
 
   return (
-    `📌 TODAY Ops (NY ${ny.dayKey})\n` +
+    `📌 Today Ops (NY ${ny.dayKey})\n` +
     `${CODE_VERSION} · ${String(BUILD_VERSION).slice(0, 8)}\n` +
-    `Filter: ${filterLabel}\n\n` +
-    `Urgent: ${c.urgent}\n` +
-    `Needs Reply: ${c.needs}\n` +
-    `Waiting: ${c.waiting}\n` +
-    `Active: ${c.active}\n` +
-    `Follow-Ups: ${c.followups}\n\n` +
+    `🎛️ Filter: ${filterLabel}\n\n` +
+    `‼️ Urgent: ${c.urgent}\n` +
+    `⚪️ Needs Reply: ${c.needs}\n` +
+    `⏳ Waiting: ${c.waiting}\n` +
+    `🟦 Active: ${c.active}\n` +
+    `🔁 Follow-Ups: ${c.followups}\n\n` +
     `Use buttons below.`
   );
 }
@@ -1019,44 +1018,47 @@ async function todayText(filterSource = "all") {
 function todayKeyboard() {
   return Markup.inlineKeyboard([
     [
-      Markup.button.callback("Open Urgent", "VIEW:urgent"),
-      Markup.button.callback("Open Reply", "VIEW:needs_reply"),
+      Markup.button.callback("Open ‼️ Urgent", "VIEW:urgent"),
+      Markup.button.callback("Open ⚪️ Reply", "VIEW:needs_reply"),
     ],
     [
-      Markup.button.callback("Open Waiting", "VIEW:actions_waiting"),
-      Markup.button.callback("Open Active", "VIEW:active"),
+      Markup.button.callback("Open ⏳ Waiting", "VIEW:actions_waiting"),
+      Markup.button.callback("Open 🟦 Active", "VIEW:active"),
     ],
-    [Markup.button.callback("Open Follow-Ups", "VIEW:followups")],
     [
-      Markup.button.callback("Metrics", "METRICS:open"),
-      Markup.button.callback("Calls", "CALLS:hub"),
+      Markup.button.callback("Open 🔁 Follow-Ups", "VIEW:followups"),
+      Markup.button.callback("Open 📨 Forwarded", "VIEW:forwarded"),
+    ],
+    [
+      Markup.button.callback("📊 Metrics", "METRICS:open"),
+      Markup.button.callback("📞 Calls", "CALLS:hub"),
     ],
     [Markup.button.callback("⬅️ Dashboard", "DASH:back")],
   ]);
 }
 
-// -------------------- METRICS UI --------------------
-async function metricsText(filterSource = "all", which = "today") {
+// -------------------- METRICS UI (NO TODAY OPTIONS) --------------------
+async function metricsText(filterSource = "all", which = "week") {
   const scope = scopeFromFilter(filterSource);
   const sinceIso = timeWindowSinceISO(which);
 
   const title =
     scope === "programs"
-      ? "Metrics (Programs)"
+      ? "📊 Metrics (🏈 Programs)"
       : scope === "support"
-      ? "Metrics (Support)"
-      : "Metrics (Company)";
+      ? "📊 Metrics (🧑‍🧒 Support)"
+      : "📊 Metrics (🌐 Company)";
 
   const m = await sbMetricsSummary({ scope, sinceIso });
 
   const lines = [];
   lines.push(title);
-  lines.push(`Window: ${which.toUpperCase()}`);
+  lines.push(`🗓️ Window: ${which.toUpperCase()}`);
   lines.push("");
 
   // anchors
-  lines.push(`Program Link Opens: ${m.programLinkOpens}`);
-  lines.push(`Coverage Exploration: ${m.coverageExploration}`);
+  lines.push(`Engagement (Program Link Opens): ${m.programLinkOpens}`);
+  lines.push(`Exploration (Coverage Exploration): ${m.coverageExploration}`);
   lines.push("");
 
   // full named metrics ONLY inside Metrics view
@@ -1090,14 +1092,13 @@ async function metricsText(filterSource = "all", which = "today") {
 }
 
 function metricsKeyboard() {
+  // IMPORTANT: only Week / Month / Year. NO TODAY anywhere.
   return Markup.inlineKeyboard([
     [
-      Markup.button.callback("Today", "METRICS:today"),
       Markup.button.callback("Week", "METRICS:week"),
       Markup.button.callback("Month", "METRICS:month"),
       Markup.button.callback("Year", "METRICS:year"),
     ],
-    [Markup.button.callback("TODAY 📅", "TODAY:open")],
     [Markup.button.callback("⬅️ Back", "DASH:back")],
   ]);
 }
@@ -1199,14 +1200,14 @@ bot.action("TODAY:open", async (ctx) => {
   await ctx.reply(await todayText(filterSource), todayKeyboard());
 });
 
-// Metrics open + window switches
+// Metrics open + window switches (default -> WEEK)
 bot.action("METRICS:open", async (ctx) => {
   if (!isAdmin(ctx)) return;
   await ctx.answerCbQuery();
   const filterSource = getAdminFilter(ctx);
-  await ctx.reply(await metricsText(filterSource, "today"), metricsKeyboard());
+  await ctx.reply(await metricsText(filterSource, "week"), metricsKeyboard());
 });
-bot.action(/^METRICS:(today|week|month|year)$/, async (ctx) => {
+bot.action(/^METRICS:(week|month|year)$/, async (ctx) => {
   if (!isAdmin(ctx)) return;
   await ctx.answerCbQuery();
   const which = ctx.match[1];
@@ -1216,7 +1217,7 @@ bot.action(/^METRICS:(today|week|month|year)$/, async (ctx) => {
 
 // -------------------- VIEWS --------------------
 bot.action(
-  /^VIEW:(urgent|needs_reply|actions_waiting|active|followups|completed)$/,
+  /^VIEW:(urgent|needs_reply|actions_waiting|active|followups|forwarded)$/,
   async (ctx) => {
     if (!isAdmin(ctx)) return;
     await ctx.answerCbQuery();
@@ -1227,17 +1228,6 @@ bot.action(
     // Special: Follow-Ups should be COACH-GROUPED
     if (key === "followups") {
       await showFollowupsGroupedByCoach(ctx, filterSource);
-      return;
-    }
-
-    // Completed Replys 👍 is support-only completed queue
-    if (key === "completed") {
-      const rows = await sbListConversations({
-        pipeline: "completed",
-        source: "support",
-        limit: 8,
-      });
-      await showQueueSummaryList(ctx, "completed", rows, "support");
       return;
     }
 
@@ -1428,7 +1418,7 @@ bot.action(/^SEND:(.+):([01])$/, async (ctx) => {
   if (owned === "support" || owned === "outreach") {
     const fixed = owned;
     await ctx.reply(
-      `🔒 Owned by ${fixed === "support" ? "Support" : "Outreach"}\nSend as: ${replyLabel(
+      `🔒 Owned by ${fixed === "support" ? "🧑‍🧒 Support" : "📣 Outreach"}\nSend as: ${replyLabel(
         fixed
       )}\n\nAre you sure you want to send?`,
       Markup.inlineKeyboard([
@@ -1439,7 +1429,7 @@ bot.action(/^SEND:(.+):([01])$/, async (ctx) => {
     return;
   }
 
-  // No lock: ask identity FIRST (UPDATED emojis)
+  // No lock: ask identity FIRST
   await ctx.reply(
     `Send this as who?`,
     Markup.inlineKeyboard([
@@ -1652,17 +1642,20 @@ function dailyDigestKeyboard() {
   // Buttons are NOT locked (they behave normally).
   return Markup.inlineKeyboard([
     [
-      Markup.button.callback("Open Urgent", "VIEW:urgent"),
-      Markup.button.callback("Open Reply", "VIEW:needs_reply"),
+      Markup.button.callback("Open ‼️ Urgent", "VIEW:urgent"),
+      Markup.button.callback("Open ⚪️ Reply", "VIEW:needs_reply"),
     ],
     [
-      Markup.button.callback("Open Waiting", "VIEW:actions_waiting"),
-      Markup.button.callback("Open Active", "VIEW:active"),
+      Markup.button.callback("Open ⏳ Waiting", "VIEW:actions_waiting"),
+      Markup.button.callback("Open 🟦 Active", "VIEW:active"),
     ],
-    [Markup.button.callback("Open Follow-Ups", "VIEW:followups")],
     [
-      Markup.button.callback("TODAY 📅", "TODAY:open"),
-      Markup.button.callback("Calls", "CALLS:hub"),
+      Markup.button.callback("Open 🔁 Follow-Ups", "VIEW:followups"),
+      Markup.button.callback("Open 📨 Forwarded", "VIEW:forwarded"),
+    ],
+    [
+      Markup.button.callback("📅Today", "TODAY:open"),
+      Markup.button.callback("📞 Calls", "CALLS:hub"),
     ],
   ]);
 }
@@ -1685,12 +1678,12 @@ async function dailyDigestLoopNY() {
       const text =
         `📌 Daily Ops Digest (NY ${ny.dayKey} 08:30)\n` +
         `${CODE_VERSION} · ${String(BUILD_VERSION).slice(0, 8)}\n` +
-        `Filter: ALL (hard-locked)\n\n` +
-        `Urgent: ${urgent}\n` +
-        `Needs Reply: ${needs}\n` +
-        `Waiting: ${waiting}\n` +
-        `Active: ${active}\n` +
-        `Follow-Ups: ${followups}`;
+        `🎛️ Filter: 🌐 ALL (hard-locked)\n\n` +
+        `‼️ Urgent: ${urgent}\n` +
+        `⚪️ Needs Reply: ${needs}\n` +
+        `⏳ Waiting: ${waiting}\n` +
+        `🟦 Active: ${active}\n` +
+        `🔁 Follow-Ups: ${followups}`;
 
       await notifyAdmins(text, { keyboard: dailyDigestKeyboard() });
     } catch (_) {}
@@ -1698,7 +1691,6 @@ async function dailyDigestLoopNY() {
 }
 
 // -------------------- COACH POOLS UI (Calls hub) --------------------
-// (UNCHANGED BELOW THIS POINT EXCEPT URGENT emoji text already updated above)
 function fmtCoachLine(c, followupCount = null) {
   const name = c.coach_name ? `${c.coach_name}` : c.coach_id;
   const prog = c.program_name ? ` · ${c.program_name}` : "";
@@ -1708,14 +1700,14 @@ function fmtCoachLine(c, followupCount = null) {
   const sent = Number(c.emails_total || 0);
 
   const fu = followupCount !== null ? ` · FollowUps: ${followupCount}` : "";
-  return `${name}${prog}\nSent: ${sent} · Replies: ${reps} · Clicks: ${clicks} · Forwards: ${fwd}${fu}`;
+  return `${name}${prog}\n📤 Sent: ${sent} · 💬 Replies: ${reps} · 🔗 Clicks: ${clicks} · 📨 Forwards: ${fwd}${fu}`;
 }
 
 async function showCallsHub(ctx) {
   const coaches = await sbListCoaches({ limit: 10 });
   if (!coaches.length) {
     await ctx.reply(
-      `Calls (Coach Pools)\n\n(No coaches in ops.coaches yet)\n\nWhen clicks/forwards/people come in, they will appear here.`,
+      `📞 Calls (Coach Pools)\n\n(No coaches in ops.coaches yet)\n\nWhen clicks/forwards/people come in, they will appear here.`,
       Markup.inlineKeyboard([[Markup.button.callback("⬅️ Back", "DASH:back")]])
     );
     return;
@@ -1730,7 +1722,7 @@ async function showCallsHub(ctx) {
     [Markup.button.callback("⬅️ Back", "DASH:back")],
   ]);
 
-  await ctx.reply(`Calls (Coach Pools)\n${lines}`, kb);
+  await ctx.reply(`📞 Calls (Coach Pools)\n${lines}`, kb);
 }
 
 async function showCoachOverview(ctx, coach_id) {
@@ -1762,20 +1754,20 @@ async function showCoachOverview(ctx, coach_id) {
   const text =
     `🏈 Coach Pool\n\n` +
     `${fmtCoachLine(coach, followupsCount)}\n\n` +
-    `Needs Reply: ${needsReplyCount}\n` +
-    `Forwarded: ${forwardedCount}\n` +
-    `Follow-Ups: ${followupsCount}\n\n` +
-    `Last Click: ${coach.last_click_at ? fmtISOShort(coach.last_click_at) : "—"}\n` +
-    `Last Forward: ${coach.last_forward_at ? fmtISOShort(coach.last_forward_at) : "—"}`;
+    `⚪️ Needs Reply: ${needsReplyCount}\n` +
+    `📨 Forwarded: ${forwardedCount}\n` +
+    `🔁 Follow-Ups: ${followupsCount}\n\n` +
+    `🔗 Last Click: ${coach.last_click_at ? fmtISOShort(coach.last_click_at) : "—"}\n` +
+    `📨 Last Forward: ${coach.last_forward_at ? fmtISOShort(coach.last_forward_at) : "—"}`;
 
   const kb = Markup.inlineKeyboard([
     [
-      Markup.button.callback("People Pool", `PEOPLE:${coach_id}`),
-      Markup.button.callback("Forwarded", `COACHVIEW:${coach_id}:forwarded`),
+      Markup.button.callback("👥 People Pool", `PEOPLE:${coach_id}`),
+      Markup.button.callback("📨 Forwarded", `COACHVIEW:${coach_id}:forwarded`),
     ],
     [
-      Markup.button.callback("Follow-Ups", `COACHVIEW:${coach_id}:followups`),
-      Markup.button.callback("Needs Reply", `COACHVIEW:${coach_id}:needs_reply`),
+      Markup.button.callback("🔁 Follow-Ups", `COACHVIEW:${coach_id}:followups`),
+      Markup.button.callback("⚪️ Needs Reply", `COACHVIEW:${coach_id}:needs_reply`),
     ],
     [Markup.button.callback("⬅️ Back", "CALLS:hub")],
   ]);
@@ -1787,7 +1779,7 @@ async function showPeoplePool(ctx, coach_id) {
   const coach = await sbGetCoach(coach_id);
   const people = await sbListPeopleByCoach(coach_id, { limit: 12 });
 
-  const title = `People Pool\nCoach: ${coach?.coach_name || coach_id}\nShowing ${people.length}`;
+  const title = `👥 People Pool\nCoach: ${coach?.coach_name || coach_id}\nShowing ${people.length}`;
 
   if (!people.length) {
     await ctx.reply(
@@ -1827,16 +1819,16 @@ async function showPersonOverview(ctx, person_id) {
   }
 
   const text =
-    `Person Overview\n\n` +
+    `👤 Person Overview\n\n` +
     `Name: ${p.name || "—"}\n` +
     `Email: ${p.email || "—"}\n` +
     `Phone: ${p.phone || "—"}\n` +
     `Status: ${p.status || "—"}\n` +
     `Coach ID: ${p.coach_id || "—"}\n\n` +
     `Summary:\n${p.summary || "—"}\n\n` +
-    `Created: ${p.created_at ? fmtISOShort(p.created_at) : "—"}\n` +
-    `Updated: ${p.updated_at ? fmtISOShort(p.updated_at) : "—"}\n` +
-    `Last Activity: ${p.last_activity_at ? fmtISOShort(p.last_activity_at) : "—"}`;
+    `🕒 Created: ${p.created_at ? fmtISOShort(p.created_at) : "—"}\n` +
+    `🕒 Updated: ${p.updated_at ? fmtISOShort(p.updated_at) : "—"}\n` +
+    `🕒 Last Activity: ${p.last_activity_at ? fmtISOShort(p.last_activity_at) : "—"}`;
 
   await ctx.reply(
     text,
@@ -1903,7 +1895,7 @@ async function showFollowupsGroupedByCoach(ctx, filterSource) {
   const rows = error ? [] : data || [];
   if (!rows.length) {
     await ctx.reply(
-      `Follow-Ups (Grouped)\n\n(None right now)`,
+      `🔁 Follow-Ups (Grouped)\n\n(None right now)`,
       Markup.inlineKeyboard([[Markup.button.callback("⬅️ Back", "DASH:back")]])
     );
     return;
@@ -1939,12 +1931,12 @@ async function showFollowupsGroupedByCoach(ctx, filterSource) {
   const kb = Markup.inlineKeyboard([
     ...coaches.map((c, i) => [
       Markup.button.callback(`${i + 1}) Open Coach`, `COACH:${c.coach_id}`),
-      Markup.button.callback("FollowUps", `COACHVIEW:${c.coach_id}:followups`),
+      Markup.button.callback("🔁 FollowUps", `COACHVIEW:${c.coach_id}:followups`),
     ]),
     [Markup.button.callback("⬅️ Back", "DASH:back")],
   ]);
 
-  await ctx.reply(`Follow-Ups (Grouped by Coach)\n\n${lines}`, kb);
+  await ctx.reply(`🔁 Follow-Ups (Grouped by Coach)\n\n${lines}`, kb);
 }
 
 // -------------------- WEBHOOK SERVER --------------------
@@ -2030,13 +2022,13 @@ app.post("/webhook/item", async (req, res) => {
 
     if (dir === "inbound") {
       notifyAdmins(
-        `Needs Reply\n${subject || "Thread"}${coach_name ? ` — ${coach_name}` : ""}\n${CODE_VERSION} · ${String(
+        `⚪️ Needs Reply\n${subject || "Thread"}${coach_name ? ` — ${coach_name}` : ""}\n${CODE_VERSION} · ${String(
           BUILD_VERSION
         ).slice(0, 8)}`,
         {
           keyboard: Markup.inlineKeyboard([
-            [Markup.button.callback("Open Needs Reply", "VIEW:needs_reply")],
-            [Markup.button.callback("TODAY 📅", "TODAY:open")],
+            [Markup.button.callback("Open ⚪️ Needs Reply", "VIEW:needs_reply")],
+            [Markup.button.callback("📅Today", "TODAY:open")],
           ]),
         }
       ).catch(() => {});
@@ -2084,7 +2076,7 @@ app.post("/webhook/click", async (req, res) => {
     // Surface it as "forwarded/click activity" rolling card
     const tk = `coach-signal:${coach_id}`;
     const subject = `Coach Activity Signal — ${coach_name || coach_id}`;
-    const bodyText = `Click reported\nCoach: ${coach_name || coach_id}\nLink: ${link || "—"}\nTime: ${fmtISOShort(
+    const bodyText = `🔗 Click reported\nCoach: ${coach_name || coach_id}\nLink: ${link || "—"}\nTime: ${fmtISOShort(
       isoNow()
     )}`;
 
@@ -2157,7 +2149,7 @@ app.post("/webhook/forward", async (req, res) => {
 
     const tk = thread_key || `coach-forward:${coach_id}`;
     const subject = `Coach Forwarded — ${coach_name || coach_id}`;
-    const bodyText = `Forward signal\nCoach: ${coach_name || coach_id}\nTime: ${fmtISOShort(isoNow())}`;
+    const bodyText = `📨 Forward signal\nCoach: ${coach_name || coach_id}\nTime: ${fmtISOShort(isoNow())}`;
 
     const convId = await sbUpsertConversationByThreadKey(tk, {
       source: "programs",
