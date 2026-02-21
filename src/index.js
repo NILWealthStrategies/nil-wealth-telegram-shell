@@ -2,22 +2,15 @@
  * NIL Wealth Telegram Ops Shell — SUPABASE OPS (Index.js v2.6)
  *
  * Updates from v2.5 (per Andrew’s requirements):
- *
- * 1) Daily digest (NY 8:30) is HARD-LOCKED to "All" counts for the notification text.
- *    - Buttons are NOT locked (they still open based on your current dashboard filter state).
- *
- * 2) Send button labels:
- *    - ⚪️Reply
- *    - 🟢Reply + CC
- *    - Confirm prompt stays: "Are you sure you want to send?"
- *    - Final confirm stays: "✅ Yes, Send"
- *
- * 3) Identity emojis:
- *    - Outreach = 📣
- *    - Support  = 🧑‍🧒
- *
- * 4) URGENT emoji:
- *    - ‼️
+ * - Daily Ops Digest (8:30am NY) is HARD-LOCKED to ALL (text counts always use source: "all")
+ *   but digest buttons are NOT locked (buttons behave normally).
+ * - Send button label changed:
+ *   -> "⚪️Reply" and "🟢Reply + CC"
+ * - Identity-first emojis changed:
+ *   -> Outreach = 📣
+ *   -> Support  = 🧑‍🧒
+ * - URGENT emoji changed globally:
+ *   -> "‼️" replaces prior "🔥"
  *
  * Node 18+ recommended (for fetch)
  */
@@ -112,11 +105,10 @@ function sourceSafe(src) {
   return src === "support" ? "support" : "programs";
 }
 function laneLabel(source) {
-  // Source lane label (Programs vs Support)
-  return source === "support" ? "🧑‍🧒 Support" : "📣 Programs";
+  return source === "support" ? "🧑‍🧒 Support" : "🏈 Programs";
 }
 function replyLabel(mode) {
-  // Identity label (Support vs Outreach)
+  // identity-first labels (used in confirmations)
   return mode === "support" ? "🧑‍🧒 Support" : "📣 Outreach";
 }
 
@@ -734,7 +726,7 @@ ${tsBlock}`.trim();
 function buildConversationKeyboard(conv) {
   const ccSuggested = !!conv.cc_support_suggested;
 
-  // ✅ per Andrew: Reply labels
+  // UPDATED labels per Andrew
   const sendLabel = ccSuggested ? "🟢Reply + CC" : "⚪️Reply";
   const sendCb = ccSuggested ? `SEND:${conv.id}:1` : `SEND:${conv.id}:0`;
 
@@ -742,9 +734,7 @@ function buildConversationKeyboard(conv) {
     ? Markup.button.callback("🪞 Open Mirror", `OPENMIRROR:${conv.id}`)
     : null;
 
-  const gmailBtn = conv.gmail_url
-    ? Markup.button.url("🔗 Open in Gmail", conv.gmail_url)
-    : null;
+  const gmailBtn = conv.gmail_url ? Markup.button.url("🔗 Open in Gmail", conv.gmail_url) : null;
   const rowMirrorGmail = [mirrorBtn, gmailBtn].filter(Boolean);
 
   return Markup.inlineKeyboard([
@@ -1449,7 +1439,7 @@ bot.action(/^SEND:(.+):([01])$/, async (ctx) => {
     return;
   }
 
-  // No lock: ask identity FIRST
+  // No lock: ask identity FIRST (UPDATED emojis)
   await ctx.reply(
     `Send this as who?`,
     Markup.inlineKeyboard([
@@ -1570,7 +1560,7 @@ bot.action(/^DOSEND:(.+):([01]):(support|outreach)$/, async (ctx) => {
   }
 
   await ctx.reply(
-    out.stub ? "📤 Sent (stub)." : `📤 Sent. Status: ${out.status}.`,
+    out.stub ? "✅ Reply sent (stub)." : `✅ Reply sent. Status: ${out.status}.`,
     Markup.inlineKeyboard([[Markup.button.callback("⬅️ Back", "DASH:back")]])
   );
 });
@@ -1655,11 +1645,11 @@ async function autoCompleteSupportLoop() {
   }
 }
 
-// -------------------- DAILY DIGEST (NY 8:30AM) WITH BUTTONS --------------------
-// ✅ HARD-LOCK digest counts to ALL, but buttons remain normal (not locked).
+// -------------------- DAILY DIGEST (NY 8:30AM) HARD-LOCKED TO ALL --------------------
 let lastDigestDayKeyNY = "";
 
 function dailyDigestKeyboard() {
+  // Buttons are NOT locked (they behave normally).
   return Markup.inlineKeyboard([
     [
       Markup.button.callback("Open Urgent", "VIEW:urgent"),
@@ -1685,17 +1675,17 @@ async function dailyDigestLoopNY() {
     lastDigestDayKeyNY = ny.dayKey;
 
     try {
-      // HARD-LOCKED to ALL
+      // HARD-LOCK counts to ALL (source: "all") regardless of admin filter state.
       const urgent = await sbCountConversations({ pipeline: "urgent", source: "all" });
       const needs = await sbCountConversations({ pipeline: "needs_reply", source: "all" });
       const waiting = await sbCountConversations({ pipeline: "actions_waiting", source: "all" });
       const active = await sbCountConversations({ pipeline: "active", source: "all" });
       const followups = await sbCountConversations({ pipeline: "followups", source: "all" });
 
-      // NOTE: Removed "Completed Replys 👍" from digest completely (the "done today" piece)
       const text =
         `📌 Daily Ops Digest (NY ${ny.dayKey} 08:30)\n` +
-        `${CODE_VERSION} · ${String(BUILD_VERSION).slice(0, 8)}\n\n` +
+        `${CODE_VERSION} · ${String(BUILD_VERSION).slice(0, 8)}\n` +
+        `Filter: ALL (hard-locked)\n\n` +
         `Urgent: ${urgent}\n` +
         `Needs Reply: ${needs}\n` +
         `Waiting: ${waiting}\n` +
@@ -1708,7 +1698,7 @@ async function dailyDigestLoopNY() {
 }
 
 // -------------------- COACH POOLS UI (Calls hub) --------------------
-// (UNCHANGED BELOW THIS POINT EXCEPT ANY REFERENCES ABOVE)
+// (UNCHANGED BELOW THIS POINT EXCEPT URGENT emoji text already updated above)
 function fmtCoachLine(c, followupCount = null) {
   const name = c.coach_name ? `${c.coach_name}` : c.coach_id;
   const prog = c.program_name ? ` · ${c.program_name}` : "";
