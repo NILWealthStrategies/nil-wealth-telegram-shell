@@ -1,16 +1,10 @@
 /**
- * NIL Wealth Telegram Ops Shell — SUPABASE OPS (Index.js v2.8)
+ * NIL Wealth Telegram Ops Shell — SUPABASE OPS (Index.js v2.9)
  *
- * Updates from v2.7 (per Andrew’s requirements):
- * - ✅ Dashboard button rows reordered EXACTLY:
- *   Row 1: ALL, Programs, Support
- *   Row 2: Search, Urgent, Reply
- *   Row 3: Forwarded, Active, Waiting
- *   Row 4: Metrics, Follow-Ups, Calls
- *   Row 5 (BOTTOM): Today, Refresh
- * - ✅ Completed emoji changed from 👍 to ✅ (Completed contexts + dashboard count label).
- * - ✅ Added short context line at TOP of cards in parentheses (Queue/View context).
- * - ✅ Applied NEW Emoji Map across UI (buttons, labels, headers, badges, metrics).
+ * Updates from v2.8 (per Andrew’s requirements):
+ * - ✅ Removed duplicated queue titles (keeps ONLY the top context line, no repeated title line)
+ * - ✅ Removed "Index.js vX.X · build" lines from ALL individual cards/views (queues, Today, Calls, Thread, Metrics, notifications, digest)
+ * - ✅ Keeps version/build ONLY on main dashboard
  *
  * Node 18+ recommended (for fetch)
  */
@@ -23,7 +17,7 @@ const { v4: uuidv4 } = require("uuid");
 const { createClient } = require("@supabase/supabase-js");
 
 // -------------------- VERSION MARKERS --------------------
-const CODE_VERSION = "Index.js v2.8";
+const CODE_VERSION = "Index.js v2.9";
 const BUILD_VERSION =
   process.env.BUILD_VERSION ||
   process.env.RENDER_GIT_COMMIT ||
@@ -796,9 +790,9 @@ function oneLineSummary(conv, idx) {
 }
 
 async function showQueueSummaryList(ctx, key, rows, filterSource) {
-  const header = `${viewContextLine(key, filterSource)}
-${viewTitle(key)} (${filterSource})
-${CODE_VERSION} · ${String(BUILD_VERSION).slice(0, 8)}\n`;
+  // ✅ FIX: remove duplicated title + remove version/build from card
+  // Keep ONLY the top context line in parentheses
+  const header = `${viewContextLine(key, filterSource)}\n`;
 
   if (!rows.length) {
     await ctx.reply(
@@ -945,6 +939,7 @@ async function dashboardText(filterSource = "all") {
 
   const m = counts.metricsTop;
 
+  // ✅ ONLY place where version/build is shown
   return `🪧 NIL Wealth Ops Dashboard
 ${CODE_VERSION} · Build: ${String(BUILD_VERSION).slice(0, 8)}
 
@@ -1033,10 +1028,10 @@ async function todayText(filterSource = "all") {
 
   const c = await todayCounts(filterSource);
 
+  // ✅ remove code version/build from Today
   return (
     `(📅 Today)\n` +
     `📌 Today Ops (NY ${ny.dayKey})\n` +
-    `${CODE_VERSION} · ${String(BUILD_VERSION).slice(0, 8)}\n` +
     `Filter: ${filterLabel}\n\n` +
     `‼️ Urgent: ${c.urgent}\n` +
     `📝 Needs Reply: ${c.needs}\n` +
@@ -1621,10 +1616,9 @@ async function urgentLoop() {
       });
 
       if (ms - lastNotified > notifyCooldownMs) {
+        // ✅ remove version/build from notifications
         await notifyAdmins(
-          `‼️ URGENT\n${c.subject || "Thread"}${c.coach_name ? ` — ${c.coach_name}` : ""}\n${CODE_VERSION} · ${String(
-            BUILD_VERSION
-          ).slice(0, 8)}`
+          `‼️ URGENT\n${c.subject || "Thread"}${c.coach_name ? ` — ${c.coach_name}` : ""}`
         );
       }
     } catch (_) {}
@@ -1708,9 +1702,9 @@ async function dailyDigestLoopNY() {
       const active = await sbCountConversations({ pipeline: "active", source: "all" });
       const followups = await sbCountConversations({ pipeline: "followups", source: "all" });
 
+      // ✅ remove version/build from digest
       const text =
         `📌 Daily Ops Digest (NY ${ny.dayKey} 08:30)\n` +
-        `${CODE_VERSION} · ${String(BUILD_VERSION).slice(0, 8)}\n` +
         `Filter: 🌐 ALL (hard-locked)\n\n` +
         `‼️ Urgent: ${urgent}\n` +
         `📝 Needs Reply: ${needs}\n` +
@@ -1979,6 +1973,7 @@ const app = express();
 app.use(express.json({ limit: "2mb" }));
 
 app.get("/health", (_req, res) => {
+  // health can show version/build (not a "card")
   res.json({ ok: true, code: CODE_VERSION, build: BUILD_VERSION });
 });
 
@@ -2056,10 +2051,9 @@ app.post("/webhook/item", async (req, res) => {
     }
 
     if (dir === "inbound") {
+      // ✅ remove version/build from notification
       notifyAdmins(
-        `📝 Needs Reply\n${subject || "Thread"}${coach_name ? ` — ${coach_name}` : ""}\n${CODE_VERSION} · ${String(
-          BUILD_VERSION
-        ).slice(0, 8)}`,
+        `📝 Needs Reply\n${subject || "Thread"}${coach_name ? ` — ${coach_name}` : ""}`,
         {
           keyboard: Markup.inlineKeyboard([
             [Markup.button.callback("Open 📝 Needs Reply", "VIEW:needs_reply")],
@@ -2266,19 +2260,11 @@ app.post("/webhook/failure", async (req, res) => {
 
     const { error } = await supabase.schema("ops").from("failures").insert(row);
     if (error) {
-      await notifyAdmins(
-        `⚠️ FAILURE (db insert failed)\n${row.kind}\n${row.message}\n${CODE_VERSION} · ${String(
-          BUILD_VERSION
-        ).slice(0, 8)}`
-      );
+      await notifyAdmins(`⚠️ FAILURE (db insert failed)\n${row.kind}\n${row.message}`);
       return res.json({ ok: false, error: error.message });
     }
 
-    await notifyAdmins(
-      `⚠️ FAILURE INBOX\n${row.kind}\n${row.message}\n${CODE_VERSION} · ${String(
-        BUILD_VERSION
-      ).slice(0, 8)}`
-    );
+    await notifyAdmins(`⚠️ FAILURE INBOX\n${row.kind}\n${row.message}`);
     return res.json({ ok: true });
   } catch (e) {
     return res.status(500).json({ ok: false, error: String(e.message || e) });
