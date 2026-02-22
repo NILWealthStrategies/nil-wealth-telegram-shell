@@ -1,12 +1,14 @@
 /**
- * NIL Wealth Telegram Ops Shell — SUPABASE OPS (Index.js v2.9)
+ * NIL Wealth Telegram Ops Shell — SUPABASE OPS (Index.js v3.0)
  *
- * Updates from v2.8 (per Andrew’s requirements):
- * - ✅ Removed duplicated queue titles (keeps ONLY the top context line, no repeated title line)
- * - ✅ Removed "Index.js vX.X · build" lines from ALL individual cards/views (queues, Today, Calls, Thread, Metrics, notifications, digest)
- * - ✅ Keeps version/build ONLY on main dashboard
- *
- * Node 18+ recommended (for fetch)
+ * v3.0 updates (based on v2.9 request set):
+ * - ✅ Added Website Submissions pipeline: "website_submissions"
+ * - ✅ Dashboard Row 5 EXACTLY: Submissions | Today | Refresh
+ * - ✅ Submissions view uses compact list view (same as other queues)
+ * - ✅ Submission cards show submission_payload details
+ * - ✅ Cards show delivery status: Email Sent ✅/❌ and Text Sent ✅/❌ + errors
+ * - ✅ Removed CODE_VERSION/BUILD_VERSION line from individual list headers & cards
+ *    (Version/build stays on main dashboard + /start)
  */
 
 require("dotenv").config();
@@ -17,7 +19,7 @@ const { v4: uuidv4 } = require("uuid");
 const { createClient } = require("@supabase/supabase-js");
 
 // -------------------- VERSION MARKERS --------------------
-const CODE_VERSION = "Index.js v2.9";
+const CODE_VERSION = "Index.js v3.0";
 const BUILD_VERSION =
   process.env.BUILD_VERSION ||
   process.env.RENDER_GIT_COMMIT ||
@@ -102,8 +104,12 @@ function laneLabel(source) {
   return source === "support" ? "🧑‍🧒 Support" : "🏈 Programs";
 }
 function replyLabel(mode) {
-  // identity-first labels (used in confirmations)
   return mode === "support" ? "🧑‍🧒 Support" : "🏈 Outreach";
+}
+function sentBadge(v) {
+  if (v === true) return "✅";
+  if (v === false) return "❌";
+  return "—";
 }
 
 // -------------------- VIEW / CONTEXT LABELS --------------------
@@ -115,14 +121,15 @@ function viewTitle(key) {
     active: "💬 Active",
     followups: "📚 Follow-Ups",
     forwarded: "📨 Forwarded",
+    website_submissions: "🧾 Website Submissions",
     completed: "✅ Completed",
     search: "🔎 Search Results",
+    thread: "🗂️ Thread (Full)",
   };
   return map[key] || key;
 }
 
 function viewContextLine(key, extra = "") {
-  // Short, top-of-card context line in parentheses
   const base = viewTitle(key);
   const tail = extra ? ` · ${extra}` : "";
   return `(${base}${tail})`;
@@ -136,6 +143,7 @@ function pipelineLabelNoEmoji(p) {
     active: "Active",
     followups: "Follow-Ups",
     forwarded: "Forwarded",
+    website_submissions: "Website Submissions",
     completed: "Completed",
   };
   return map[p] || "Thread";
@@ -147,7 +155,7 @@ function minsUntilUrgent(updatedAtIso) {
   const deadline = updated + URGENT_AFTER_MINUTES * 60 * 1000;
   const diffMs = deadline - nowMs();
   const diffMins = Math.ceil(diffMs / (60 * 1000));
-  return diffMins; // can be negative
+  return diffMins;
 }
 function fmtCountdown(updatedAtIso) {
   const m = minsUntilUrgent(updatedAtIso);
@@ -190,7 +198,7 @@ function nyParts(date = new Date()) {
   };
 }
 
-// DST-perfect boundaries require Luxon; this is best-effort ops boundaries.
+// Best-effort day/week/month/year boundaries (NY)
 function startOfNYDayISO(date = new Date()) {
   const p = nyParts(date);
   const nyMidnightStr = `${p.month}/${p.day}/${p.year} 00:00:00`;
@@ -202,7 +210,7 @@ function startOfNYWeekISO(date = new Date()) {
   const ny = nyParts(d);
   const approxNY = new Date(`${ny.month}/${ny.day}/${ny.year} 12:00:00 GMT-0500`);
   const day = approxNY.getDay(); // 0=Sun
-  const diffToMon = (day + 6) % 7; // Mon=0
+  const diffToMon = (day + 6) % 7;
   approxNY.setDate(approxNY.getDate() - diffToMon);
   const p2 = nyParts(approxNY);
   const weekStart = new Date(`${p2.month}/${p2.day}/${p2.year} 00:00:00 GMT-0500`);
@@ -331,7 +339,7 @@ async function sbInsertMessage(row) {
   const payload = {
     id: row.id || uuidv4(),
     conversation_id: row.conversation_id,
-    direction: row.direction, // inbound|outbound
+    direction: row.direction,
     from_email: row.from_email || null,
     to_email: row.to_email || null,
     body: row.body || "",
@@ -383,7 +391,6 @@ async function sbUpsertCoach({ coach_id, coach_name, program_name }) {
     .from("coaches")
     .upsert(payload, { onConflict: "coach_id" });
 
-  // ignore if table not created yet
   if (error) return false;
   return true;
 }
@@ -511,7 +518,6 @@ async function sbInsertCoachEvent({ coach_id, kind, link, person_id, meta }) {
 
 // -------------------- METRICS (ops.metric_events) --------------------
 function timeWindowSinceISO(which) {
-  // NOTE: "today" intentionally removed from Metrics UI, but kept for internal flexibility.
   if (which === "today") return startOfNYDayISO(new Date());
   if (which === "week") return startOfNYWeekISO(new Date());
   if (which === "month") return startOfNYMonthISO(new Date());
@@ -535,16 +541,13 @@ async function sbCountMetric(kind, { scope = "company", sinceIso } = {}) {
 }
 
 async function sbMetricsSummary({ scope = "company", sinceIso } = {}) {
-  // anchors
   const programLinkOpens = await sbCountMetric("program_link_open", { scope, sinceIso });
   const coverageExploration = await sbCountMetric("coverage_exploration", { scope, sinceIso });
 
-  // programs extras
   const parentGuideClicks = await sbCountMetric("parent_guide_click", { scope, sinceIso });
   const guideClicks = await sbCountMetric("guide_click", { scope, sinceIso });
   const websiteClicks = await sbCountMetric("website_click", { scope, sinceIso });
 
-  // support extras
   const taxEducationClicks = await sbCountMetric("tax_education_click", { scope, sinceIso });
   const riskAwarenessClicks = await sbCountMetric("risk_awareness_click", { scope, sinceIso });
   const shClicks = await sbCountMetric("sh_click", { scope, sinceIso });
@@ -700,12 +703,43 @@ async function buildConversationSummary(conv) {
   };
 }
 
-async function buildConversationText(conv) {
-  const context = `(Card: ${pipelineLabelNoEmoji(conv.pipeline)})`;
+function formatSubmissionPayloadBlock(conv) {
+  if (conv.pipeline !== "website_submissions") return "";
+  const sp = conv.submission_payload || conv.submissionPayload || null;
+  if (!sp || typeof sp !== "object") return "";
 
-  const title = `${conv.subject ? conv.subject : "Thread"}${
-    conv.coach_name ? ` — ${conv.coach_name}` : ""
-  }`;
+  const interests =
+    Array.isArray(sp.interests) && sp.interests.length
+      ? sp.interests.map((i) => `- ${i}`).join("\n")
+      : "- —";
+
+  const lines = [];
+  lines.push("📄 Submission Details");
+  lines.push(`Name: ${sp.name || "—"}`);
+  lines.push(`Role: ${sp.role || "—"}`);
+  lines.push(`Athlete Name: ${sp.athleteName || sp.athlete_name || "—"}`);
+  lines.push(`Sport: ${sp.sport || "—"}`);
+  lines.push(`School: ${sp.school || "—"}`);
+  lines.push(`Email: ${sp.email || "—"}`);
+  lines.push(`Phone: ${sp.phone || "—"}`);
+  lines.push("");
+  lines.push("Interested In:");
+  lines.push(interests);
+  lines.push("");
+  lines.push("Notes:");
+  lines.push(String(sp.message || sp.notes || "—"));
+
+  return lines.join("\n");
+}
+
+async function buildConversationText(conv) {
+  // Keep the top context line ONLY (no duplicated title line)
+  const context = viewContextLine(conv.pipeline, conv.source || "");
+
+  const title =
+    `${conv.subject ? conv.subject : "Thread"}${
+      conv.coach_name ? ` — ${conv.coach_name}` : ""
+    }`;
 
   const updatedIso = conv.updated_at || conv.created_at;
   const sla = slaBadge(updatedIso);
@@ -738,6 +772,15 @@ async function buildConversationText(conv) {
     .filter(Boolean)
     .join("\n");
 
+  const submissionBlock = formatSubmissionPayloadBlock(conv);
+
+  const deliveryLines = [];
+  deliveryLines.push(`Email Sent ${sentBadge(conv.email_sent)}`);
+  deliveryLines.push(`Text Sent ${sentBadge(conv.sms_sent)}`);
+  if (conv.email_send_error) deliveryLines.push(`Email Error: ${shorten(conv.email_send_error, 120)}`);
+  if (conv.sms_send_error) deliveryLines.push(`Text Error: ${shorten(conv.sms_send_error, 120)}`);
+  const deliveryBlock = deliveryLines.join("\n");
+
   return `${context}
 ${urgentBadge ? urgentBadge + "\n" : ""}${title}
 
@@ -745,11 +788,13 @@ ${laneLine}
 ${lockLine ? lockLine + "\n" : ""}${sla}
 ${countdown}
 
-${summaryBlock}
+${submissionBlock ? submissionBlock + "\n\n" : ""}${summaryBlock}
 
 ${[linkedLine, gmailLine].filter(Boolean).join("\n")}
 
-${tsBlock}`.trim();
+${tsBlock}
+
+${deliveryBlock}`.trim();
 }
 
 function buildConversationKeyboard(conv) {
@@ -780,7 +825,7 @@ function buildConversationKeyboard(conv) {
   ]);
 }
 
-// -------------------- SUMMARY LIST VIEWS (NO BULKY CARDS) --------------------
+// -------------------- SUMMARY LIST VIEWS (COMPACT) --------------------
 function oneLineSummary(conv, idx) {
   const who = conv.coach_name ? ` — ${conv.coach_name}` : "";
   const subj = shorten(conv.subject || "Thread", 52);
@@ -790,9 +835,9 @@ function oneLineSummary(conv, idx) {
 }
 
 async function showQueueSummaryList(ctx, key, rows, filterSource) {
-  // ✅ FIX: remove duplicated title + remove version/build from card
-  // Keep ONLY the top context line in parentheses
-  const header = `${viewContextLine(key, filterSource)}\n`;
+  // ✅ No CODE_VERSION/BUILD_VERSION here (only on main dashboard)
+  const header = `${viewContextLine(key, filterSource)}
+${viewTitle(key)} (${filterSource})\n`;
 
   if (!rows.length) {
     await ctx.reply(
@@ -824,7 +869,7 @@ async function showQueueSummaryList(ctx, key, rows, filterSource) {
 function formatMessageLineFull(m) {
   const who = m.direction === "inbound" ? "⬅️ Inbound" : "➡️ Outbound";
   const t = m.created_at ? new Date(m.created_at).toLocaleString() : "";
-  const body = String(m.body || m.preview || "").trim(); // FULL TEXT (no shorten)
+  const body = String(m.body || m.preview || "").trim();
   const safeBody = body.length ? body : "(empty)";
   return `${who} · ${t}\n${safeBody}`;
 }
@@ -870,32 +915,18 @@ async function showThread(ctx, convId, offset = 0) {
 
 // -------------------- DASHBOARD --------------------
 async function dashboardCounts(filterSource = "all") {
-  const urgentCount = await sbCountConversations({
-    pipeline: "urgent",
-    source: filterSource,
-  });
-  const needsReplyCount = await sbCountConversations({
-    pipeline: "needs_reply",
-    source: filterSource,
-  });
-  const waitingCount = await sbCountConversations({
-    pipeline: "actions_waiting",
-    source: filterSource,
-  });
-  const activeCount = await sbCountConversations({
-    pipeline: "active",
-    source: filterSource,
-  });
-  const followCount = await sbCountConversations({
-    pipeline: "followups",
-    source: filterSource,
-  });
-  const forwardedCount = await sbCountConversations({
-    pipeline: "forwarded",
+  const urgentCount = await sbCountConversations({ pipeline: "urgent", source: filterSource });
+  const needsReplyCount = await sbCountConversations({ pipeline: "needs_reply", source: filterSource });
+  const waitingCount = await sbCountConversations({ pipeline: "actions_waiting", source: filterSource });
+  const activeCount = await sbCountConversations({ pipeline: "active", source: filterSource });
+  const followCount = await sbCountConversations({ pipeline: "followups", source: filterSource });
+  const forwardedCount = await sbCountConversations({ pipeline: "forwarded", source: filterSource });
+
+  const submissionsCount = await sbCountConversations({
+    pipeline: "website_submissions",
     source: filterSource,
   });
 
-  // ✅ Completed is support-only completed queue (count only)
   const completedCount =
     filterSource === "programs"
       ? 0
@@ -914,6 +945,7 @@ async function dashboardCounts(filterSource = "all") {
     activeCount,
     followCount,
     forwardedCount,
+    submissionsCount,
     completedCount,
     metricsTop,
   };
@@ -939,7 +971,6 @@ async function dashboardText(filterSource = "all") {
 
   const m = counts.metricsTop;
 
-  // ✅ ONLY place where version/build is shown
   return `🪧 NIL Wealth Ops Dashboard
 ${CODE_VERSION} · Build: ${String(BUILD_VERSION).slice(0, 8)}
 
@@ -954,6 +985,7 @@ Filter: ${filterLabel}
 💬 Active: ${counts.activeCount}
 📚 Follow-Ups: ${counts.followCount}
 📨 Forwarded: ${counts.forwardedCount}
+🧾 Submissions: ${counts.submissionsCount}
 ✅ Completed: ${counts.completedCount}
 
 ${scopeTitle}
@@ -970,51 +1002,45 @@ function dashboardKeyboard(_filterSource = "all") {
   const progBtn = Markup.button.callback("🏈 Programs", "FILTER:programs");
   const supBtn = Markup.button.callback("🧑‍🧒 Support", "FILTER:support");
 
-  // EXACT ROW ORDER REQUIRED
   return Markup.inlineKeyboard([
-    // Row 1: ALL, Programs, Support
     [srcBtn, progBtn, supBtn],
 
-    // Row 2: Search, Urgent, Reply
     [
       Markup.button.callback("🔎 Search", "SEARCH:help"),
       Markup.button.callback("‼️ Urgent", "VIEW:urgent"),
       Markup.button.callback("📝 Reply", "VIEW:needs_reply"),
     ],
 
-    // Row 3: Forwarded, Active, Waiting
     [
       Markup.button.callback("📨 Forwarded", "VIEW:forwarded"),
       Markup.button.callback("💬 Active", "VIEW:active"),
       Markup.button.callback("⏳ Waiting", "VIEW:actions_waiting"),
     ],
 
-    // Row 4: Metrics, Follow-Ups, Calls
     [
       Markup.button.callback("📊 Metrics", "METRICS:open"),
       Markup.button.callback("📚 Follow-Ups", "VIEW:followups"),
       Markup.button.callback("📱 Calls", "CALLS:hub"),
     ],
 
-    // Row 5 (BOTTOM): Today, Refresh
+    // ✅ Row 5 EXACTLY: Submissions | Today | Refresh
     [
+      Markup.button.callback("🧾 Submissions", "VIEW:website_submissions"),
       Markup.button.callback("📅 Today", "TODAY:open"),
       Markup.button.callback("🔄 Refresh", "DASH:refresh"),
     ],
   ]);
 }
 
-// -------------------- TODAY 📅 VIEW (NO "DONE" PIECE) --------------------
+// -------------------- TODAY 📅 VIEW --------------------
 async function todayCounts(filterSource = "all") {
   const urgent = await sbCountConversations({ pipeline: "urgent", source: filterSource });
   const needs = await sbCountConversations({ pipeline: "needs_reply", source: filterSource });
-  const waiting = await sbCountConversations({
-    pipeline: "actions_waiting",
-    source: filterSource,
-  });
+  const waiting = await sbCountConversations({ pipeline: "actions_waiting", source: filterSource });
   const active = await sbCountConversations({ pipeline: "active", source: filterSource });
   const followups = await sbCountConversations({ pipeline: "followups", source: filterSource });
-  return { urgent, needs, waiting, active, followups };
+  const submissions = await sbCountConversations({ pipeline: "website_submissions", source: filterSource });
+  return { urgent, needs, waiting, active, followups, submissions };
 }
 
 async function todayText(filterSource = "all") {
@@ -1028,7 +1054,6 @@ async function todayText(filterSource = "all") {
 
   const c = await todayCounts(filterSource);
 
-  // ✅ remove code version/build from Today
   return (
     `(📅 Today)\n` +
     `📌 Today Ops (NY ${ny.dayKey})\n` +
@@ -1037,7 +1062,8 @@ async function todayText(filterSource = "all") {
     `📝 Needs Reply: ${c.needs}\n` +
     `⏳ Waiting: ${c.waiting}\n` +
     `💬 Active: ${c.active}\n` +
-    `📚 Follow-Ups: ${c.followups}\n\n` +
+    `📚 Follow-Ups: ${c.followups}\n` +
+    `🧾 Submissions: ${c.submissions}\n\n` +
     `Use buttons below.`
   );
 }
@@ -1057,8 +1083,8 @@ function todayKeyboard() {
       Markup.button.callback("Open 📨 Forwarded", "VIEW:forwarded"),
     ],
     [
+      Markup.button.callback("Open 🧾 Submissions", "VIEW:website_submissions"),
       Markup.button.callback("📊 Metrics", "METRICS:open"),
-      Markup.button.callback("📱 Calls", "CALLS:hub"),
     ],
     [Markup.button.callback("⬅️ Dashboard", "DASH:back")],
   ]);
@@ -1084,12 +1110,10 @@ async function metricsText(filterSource = "all", which = "week") {
   lines.push(`📅 Window: ${which.toUpperCase()}`);
   lines.push("");
 
-  // anchors
   lines.push(`Engagement (Program Link Opens): ${m.programLinkOpens}`);
   lines.push(`Exploration (Coverage Exploration): ${m.coverageExploration}`);
   lines.push("");
 
-  // full named metrics ONLY inside Metrics view
   if (scope === "programs") {
     lines.push(`Parent Guide Clicks: ${m.parentGuideClicks}`);
     lines.push(`Guide Clicks: ${m.guideClicks}`);
@@ -1120,7 +1144,6 @@ async function metricsText(filterSource = "all", which = "week") {
 }
 
 function metricsKeyboard() {
-  // IMPORTANT: only Week / Month / Year. NO TODAY anywhere.
   return Markup.inlineKeyboard([
     [
       Markup.button.callback("Week", "METRICS:week"),
@@ -1245,7 +1268,7 @@ bot.action(/^METRICS:(week|month|year)$/, async (ctx) => {
 
 // -------------------- VIEWS --------------------
 bot.action(
-  /^VIEW:(urgent|needs_reply|actions_waiting|active|followups|forwarded)$/,
+  /^VIEW:(urgent|needs_reply|actions_waiting|active|followups|forwarded|website_submissions)$/,
   async (ctx) => {
     if (!isAdmin(ctx)) return;
     await ctx.answerCbQuery();
@@ -1253,7 +1276,6 @@ bot.action(
     const key = ctx.match[1];
     const filterSource = getAdminFilter(ctx);
 
-    // Special: Follow-Ups should be COACH-GROUPED
     if (key === "followups") {
       await showFollowupsGroupedByCoach(ctx, filterSource);
       return;
@@ -1397,7 +1419,7 @@ async function sendOut(conv, { ccSupport, sendAs }) {
     cc_support: !!ccSupport,
     cc_support_suggested: !!conv.cc_support_suggested,
 
-    send_as: sendAs, // 'support'|'outreach'
+    send_as: sendAs,
     from_email: await resolveFromEmail(conv, sendAs),
 
     mirror_conversation_id: conv.mirror_conversation_id || null,
@@ -1441,8 +1463,7 @@ bot.action(/^SEND:(.+):([01])$/, async (ctx) => {
     return;
   }
 
-  // Programs lane: enforce lock if set
-  const owned = conv.owned_by; // 'support'|'outreach'|null
+  const owned = conv.owned_by;
   if (owned === "support" || owned === "outreach") {
     const fixed = owned;
     await ctx.reply(
@@ -1457,7 +1478,6 @@ bot.action(/^SEND:(.+):([01])$/, async (ctx) => {
     return;
   }
 
-  // No lock: ask identity FIRST
   await ctx.reply(
     `Send this as who?`,
     Markup.inlineKeyboard([
@@ -1470,7 +1490,6 @@ bot.action(/^SEND:(.+):([01])$/, async (ctx) => {
   );
 });
 
-// Identity selected -> confirm sure
 bot.action(/^CONFIRMSEND:(.+):([01]):(support|outreach)$/, async (ctx) => {
   if (!isAdmin(ctx)) return;
   await ctx.answerCbQuery();
@@ -1488,7 +1507,6 @@ bot.action(/^CONFIRMSEND:(.+):([01]):(support|outreach)$/, async (ctx) => {
   );
 });
 
-// Do send -> append outbound message + lock rules + NO instant completion
 bot.action(/^DOSEND:(.+):([01]):(support|outreach)$/, async (ctx) => {
   if (!isAdmin(ctx)) return;
   await ctx.answerCbQuery();
@@ -1503,7 +1521,6 @@ bot.action(/^DOSEND:(.+):([01]):(support|outreach)$/, async (ctx) => {
   const src = sourceSafe(conv.source);
   const effectiveSendAs = src === "support" ? "support" : sendAs;
 
-  // If Programs + CC => ensure mirror exists and lock ownership to Support
   let mirrorId = conv.mirror_conversation_id || null;
   if (src === "programs" && cc) {
     if (!mirrorId) {
@@ -1526,7 +1543,6 @@ bot.action(/^DOSEND:(.+):([01]):(support|outreach)$/, async (ctx) => {
 
   const out = await sendOut(conv, { ccSupport: cc, sendAs: effectiveSendAs });
 
-  // Outbound message on the original conversation
   await sbInsertMessage({
     conversation_id: convId,
     direction: "outbound",
@@ -1536,7 +1552,6 @@ bot.action(/^DOSEND:(.+):([01]):(support|outreach)$/, async (ctx) => {
     created_at: isoNow(),
   });
 
-  // If Programs + CC: also write an outbound message to the SUPPORT mirror thread
   if (src === "programs" && cc && mirrorId) {
     try {
       const mirror = await sbGetConversation(mirrorId);
@@ -1562,7 +1577,6 @@ bot.action(/^DOSEND:(.+):([01]):(support|outreach)$/, async (ctx) => {
 
   const cooldown = new Date(nowMs() + URGENT_COOLDOWN_HOURS * 60 * 60 * 1000).toISOString();
 
-  // NO instant completion: move to active and let auto-complete handle support later
   await sbUpdateConversation(convId, {
     pipeline: "active",
     urgent: false,
@@ -1571,7 +1585,6 @@ bot.action(/^DOSEND:(.+):([01]):(support|outreach)$/, async (ctx) => {
     last_outbound_at: isoNow(),
   });
 
-  // KPI: consider this as an "email sent" if coach_id exists
   if (conv.coach_id) {
     await sbUpsertCoach({ coach_id: conv.coach_id, coach_name: conv.coach_name || null });
     await sbCoachInc(conv.coach_id, { emails_total: 1 });
@@ -1589,7 +1602,7 @@ async function urgentLoop() {
     .schema("ops")
     .from("conversations")
     .select("*")
-    .in("pipeline", ["actions_waiting", "needs_reply", "active"])
+    .in("pipeline", ["actions_waiting", "needs_reply", "active", "website_submissions"])
     .order("updated_at", { ascending: true })
     .limit(250);
 
@@ -1616,7 +1629,6 @@ async function urgentLoop() {
       });
 
       if (ms - lastNotified > notifyCooldownMs) {
-        // ✅ remove version/build from notifications
         await notifyAdmins(
           `‼️ URGENT\n${c.subject || "Thread"}${c.coach_name ? ` — ${c.coach_name}` : ""}`
         );
@@ -1666,7 +1678,6 @@ async function autoCompleteSupportLoop() {
 let lastDigestDayKeyNY = "";
 
 function dailyDigestKeyboard() {
-  // Buttons are NOT locked (they behave normally).
   return Markup.inlineKeyboard([
     [
       Markup.button.callback("Open ‼️ Urgent", "VIEW:urgent"),
@@ -1681,8 +1692,8 @@ function dailyDigestKeyboard() {
       Markup.button.callback("Open 📨 Forwarded", "VIEW:forwarded"),
     ],
     [
+      Markup.button.callback("Open 🧾 Submissions", "VIEW:website_submissions"),
       Markup.button.callback("📅 Today", "TODAY:open"),
-      Markup.button.callback("📱 Calls", "CALLS:hub"),
     ],
   ]);
 }
@@ -1695,22 +1706,23 @@ async function dailyDigestLoopNY() {
     lastDigestDayKeyNY = ny.dayKey;
 
     try {
-      // HARD-LOCK counts to ALL (source: "all") regardless of admin filter state.
       const urgent = await sbCountConversations({ pipeline: "urgent", source: "all" });
       const needs = await sbCountConversations({ pipeline: "needs_reply", source: "all" });
       const waiting = await sbCountConversations({ pipeline: "actions_waiting", source: "all" });
       const active = await sbCountConversations({ pipeline: "active", source: "all" });
       const followups = await sbCountConversations({ pipeline: "followups", source: "all" });
+      const submissions = await sbCountConversations({ pipeline: "website_submissions", source: "all" });
 
-      // ✅ remove version/build from digest
       const text =
         `📌 Daily Ops Digest (NY ${ny.dayKey} 08:30)\n` +
+        `${CODE_VERSION} · ${String(BUILD_VERSION).slice(0, 8)}\n` +
         `Filter: 🌐 ALL (hard-locked)\n\n` +
         `‼️ Urgent: ${urgent}\n` +
         `📝 Needs Reply: ${needs}\n` +
         `⏳ Waiting: ${waiting}\n` +
         `💬 Active: ${active}\n` +
-        `📚 Follow-Ups: ${followups}`;
+        `📚 Follow-Ups: ${followups}\n` +
+        `🧾 Submissions: ${submissions}`;
 
       await notifyAdmins(text, { keyboard: dailyDigestKeyboard() });
     } catch (_) {}
@@ -1973,7 +1985,6 @@ const app = express();
 app.use(express.json({ limit: "2mb" }));
 
 app.get("/health", (_req, res) => {
-  // health can show version/build (not a "card")
   res.json({ ok: true, code: CODE_VERSION, build: BUILD_VERSION });
 });
 
@@ -2000,9 +2011,17 @@ app.post("/webhook/item", async (req, res) => {
       inbound_from_email,
       provider_message_id,
       pipeline,
+      submission_payload,
+      email_sent,
+      sms_sent,
+      email_send_error,
+      sms_send_error,
     } = req.body || {};
 
-    const src = sourceSafe(source);
+    // For Website Submissions: default them into Support lane unless explicitly overridden.
+    const isSubmission = pipeline === "website_submissions";
+    const src = isSubmission ? "support" : sourceSafe(source);
+
     const dir = direction === "outbound" ? "outbound" : "inbound";
     const tk = thread_key || `fallback:${uuidv4()}`;
 
@@ -2021,6 +2040,14 @@ app.post("/webhook/item", async (req, res) => {
       gmail_url: gmail_url || null,
       inbound_from_email: inbound_from_email || null,
       cc_support_suggested: !!cc_support_suggested,
+
+      submission_payload: submission_payload || null,
+
+      email_sent: typeof email_sent === "boolean" ? email_sent : null,
+      sms_sent: typeof sms_sent === "boolean" ? sms_sent : null,
+      email_send_error: email_send_error || null,
+      sms_send_error: sms_send_error || null,
+
       created_at: isoNow(),
       last_inbound_at: dir === "inbound" ? isoNow() : undefined,
       last_outbound_at: dir === "outbound" ? isoNow() : undefined,
@@ -2050,8 +2077,7 @@ app.post("/webhook/item", async (req, res) => {
       });
     }
 
-    if (dir === "inbound") {
-      // ✅ remove version/build from notification
+    if (dir === "inbound" && !isSubmission) {
       notifyAdmins(
         `📝 Needs Reply\n${subject || "Thread"}${coach_name ? ` — ${coach_name}` : ""}`,
         {
@@ -2063,7 +2089,43 @@ app.post("/webhook/item", async (req, res) => {
       ).catch(() => {});
     }
 
+    if (isSubmission) {
+      notifyAdmins(
+        `🧾 Website Submission\n${subject || "New submission"}\n(Open Submissions queue)`,
+        {
+          keyboard: Markup.inlineKeyboard([
+            [Markup.button.callback("Open 🧾 Submissions", "VIEW:website_submissions")],
+            [Markup.button.callback("📅 Today", "TODAY:open")],
+          ]),
+        }
+      ).catch(() => {});
+    }
+
     return res.json({ ok: true, conversation_id: convId });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
+/**
+ * Delivery webhook (SendGrid/Twilio results):
+ * POST /webhook/delivery
+ */
+app.post("/webhook/delivery", async (req, res) => {
+  try {
+    if (!verifyWebhookSecret(req)) return res.status(401).json({ ok: false });
+
+    const { conversation_id, email_sent, sms_sent, email_send_error, sms_send_error } = req.body || {};
+    if (!conversation_id) return res.status(400).json({ ok: false, error: "conversation_id required" });
+
+    await sbUpdateConversation(conversation_id, {
+      email_sent: typeof email_sent === "boolean" ? email_sent : null,
+      sms_sent: typeof sms_sent === "boolean" ? sms_sent : null,
+      email_send_error: email_send_error || null,
+      sms_send_error: sms_send_error || null,
+    });
+
+    return res.json({ ok: true });
   } catch (e) {
     return res.status(500).json({ ok: false, error: String(e.message || e) });
   }
@@ -2102,7 +2164,6 @@ app.post("/webhook/click", async (req, res) => {
       });
     } catch (_) {}
 
-    // Surface it as "forwarded/click activity" rolling card
     const tk = `coach-signal:${coach_id}`;
     const subject = `Coach Activity Signal — ${coach_name || coach_id}`;
     const bodyText = `🔗 Click reported\nCoach: ${coach_name || coach_id}\nLink: ${link || "—"}\nTime: ${fmtISOShort(
@@ -2260,11 +2321,15 @@ app.post("/webhook/failure", async (req, res) => {
 
     const { error } = await supabase.schema("ops").from("failures").insert(row);
     if (error) {
-      await notifyAdmins(`⚠️ FAILURE (db insert failed)\n${row.kind}\n${row.message}`);
+      await notifyAdmins(
+        `⚠️ FAILURE (db insert failed)\n${row.kind}\n${row.message}`
+      );
       return res.json({ ok: false, error: error.message });
     }
 
-    await notifyAdmins(`⚠️ FAILURE INBOX\n${row.kind}\n${row.message}`);
+    await notifyAdmins(
+      `⚠️ FAILURE INBOX\n${row.kind}\n${row.message}`
+    );
     return res.json({ ok: true });
   } catch (e) {
     return res.status(500).json({ ok: false, error: String(e.message || e) });
