@@ -1,20 +1,15 @@
 /**
- * NIL Wealth Telegram Ops Shell — SUPABASE OPS (Index.js v3.8)
+ * NIL Wealth Telegram Ops Shell — SUPABASE OPS (Index.js v4.1)
  *
- * v3.8 updates (adds everything requested, keeps UI/emojis consistent):
- * - ✅ Dashboard "Back" + "Refresh" ALWAYS reset filter to 🌐 All (and /dashboard too)
- * - ✅ Fix dashboard filter state bug (state no longer “sticks” when returning)
- * - ✅ Metrics: remove duplicate titles (no more double header lines)
- * - ✅ Main Dashboard Metrics = ALL-TIME (keeps counting up)
- * - ✅ Week / Month / Year buttons still work exactly like now (time windows)
- * - ✅ NEW 🎉 Year Summary button:
- *      - shows month-by-month counts for the current year (resets on Jan 1 NY)
- *      - shows best month + monthly average
- *      - shows start/end dates for the year window
- * - ✅ Link Support replies to website submissions (best-effort, no DB schema change):
- *      - if a conversation has contact_email, we auto-find the most recent ops.submissions
- *        where submission_payload.email matches, and display the submission id on the card
- *      - on Support send, we also attach submission_id into the outbound payload if found
+ * v4.1 upgrades (added ON TOP of all v3.2–v4.0 features you already have):
+ * - ✅ Dashboard/Today/Metrics/Queue navigation edits ONE message (no chat spam)
+ * - ✅ DASH:back + DASH:refresh always resets filter to 🌐 All (hard rule)
+ * - ✅ NY times display as normal time (e.g., 2:30 PM) everywhere
+ * - ✅ DST-safe New York day/week/month/year boundaries for metrics windows
+ * - ✅ Live cards have TTL cleanup + auto-remove on edit errors
+ * - ✅ Metrics title cleanup (no double titles)
+ * - ✅ 🎉 Year Summary: clean, simple, aligned totals + best month + average
+ * - ✅ Removed dashboard text “(Tap 📊 Metrics for time windows + 🎉 Year Summary)”
  *
  * Node 18+ recommended (for fetch)
  */
@@ -27,7 +22,7 @@ const { v4: uuidv4 } = require("uuid");
 const { createClient } = require("@supabase/supabase-js");
 
 // -------------------- VERSION MARKERS --------------------
-const CODE_VERSION = "Index.js v3.8";
+const CODE_VERSION = "Index.js v4.1";
 const BUILD_VERSION =
   process.env.BUILD_VERSION ||
   process.env.RENDER_GIT_COMMIT ||
@@ -60,6 +55,9 @@ const COMPLETE_AFTER_HOURS = Number(process.env.COMPLETE_AFTER_HOURS || 48); // 
 // Support identity
 const SUPPORT_FROM_EMAIL =
   process.env.SUPPORT_FROM_EMAIL || "support@mynilwealthstrategies.com";
+
+// Live card TTL (v4.1)
+const LIVE_CARD_TTL_MINUTES = Number(process.env.LIVE_CARD_TTL_MINUTES || 360); // 6 hours
 
 // -------------------- GUARDS --------------------
 if (!BOT_TOKEN) {
@@ -119,10 +117,6 @@ function sentBadge(v) {
   if (v === false) return "❌";
   return "—";
 }
-function safeEmail(e) {
-  const t = String(e || "").trim().toLowerCase();
-  return t.includes("@") ? t : "";
-}
 
 // -------------------- VIEW / CONTEXT LABELS --------------------
 function viewTitle(key) {
@@ -137,6 +131,10 @@ function viewTitle(key) {
     completed: "✅ Completed",
     search: "🔎 Search Results",
     thread: "🗂️ Thread (Full)",
+    metrics: "📊 Metrics",
+    year_summary: "🎉 Year Summary",
+    calls: "📱 Calls",
+    today: "📅 Today",
   };
   return map[key] || key;
 }
@@ -146,7 +144,121 @@ function headerLine(key, filterLabel = "all") {
   return `${viewTitle(key)} · ${filterLabel}`;
 }
 
-// Urgent countdown + SLA
+// -------------------- TIME (NY) — v4.1: normal 12-hour display + DST-safe boundaries --------------------
+const NY_TZ = "America/New_York";
+
+function fmtNYTime(date = new Date()) {
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: NY_TZ,
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+  return fmt.format(date); // e.g., "2:30 PM"
+}
+
+function nyParts(date = new Date()) {
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: NY_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const parts = fmt.formatToParts(date);
+  const get = (type) => parts.find((p) => p.type === type)?.value;
+  const year = get("year");
+  const month = get("month");
+  const day = get("day");
+  return {
+    year,
+    month,
+    day,
+    dayKey: `${year}-${month}-${day}`,
+    time: fmtNYTime(date),
+  };
+}
+
+// Parse timezone offset minutes like "GMT-5" or "GMT-4"
+function tzOffsetMinutesAt(date, timeZone) {
+  try {
+    const fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      timeZoneName: "shortOffset",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    const parts = fmt.formatToParts(date);
+    const tzName = parts.find((p) => p.type === "timeZoneName")?.value || "GMT+0";
+    // Examples: "GMT-5", "GMT-05:00", "GMT+4"
+    const m = tzName.match(/GMT([+-])(\d{1,2})(?::?(\d{2}))?/i);
+    if (!m) return 0;
+    const sign = m[1] === "-" ? -1 : 1;
+    const hh = Number(m[2] || 0);
+    const mm = Number(m[3] || 0);
+    return sign * (hh * 60 + mm);
+  } catch (_) {
+    return 0;
+  }
+}
+
+/**
+ * Convert a wall-clock time in a timeZone (NY) to a UTC Date (DST-safe).
+ * Iterative correction using the offset at the guessed instant.
+ */
+function makeDateInTZ({ year, month, day, hour = 0, minute = 0, second = 0 }, timeZone) {
+  // initial guess: treat local as UTC
+  let utcGuess = Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second));
+  let d = new Date(utcGuess);
+  for (let i = 0; i < 3; i++) {
+    const offMin = tzOffsetMinutesAt(d, timeZone);
+    const corrected = utcGuess - offMin * 60 * 1000;
+    d = new Date(corrected);
+    utcGuess = corrected;
+  }
+  return d;
+}
+
+function startOfNYDayISO(date = new Date()) {
+  const p = nyParts(date);
+  return makeDateInTZ({ year: p.year, month: p.month, day: p.day, hour: 0, minute: 0, second: 0 }, NY_TZ).toISOString();
+}
+
+function startOfNYWeekISO(date = new Date()) {
+  // Find NY-local day-of-week by formatting and then shifting using a midday anchor to avoid DST edges.
+  const ny = nyParts(date);
+  const anchor = makeDateInTZ({ year: ny.year, month: ny.month, day: ny.day, hour: 12, minute: 0, second: 0 }, NY_TZ);
+  const day = anchor.getUTCDay(); // day-of-week at anchor in UTC; not NY-accurate by itself
+  // Better: get NY weekday via Intl
+  const weekday = new Intl.DateTimeFormat("en-US", { timeZone: NY_TZ, weekday: "short" }).format(date);
+  const map = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const nyDow = map[weekday] ?? 1;
+  const diffToMon = (nyDow + 6) % 7; // Mon=0
+  const shifted = new Date(anchor.getTime() - diffToMon * 24 * 60 * 60 * 1000);
+  const p2 = nyParts(shifted);
+  return makeDateInTZ({ year: p2.year, month: p2.month, day: p2.day, hour: 0, minute: 0, second: 0 }, NY_TZ).toISOString();
+}
+
+function startOfNYMonthISO(date = new Date()) {
+  const p = nyParts(date);
+  return makeDateInTZ({ year: p.year, month: p.month, day: "01", hour: 0, minute: 0, second: 0 }, NY_TZ).toISOString();
+}
+
+function startOfNYYearISO(date = new Date()) {
+  const p = nyParts(date);
+  return makeDateInTZ({ year: p.year, month: "01", day: "01", hour: 0, minute: 0, second: 0 }, NY_TZ).toISOString();
+}
+
+function fmtISOShort(iso) {
+  if (!iso) return "";
+  return new Date(iso).toLocaleString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+// -------------------- Urgent countdown + SLA --------------------
 function minsUntilUrgent(updatedAtIso) {
   const updated = new Date(updatedAtIso).getTime();
   const deadline = updated + URGENT_AFTER_MINUTES * 60 * 1000;
@@ -167,77 +279,6 @@ function slaBadge(updatedAtIso) {
   if (m <= 0) return "🔴 Overdue";
   if (m <= 60) return "🟠 Due soon";
   return "🟢 On track";
-}
-
-// Timezone-safe NY parts
-function nyParts(date = new Date()) {
-  const fmt = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
-  const parts = fmt.formatToParts(date);
-  const get = (type) => parts.find((p) => p.type === type)?.value;
-  return {
-    year: get("year"),
-    month: get("month"),
-    day: get("day"),
-    hour: get("hour"),
-    minute: get("minute"),
-    second: get("second"),
-    dayKey: `${get("year")}-${get("month")}-${get("day")}`,
-    time: `${get("hour")}:${get("minute")}:${get("second")}`,
-  };
-}
-
-function startOfNYDayISO(date = new Date()) {
-  const p = nyParts(date);
-  const nyMidnightStr = `${p.month}/${p.day}/${p.year} 00:00:00`;
-  const nyMidnight = new Date(nyMidnightStr + " GMT-0500");
-  return nyMidnight.toISOString();
-}
-function startOfNYWeekISO(date = new Date()) {
-  const d = new Date(date);
-  const ny = nyParts(d);
-  const approxNY = new Date(`${ny.month}/${ny.day}/${ny.year} 12:00:00 GMT-0500`);
-  const day = approxNY.getDay(); // 0=Sun
-  const diffToMon = (day + 6) % 7; // Mon=0
-  approxNY.setDate(approxNY.getDate() - diffToMon);
-  const p2 = nyParts(approxNY);
-  const weekStart = new Date(`${p2.month}/${p2.day}/${p2.year} 00:00:00 GMT-0500`);
-  return weekStart.toISOString();
-}
-function startOfNYMonthISO(date = new Date()) {
-  const p = nyParts(date);
-  const nyStartStr = `${p.month}/01/${p.year} 00:00:00`;
-  const nyStart = new Date(nyStartStr + " GMT-0500");
-  return nyStart.toISOString();
-}
-function startOfNYYearISO(date = new Date()) {
-  const p = nyParts(date);
-  const nyStartStr = `01/01/${p.year} 00:00:00`;
-  const nyStart = new Date(nyStartStr + " GMT-0500");
-  return nyStart.toISOString();
-}
-function startOfNYNextYearISO(date = new Date()) {
-  const p = nyParts(date);
-  const nextYear = String(Number(p.year) + 1);
-  const nyStartStr = `01/01/${nextYear} 00:00:00`;
-  const nyStart = new Date(nyStartStr + " GMT-0500");
-  return nyStart.toISOString();
-}
-function fmtISOShort(iso) {
-  if (!iso) return "";
-  return new Date(iso).toLocaleString();
-}
-function allTimeSinceISO() {
-  // stable “all-time” lower bound for dashboard accumulators
-  return "1970-01-01T00:00:00.000Z";
 }
 
 // -------------------- SUPABASE QUERIES (CONVERSATIONS) --------------------
@@ -384,7 +425,6 @@ async function sbCountMessages(conversation_id) {
 }
 
 // -------------------- ✅ SUPABASE QUERIES (SUBMISSIONS) --------------------
-// Hard-enforced: ops.submissions is the ONLY source for “Submissions” UI.
 function safeJsonParse(str) {
   try {
     return JSON.parse(str);
@@ -480,46 +520,6 @@ async function sbDeleteSubmission(submission_id) {
     .eq("submission_id", submission_id);
 
   if (error) throw new Error(error.message);
-}
-
-/**
- * v3.8: best-effort link from support conversation email -> most recent submission
- * No schema changes required.
- *
- * NOTE: This expects submission_payload is json/jsonb and contains "email".
- * If your DB stored payload as TEXT, normalizeSubmissionRow() parses it.
- */
-async function sbFindLatestSubmissionByEmail(emailRaw) {
-  const email = safeEmail(emailRaw);
-  if (!email) return null;
-
-  // Primary: JSONB contains { email: ... }
-  try {
-    const { data, error } = await supabase
-      .schema("ops")
-      .from("submissions")
-      .select("*")
-      .contains("submission_payload", { email })
-      .order("created_at", { ascending: false })
-      .limit(1);
-
-    if (!error && data && data.length) return normalizeSubmissionRow(data[0]);
-  } catch (_) {}
-
-  // Fallback: if payload is stringified or mixed, try ilike on raw column (best-effort)
-  try {
-    const { data, error } = await supabase
-      .schema("ops")
-      .from("submissions")
-      .select("*")
-      .ilike("submission_payload", `%${email}%`)
-      .order("created_at", { ascending: false })
-      .limit(1);
-
-    if (!error && data && data.length) return normalizeSubmissionRow(data[0]);
-  } catch (_) {}
-
-  return null;
 }
 
 // -------------------- COACH KPI + POOLS --------------------
@@ -670,6 +670,12 @@ function timeWindowSinceISO(which) {
   return startOfNYYearISO(new Date());
 }
 
+function scopeFromFilter(filterSource) {
+  if (filterSource === "programs") return "programs";
+  if (filterSource === "support") return "support";
+  return "company";
+}
+
 async function sbCountMetric(kind, { scope = "company", sinceIso, untilIso } = {}) {
   let q = supabase
     .schema("ops")
@@ -688,13 +694,29 @@ async function sbCountMetric(kind, { scope = "company", sinceIso, untilIso } = {
   return count || 0;
 }
 
+async function sbCountMetricKinds(kinds, { scope = "company", sinceIso, untilIso } = {}) {
+  if (!kinds || !kinds.length) return 0;
+
+  let q = supabase
+    .schema("ops")
+    .from("metric_events")
+    .select("id", { count: "exact", head: true })
+    .in("kind", kinds)
+    .gte("created_at", sinceIso);
+
+  if (untilIso) q = q.lt("created_at", untilIso);
+
+  if (scope === "programs") q = q.not("coach_id", "is", null);
+  if (scope === "support") q = q.is("coach_id", null);
+
+  const { count, error } = await q;
+  if (error) return 0;
+  return count || 0;
+}
+
 async function sbMetricsSummary({ scope = "company", sinceIso, untilIso } = {}) {
   const programLinkOpens = await sbCountMetric("program_link_open", { scope, sinceIso, untilIso });
-  const coverageExploration = await sbCountMetric("coverage_exploration", {
-    scope,
-    sinceIso,
-    untilIso,
-  });
+  const coverageExploration = await sbCountMetric("coverage_exploration", { scope, sinceIso, untilIso });
 
   const parentGuideClicks = await sbCountMetric("parent_guide_click", { scope, sinceIso, untilIso });
   const guideClicks = await sbCountMetric("guide_click", { scope, sinceIso, untilIso });
@@ -723,95 +745,75 @@ async function sbMetricsSummary({ scope = "company", sinceIso, untilIso } = {}) 
   };
 }
 
-function scopeFromFilter(filterSource) {
-  if (filterSource === "programs") return "programs";
-  if (filterSource === "support") return "support";
-  return "company";
-}
+const CLICK_KINDS = [
+  "parent_guide_click",
+  "guide_click",
+  "website_click",
+  "tax_education_click",
+  "risk_awareness_click",
+  "sh_click",
+  "eapp_click",
+  "enroll_click",
+];
 
-function monthNameFromIndex(i) {
-  const names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  return names[i] || `M${i + 1}`;
-}
-
-function nyYearWindow(date = new Date()) {
-  const start = startOfNYYearISO(date);
-  const end = startOfNYNextYearISO(date);
-  const ny = nyParts(date);
-  return { start, end, year: ny.year };
-}
-
-function nyMonthWindow(yearStr, monthIndex0) {
-  const year = String(yearStr);
-  const mm = String(monthIndex0 + 1).padStart(2, "0");
-  const startStr = `${mm}/01/${year} 00:00:00`;
-  const start = new Date(startStr + " GMT-0500").toISOString();
-
-  let nextMonthIndex = monthIndex0 + 1;
-  let nextYear = Number(year);
-  if (nextMonthIndex >= 12) {
-    nextMonthIndex = 0;
-    nextYear += 1;
+function monthStartEndNY(yearNum, monthNum /* 1-12 */) {
+  const y = String(yearNum);
+  const m = String(monthNum).padStart(2, "0");
+  const start = makeDateInTZ({ year: y, month: m, day: "01", hour: 0, minute: 0, second: 0 }, NY_TZ);
+  // next month
+  let ny = yearNum;
+  let nm = monthNum + 1;
+  if (nm === 13) {
+    nm = 1;
+    ny += 1;
   }
-  const mm2 = String(nextMonthIndex + 1).padStart(2, "0");
-  const endStr = `${mm2}/01/${String(nextYear)} 00:00:00`;
-  const end = new Date(endStr + " GMT-0500").toISOString();
-
-  return { start, end };
+  const next = makeDateInTZ(
+    { year: String(ny), month: String(nm).padStart(2, "0"), day: "01", hour: 0, minute: 0, second: 0 },
+    NY_TZ
+  );
+  return { startIso: start.toISOString(), endIso: next.toISOString() };
 }
 
-async function sbYearSummary(scope, yearStr) {
-  const kinds = [
-    "program_link_open",
-    "coverage_exploration",
-    "parent_guide_click",
-    "guide_click",
-    "website_click",
-    "tax_education_click",
-    "risk_awareness_click",
-    "sh_click",
-    "website_submission",
-    "eapp_click",
-    "enroll_click",
-  ];
+async function sbYearSummary({ filterSource = "all" } = {}) {
+  const scope = scopeFromFilter(filterSource);
+  const now = new Date();
+  const ny = nyParts(now);
+  const year = Number(ny.year);
 
-  const perMonth = [];
-  for (let i = 0; i < 12; i++) {
-    const w = nyMonthWindow(yearStr, i);
-    const counts = {};
-    for (const k of kinds) {
-      counts[k] = await sbCountMetric(k, { scope, sinceIso: w.start, untilIso: w.end });
-    }
-    const total = Object.values(counts).reduce((a, b) => a + Number(b || 0), 0);
-    perMonth.push({ monthIndex: i, ...counts, total });
+  const yearStartIso = makeDateInTZ({ year: ny.year, month: "01", day: "01", hour: 0, minute: 0, second: 0 }, NY_TZ).toISOString();
+  const nextYearStartIso = makeDateInTZ(
+    { year: String(year + 1), month: "01", day: "01", hour: 0, minute: 0, second: 0 },
+    NY_TZ
+  ).toISOString();
+
+  // Totals (simple + aligned)
+  const totalClicks = await sbCountMetricKinds(CLICK_KINDS, { scope, sinceIso: yearStartIso, untilIso: nextYearStartIso });
+  const totalProgramLinkOpens = await sbCountMetric("program_link_open", { scope, sinceIso: yearStartIso, untilIso: nextYearStartIso });
+  const totalSubmissions = await sbCountMetric("website_submission", { scope, sinceIso: yearStartIso, untilIso: nextYearStartIso });
+
+  // Month-by-month clicks + best month
+  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const months = [];
+  for (let m = 1; m <= 12; m++) {
+    const { startIso, endIso } = monthStartEndNY(year, m);
+    const clicks = await sbCountMetricKinds(CLICK_KINDS, { scope, sinceIso: startIso, untilIso: endIso });
+    months.push({ m, name: monthNames[m - 1], clicks });
   }
 
-  const totalYear = perMonth.reduce((a, m) => a + Number(m.total || 0), 0);
-  const avgPerMonth = Math.round((totalYear / 12) * 10) / 10;
+  const best = months.reduce((a, b) => (b.clicks > a.clicks ? b : a), months[0] || { name: "—", clicks: 0 });
+  const avg = months.length ? Math.round((months.reduce((s, x) => s + x.clicks, 0) / 12) * 10) / 10 : 0;
 
-  // Best month priority: enroll_click -> website_submission -> total
-  let best = perMonth[0] || null;
-  for (const m of perMonth) {
-    const bestEnroll = Number(best?.enroll_click || 0);
-    const mEnroll = Number(m.enroll_click || 0);
-    if (mEnroll > bestEnroll) {
-      best = m;
-      continue;
-    }
-    if (mEnroll === bestEnroll) {
-      const bestSub = Number(best?.website_submission || 0);
-      const mSub = Number(m.website_submission || 0);
-      if (mSub > bestSub) {
-        best = m;
-        continue;
-      }
-      if (mSub === bestSub) {
-        if (Number(m.total || 0) > Number(best?.total || 0)) best = m;
-      }
-    }
-  }
-
-  return { perMonth, totalYear, avgPerMonth, bestMonthIndex: best?.monthIndex ?? 0 };
+  return {
+    year,
+    yearStartIso,
+    yearEndIso: nextYearStartIso,
+    totalClicks,
+    totalProgramLinkOpens,
+    totalSubmissions,
+    months,
+    bestMonth: best,
+    avgClicksPerMonth: avg,
+  };
 }
 
 // -------------------- SEARCH --------------------
@@ -913,13 +915,45 @@ async function notifyAdmins(text, extra = {}) {
   }
 }
 
-// v3.4+: lock-screen safe notification (no data shown)
+// lock-screen safe notification (no data shown)
 async function notifyShort(text = "📌 Complete Daily Operations") {
   await notifyAdmins(text, {
     keyboard: Markup.inlineKeyboard([
       [Markup.button.callback("📅 Today", "TODAY:open")],
     ]),
   });
+}
+
+// -------------------- UI NAV (v4.1): edit instead of reply --------------------
+function canEditFromCtx(ctx) {
+  return Boolean(ctx?.callbackQuery?.message?.message_id && ctx?.chat?.id);
+}
+
+async function smartRender(ctx, text, keyboard) {
+  // Prefer edit in callback navigation. Fallback to reply.
+  if (ctx?.callbackQuery) {
+    try {
+      await ctx.answerCbQuery();
+    } catch (_) {}
+  }
+
+  if (canEditFromCtx(ctx)) {
+    try {
+      await bot.telegram.editMessageText(
+        ctx.chat.id,
+        ctx.callbackQuery.message.message_id,
+        undefined,
+        text,
+        keyboard
+      );
+      return { mode: "edit", message_id: ctx.callbackQuery.message.message_id };
+    } catch (_) {
+      // If edit fails (e.g., message too old), fall back to reply.
+    }
+  }
+
+  const msg = await ctx.reply(text, keyboard);
+  return { mode: "reply", message_id: msg?.message_id };
 }
 
 // -------------------- UI BUILDERS (SUMMARY CARDS) --------------------
@@ -977,16 +1011,6 @@ function formatSubmissionPayloadBlockFromPayload(payloadObj) {
   return lines.join("\n");
 }
 
-function formatSubmissionMini(sp) {
-  if (!sp || typeof sp !== "object") return "";
-  const lines = [];
-  lines.push("📄 Form Match");
-  lines.push(`Name: ${sp.name || "—"}`);
-  lines.push(`Email: ${sp.email || "—"}`);
-  lines.push(`Phone: ${sp.phone || "—"}`);
-  return lines.join("\n");
-}
-
 async function buildConversationText(conv) {
   const topHeader = headerLine(conv.pipeline, conv.source || "all");
 
@@ -1016,18 +1040,6 @@ async function buildConversationText(conv) {
     ? `🔒 Owned by ${conv.owned_by === "support" ? "🧑‍🧒 Support" : "🏈 Outreach"}`
     : "";
 
-  // v3.8: best-effort link to latest submission by email (support-quality convenience)
-  let submissionLine = "";
-  let submissionMini = "";
-  const email = safeEmail(conv.contact_email);
-  if (email) {
-    const sub = await sbFindLatestSubmissionByEmail(email);
-    if (sub?.submission_id) {
-      submissionLine = `🧾 Submission: ${sub.submission_id}`;
-      submissionMini = formatSubmissionMini(sub.submission_payload);
-    }
-  }
-
   const summary = await buildConversationSummary(conv);
   const summaryBlock = [
     `💬 Messages: ${summary.msgCount}`,
@@ -1046,7 +1058,7 @@ ${countdown}
 
 ${summaryBlock}
 
-${submissionLine ? submissionLine + "\n" : ""}${submissionMini ? submissionMini + "\n\n" : ""}${[linkedLine, gmailLine].filter(Boolean).join("\n")}
+${[linkedLine, gmailLine].filter(Boolean).join("\n")}
 
 ${tsBlock}`.trim();
 }
@@ -1075,6 +1087,7 @@ function buildConversationKeyboard(conv) {
       Markup.button.callback(sendLabel, sendCb),
     ],
     [Markup.button.callback("🧹 Dismiss", `DELETECONFIRM:conv:${conv.id}`)],
+    // v4.1: Back always returns to dashboard (edited) which resets to 🌐 All
     [Markup.button.callback("⬅️ Back", "DASH:back")],
   ]);
 }
@@ -1108,7 +1121,7 @@ function buildSubmissionKeyboard(submission_id) {
   ]);
 }
 
-// -------------------- SUMMARY LIST VIEWS (NO BULKY CARDS) --------------------
+// -------------------- SUMMARY LIST VIEWS --------------------
 function oneLineSummary(conv, idx) {
   const who = conv.coach_name ? ` — ${conv.coach_name}` : "";
   const subj = shorten(conv.subject || "Thread", 52);
@@ -1131,7 +1144,8 @@ async function showQueueSummaryList(ctx, key, rows, filterSource) {
   const header = headerLine(key, filterSource);
 
   if (!rows.length) {
-    await ctx.reply(
+    await smartRender(
+      ctx,
       `${header}\n\n(None right now)`,
       Markup.inlineKeyboard([[Markup.button.callback("⬅️ Back", "DASH:back")]])
     );
@@ -1162,13 +1176,13 @@ async function showQueueSummaryList(ctx, key, rows, filterSource) {
     [Markup.button.callback("⬅️ Back", "DASH:back")],
   ]);
 
-  await ctx.reply(`${header}\n\n${lines}`, kb);
+  await smartRender(ctx, `${header}\n\n${lines}`, kb);
 }
 
 // -------------------- THREAD VIEW (FULL TEXT, PAGINATED) --------------------
 function formatMessageLineFull(m) {
   const who = m.direction === "inbound" ? "⬅️ Inbound" : "➡️ Outbound";
-  const t = m.created_at ? new Date(m.created_at).toLocaleString() : "";
+  const t = m.created_at ? fmtISOShort(m.created_at) : "";
   const body = String(m.body || m.preview || "").trim();
   const safeBody = body.length ? body : "(empty)";
   return `${who} · ${t}\n${safeBody}`;
@@ -1222,7 +1236,6 @@ async function dashboardCounts(filterSource = "all") {
   const followCount = await sbCountConversations({ pipeline: "followups", source: filterSource });
   const forwardedCount = await sbCountConversations({ pipeline: "forwarded", source: filterSource });
 
-  // ✅ Submissions MUST come from ops.submissions
   const submissionsCount =
     filterSource === "programs" ? 0 : await sbCountSubmissions();
 
@@ -1231,11 +1244,10 @@ async function dashboardCounts(filterSource = "all") {
       ? 0
       : await sbCountConversations({ pipeline: "completed", source: "support" });
 
-  // v3.8: Dashboard metrics ALWAYS all-time (keeps counting up)
   const scope = scopeFromFilter(filterSource);
   const metricsTop = await sbMetricsSummary({
     scope,
-    sinceIso: allTimeSinceISO(),
+    sinceIso: startOfNYYearISO(new Date()),
   });
 
   return {
@@ -1264,17 +1276,17 @@ async function dashboardText(filterSource = "all") {
 
   const scopeTitle =
     filterSource === "support"
-      ? "📊 Metrics (Support · All-Time)"
+      ? "📊 Metrics (Support)"
       : filterSource === "programs"
-      ? "📊 Metrics (Programs · All-Time)"
-      : "📊 Metrics (Company · All-Time)";
+      ? "📊 Metrics (Programs)"
+      : "📊 Metrics (Company)";
 
   const m = counts.metricsTop;
 
   return `🪧 NIL Wealth Ops Dashboard
 ${CODE_VERSION} · Build: ${String(BUILD_VERSION).slice(0, 8)}
 
-📅 Today: ${new Date().toLocaleString()}
+📅 Today: ${new Date().toLocaleDateString("en-US")}
 ⏰ NY Time: ${ny.dayKey} ${ny.time}
 Filter: ${filterLabel}
 
@@ -1292,12 +1304,10 @@ ${scopeTitle}
 Engagement: ${m.programLinkOpens} opens
 Exploration: ${m.coverageExploration}
 
-(Tap 📊 Metrics for time windows + 🎉 Year Summary)
-
 Use buttons below.`;
 }
 
-function dashboardKeyboard(_filterSource = "all") {
+function dashboardKeyboard() {
   const srcBtn = Markup.button.callback("🌐 All", "FILTER:all");
   const progBtn = Markup.button.callback("🏈 Programs", "FILTER:programs");
   const supBtn = Markup.button.callback("🧑‍🧒 Support", "FILTER:support");
@@ -1353,7 +1363,7 @@ async function todayText(filterSource = "all") {
 
   return (
     `📅 Today Ops · ${filterSource}\n` +
-    `NY ${ny.dayKey}\n` +
+    `NY ${ny.dayKey} ${ny.time}\n` +
     `Filter: ${filterLabel}\n\n` +
     `‼️ Urgent: ${c.urgent}\n` +
     `📝 Needs Reply: ${c.needs}\n` +
@@ -1388,7 +1398,7 @@ function todayKeyboard() {
   ]);
 }
 
-// -------------------- METRICS UI (clean headers + 🎉 year summary) --------------------
+// -------------------- METRICS UI --------------------
 async function metricsText(filterSource = "all", which = "week") {
   const scope = scopeFromFilter(filterSource);
   const sinceIso = timeWindowSinceISO(which);
@@ -1402,8 +1412,8 @@ async function metricsText(filterSource = "all", which = "week") {
 
   const m = await sbMetricsSummary({ scope, sinceIso });
 
+  // v4.1: remove double-title header
   const lines = [];
-  // v3.8: single header (no duplicate titles)
   lines.push(title);
   lines.push(`📅 Window: ${which.toUpperCase()}`);
   lines.push("");
@@ -1441,41 +1451,38 @@ async function metricsText(filterSource = "all", which = "week") {
   return lines.join("\n");
 }
 
-async function metricsYearSummaryText(filterSource = "all") {
-  const scope = scopeFromFilter(filterSource);
-  const win = nyYearWindow(new Date());
-  const sum = await sbYearSummary(scope, win.year);
-
-  const lines = [];
+async function yearSummaryText(filterSource = "all") {
+  const s = await sbYearSummary({ filterSource });
   const title =
-    scope === "programs"
+    scopeFromFilter(filterSource) === "programs"
       ? "🎉 Year Summary (🏈 Programs)"
-      : scope === "support"
+      : scopeFromFilter(filterSource) === "support"
       ? "🎉 Year Summary (🧑‍🧒 Support)"
       : "🎉 Year Summary (🌐 Company)";
 
-  lines.push(title);
-  lines.push(`Year: ${win.year}`);
-  lines.push(`Window: ${fmtISOShort(win.start)} → ${fmtISOShort(win.end)}`);
-  lines.push("");
+  // Clean, simple, aligned block
+  const startLabel = new Date(s.yearStartIso).toLocaleDateString("en-US");
+  const endLabel = new Date(s.yearEndIso).toLocaleDateString("en-US");
 
-  lines.push(`Total Events (All Kinds): ${sum.totalYear}`);
-  lines.push(`Avg / Month: ${sum.avgPerMonth}`);
-  lines.push(`Best Month: ${monthNameFromIndex(sum.bestMonthIndex)}`);
-  lines.push("");
+  const pad = (label, val) => `${label.padEnd(22, " ")}${String(val).padStart(6, " ")}`;
 
-  // Clean monthly grid (primary KPIs)
-  lines.push("Month · Enroll · eApp · Submissions · Clicks");
-  for (const m of sum.perMonth) {
-    const mon = monthNameFromIndex(m.monthIndex);
-    const enroll = Number(m.enroll_click || 0);
-    const eapp = Number(m.eapp_click || 0);
-    const subs = Number(m.website_submission || 0);
-    const clicks = Number(m.program_link_open || 0);
-    lines.push(`${mon} · ${enroll} · ${eapp} · ${subs} · ${clicks}`);
-  }
+  const monthLine = s.months
+    .map((m) => `${m.name}:${String(m.clicks).padStart(3, " ")}`)
+    .join("  ");
 
-  return lines.join("\n");
+  return [
+    title,
+    `${s.year}  (${startLabel} → ${endLabel})`,
+    "",
+    pad("Total Clicks", s.totalClicks),
+    pad("Program Link Opens", s.totalProgramLinkOpens),
+    pad("Website Submissions", s.totalSubmissions),
+    "",
+    `Best Month: ${s.bestMonth.name} (${s.bestMonth.clicks})`,
+    `Avg / Month: ${s.avgClicksPerMonth}`,
+    "",
+    monthLine,
+  ].join("\n");
 }
 
 function metricsKeyboard() {
@@ -1485,14 +1492,13 @@ function metricsKeyboard() {
       Markup.button.callback("Month", "METRICS:month"),
       Markup.button.callback("Year", "METRICS:year"),
     ],
-    [Markup.button.callback("🎉 Year Summary", "METRICS:yearsum")],
+    [Markup.button.callback("🎉 Year Summary", "METRICS:yearsummary")],
     [Markup.button.callback("⬅️ Back", "DASH:back")],
   ]);
 }
 
 // -------------------- STATE --------------------
 const adminState = new Map(); // adminId -> { filterSource }
-
 function getAdminFilter(ctx) {
   const id = String(ctx.from?.id || "");
   const st = adminState.get(id) || { filterSource: "all" };
@@ -1502,36 +1508,46 @@ function setAdminFilter(ctx, val) {
   const id = String(ctx.from?.id || "");
   adminState.set(id, { filterSource: val });
 }
-function resetAdminFilterToAll(ctx) {
-  setAdminFilter(ctx, "all");
-}
-
-// v3.8: unified “go dashboard” that ALWAYS sets filter to all when returning/refreshing
-async function goDashboard(ctx, { resetFilter = true } = {}) {
-  if (resetFilter) resetAdminFilterToAll(ctx);
-  const filterSource = getAdminFilter(ctx);
-  await ctx.reply(await dashboardText(filterSource), dashboardKeyboard(filterSource));
-}
 
 // -------------------- LIVE CARD TRACKING --------------------
-const liveCards = new Map(); 
-// message_id -> { chat_id, type, ref_id }
+const liveCards = new Map();
+// message_id -> { chat_id, type, ref_id, added_at }
 
 function registerLiveCard(msg, type, ref_id) {
   if (!msg?.message_id) return;
   liveCards.set(msg.message_id, {
     chat_id: msg.chat.id,
-    type,   // "conversation" | "submission"
+    type, // "conversation" | "submission"
     ref_id,
+    added_at: nowMs(),
   });
 }
 
+function cleanupLiveCards() {
+  const ttlMs = LIVE_CARD_TTL_MINUTES * 60 * 1000;
+  const now = nowMs();
+  for (const [messageId, meta] of liveCards.entries()) {
+    if (!meta?.added_at) {
+      liveCards.delete(messageId);
+      continue;
+    }
+    if (now - meta.added_at > ttlMs) {
+      liveCards.delete(messageId);
+    }
+  }
+}
+
 async function refreshLiveCards() {
+  cleanupLiveCards();
+
   for (const [messageId, meta] of liveCards.entries()) {
     try {
       if (meta.type === "conversation") {
         const conv = await sbGetConversation(meta.ref_id);
-        if (!conv) continue;
+        if (!conv) {
+          liveCards.delete(messageId);
+          continue;
+        }
 
         await bot.telegram.editMessageText(
           meta.chat_id,
@@ -1544,7 +1560,10 @@ async function refreshLiveCards() {
 
       if (meta.type === "submission") {
         const sub = await sbGetSubmission(meta.ref_id);
-        if (!sub) continue;
+        if (!sub) {
+          liveCards.delete(messageId);
+          continue;
+        }
 
         await bot.telegram.editMessageText(
           meta.chat_id,
@@ -1554,7 +1573,10 @@ async function refreshLiveCards() {
           buildSubmissionKeyboard(sub.submission_id)
         );
       }
-    } catch (_) {}
+    } catch (_) {
+      // v4.1: if message can’t be edited anymore, stop tracking it
+      liveCards.delete(messageId);
+    }
   }
 }
 
@@ -1567,8 +1589,9 @@ bot.start(async (ctx) => {
 
 bot.command("dashboard", async (ctx) => {
   if (!isAdmin(ctx)) return;
-  // v3.8: /dashboard always opens with 🌐 All
-  await goDashboard(ctx, { resetFilter: true });
+  // /dashboard respects current filter state (you only asked back/refresh to force all)
+  const filterSource = getAdminFilter(ctx);
+  await ctx.reply(await dashboardText(filterSource), dashboardKeyboard());
 });
 
 bot.command("search", async (ctx) => {
@@ -1602,34 +1625,31 @@ bot.command("search", async (ctx) => {
   await showQueueSummaryList(ctx, "search", rows.slice(0, 8), filterSource);
 });
 
-// Back/refresh
+// Back/refresh (v4.1: FORCE ALL)
 bot.action("DASH:back", async (ctx) => {
   if (!isAdmin(ctx)) return;
-  await ctx.answerCbQuery();
-  // v3.8: ALWAYS return to dashboard with 🌐 All
-  await goDashboard(ctx, { resetFilter: true });
+  setAdminFilter(ctx, "all");
+  await smartRender(ctx, await dashboardText("all"), dashboardKeyboard());
 });
 bot.action("DASH:refresh", async (ctx) => {
   if (!isAdmin(ctx)) return;
-  await ctx.answerCbQuery();
-  // v3.8: ALWAYS refresh dashboard with 🌐 All
-  await goDashboard(ctx, { resetFilter: true });
+  setAdminFilter(ctx, "all");
+  await smartRender(ctx, await dashboardText("all"), dashboardKeyboard());
 });
 
-// Filter
+// Filter (still works inside dashboard)
 bot.action(/^FILTER:(all|programs|support)$/, async (ctx) => {
   if (!isAdmin(ctx)) return;
-  await ctx.answerCbQuery();
   const v = ctx.match[1];
   setAdminFilter(ctx, v);
-  await ctx.reply(await dashboardText(v), dashboardKeyboard(v));
+  await smartRender(ctx, await dashboardText(v), dashboardKeyboard());
 });
 
 // Search help
 bot.action("SEARCH:help", async (ctx) => {
   if (!isAdmin(ctx)) return;
-  await ctx.answerCbQuery();
-  await ctx.reply(
+  await smartRender(
+    ctx,
     `🔎 Search usage:\n/search your text\n/search coach:ABC source:support pipeline:needs_reply\n/search overdue:true\n/search due:today`,
     Markup.inlineKeyboard([[Markup.button.callback("⬅️ Back", "DASH:back")]])
   );
@@ -1638,30 +1658,26 @@ bot.action("SEARCH:help", async (ctx) => {
 // TODAY 📅
 bot.action("TODAY:open", async (ctx) => {
   if (!isAdmin(ctx)) return;
-  await ctx.answerCbQuery();
   const filterSource = getAdminFilter(ctx);
-  await ctx.reply(await todayText(filterSource), todayKeyboard());
+  await smartRender(ctx, await todayText(filterSource), todayKeyboard());
 });
 
-// Metrics open + window switches (default -> WEEK)
+// Metrics open + window switches
 bot.action("METRICS:open", async (ctx) => {
   if (!isAdmin(ctx)) return;
-  await ctx.answerCbQuery();
   const filterSource = getAdminFilter(ctx);
-  await ctx.reply(await metricsText(filterSource, "week"), metricsKeyboard());
+  await smartRender(ctx, await metricsText(filterSource, "week"), metricsKeyboard());
 });
 bot.action(/^METRICS:(week|month|year)$/, async (ctx) => {
   if (!isAdmin(ctx)) return;
-  await ctx.answerCbQuery();
   const which = ctx.match[1];
   const filterSource = getAdminFilter(ctx);
-  await ctx.reply(await metricsText(filterSource, which), metricsKeyboard());
+  await smartRender(ctx, await metricsText(filterSource, which), metricsKeyboard());
 });
-bot.action("METRICS:yearsum", async (ctx) => {
+bot.action("METRICS:yearsummary", async (ctx) => {
   if (!isAdmin(ctx)) return;
-  await ctx.answerCbQuery();
   const filterSource = getAdminFilter(ctx);
-  await ctx.reply(await metricsYearSummaryText(filterSource), metricsKeyboard());
+  await smartRender(ctx, await yearSummaryText(filterSource), metricsKeyboard());
 });
 
 // -------------------- VIEWS --------------------
@@ -1669,7 +1685,6 @@ bot.action(
   /^VIEW:(urgent|needs_reply|actions_waiting|active|followups|forwarded|website_submissions)$/,
   async (ctx) => {
     if (!isAdmin(ctx)) return;
-    await ctx.answerCbQuery();
 
     const key = ctx.match[1];
     const filterSource = getAdminFilter(ctx);
@@ -1693,7 +1708,7 @@ bot.action(
 // Thread view actions
 bot.action(/^THREAD:(.+):(\d+)$/, async (ctx) => {
   if (!isAdmin(ctx)) return;
-  await ctx.answerCbQuery();
+  try { await ctx.answerCbQuery(); } catch (_) {}
   const convId = ctx.match[1];
   const offset = Number(ctx.match[2] || 0);
   await showThread(ctx, convId, offset);
@@ -1702,7 +1717,7 @@ bot.action(/^THREAD:(.+):(\d+)$/, async (ctx) => {
 // Open card: try conversation first, else treat as submission_id in ops.submissions
 bot.action(/^OPENCARD:(.+)$/, async (ctx) => {
   if (!isAdmin(ctx)) return;
-  await ctx.answerCbQuery();
+  try { await ctx.answerCbQuery(); } catch (_) {}
   const id = ctx.match[1];
 
   const conv = await sbGetConversation(id);
@@ -1721,7 +1736,7 @@ bot.action(/^OPENCARD:(.+)$/, async (ctx) => {
 // -------------------- MIRROR OPEN --------------------
 bot.action(/^OPENMIRROR:(.+)$/, async (ctx) => {
   if (!isAdmin(ctx)) return;
-  await ctx.answerCbQuery();
+  try { await ctx.answerCbQuery(); } catch (_) {}
   const convId = ctx.match[1];
   const conv = await sbGetConversation(convId);
   if (!conv || !conv.mirror_conversation_id) return ctx.reply("No mirror linked.");
@@ -1766,7 +1781,7 @@ async function createSupportMirrorConversation(programConv) {
 
 bot.action(/^CC:(.+)$/, async (ctx) => {
   if (!isAdmin(ctx)) return;
-  await ctx.answerCbQuery();
+  try { await ctx.answerCbQuery(); } catch (_) {}
 
   const convId = ctx.match[1];
   const conv = await sbGetConversation(convId);
@@ -1788,7 +1803,7 @@ bot.action(/^CC:(.+)$/, async (ctx) => {
 // -------------------- DELETE CONFIRMATION --------------------
 bot.action(/^DELETECONFIRM:(conv|sub):(.+)$/, async (ctx) => {
   if (!isAdmin(ctx)) return;
-  await ctx.answerCbQuery();
+  try { await ctx.answerCbQuery(); } catch (_) {}
 
   const kind = ctx.match[1];
   const id = ctx.match[2];
@@ -1804,7 +1819,7 @@ bot.action(/^DELETECONFIRM:(conv|sub):(.+)$/, async (ctx) => {
 
 bot.action(/^DELETE:(conv|sub):(.+)$/, async (ctx) => {
   if (!isAdmin(ctx)) return;
-  await ctx.answerCbQuery();
+  try { await ctx.answerCbQuery(); } catch (_) {}
 
   const kind = ctx.match[1];
   const id = ctx.match[2];
@@ -1845,7 +1860,7 @@ bot.action(/^DELETE:(conv|sub):(.+)$/, async (ctx) => {
   );
 });
 
-// -------------------- SEND FLOW --------------------
+// -------------------- SEND FLOW (UNCHANGED) --------------------
 async function resolveFromEmail(conv, sendAs) {
   const src = sourceSafe(conv.source);
   if (src === "support") return SUPPORT_FROM_EMAIL;
@@ -1854,14 +1869,6 @@ async function resolveFromEmail(conv, sendAs) {
 }
 
 async function sendOut(conv, { ccSupport, sendAs }) {
-  // v3.8: attach submission_id to outbound payload if it matches conversation email
-  let submission_id = null;
-  const email = safeEmail(conv.contact_email);
-  if (email && (sendAs === "support" || sourceSafe(conv.source) === "support")) {
-    const sub = await sbFindLatestSubmissionByEmail(email);
-    submission_id = sub?.submission_id || null;
-  }
-
   const payload = {
     code_version: CODE_VERSION,
     build: String(BUILD_VERSION),
@@ -1884,9 +1891,6 @@ async function sendOut(conv, { ccSupport, sendAs }) {
     from_email: await resolveFromEmail(conv, sendAs),
 
     mirror_conversation_id: conv.mirror_conversation_id || null,
-
-    // new (best-effort)
-    submission_id,
   };
 
   if (!MAKE_SEND_WEBHOOK_URL) {
@@ -1906,7 +1910,7 @@ async function sendOut(conv, { ccSupport, sendAs }) {
 // Send button pressed: programs asks identity; support goes straight to confirm
 bot.action(/^SEND:(.+):([01])$/, async (ctx) => {
   if (!isAdmin(ctx)) return;
-  await ctx.answerCbQuery();
+  try { await ctx.answerCbQuery(); } catch (_) {}
 
   const convId = ctx.match[1];
   const cc = ctx.match[2] === "1";
@@ -1956,7 +1960,7 @@ bot.action(/^SEND:(.+):([01])$/, async (ctx) => {
 
 bot.action(/^CONFIRMSEND:(.+):([01]):(support|outreach)$/, async (ctx) => {
   if (!isAdmin(ctx)) return;
-  await ctx.answerCbQuery();
+  try { await ctx.answerCbQuery(); } catch (_) {}
 
   const convId = ctx.match[1];
   const cc = ctx.match[2] === "1";
@@ -1973,7 +1977,7 @@ bot.action(/^CONFIRMSEND:(.+):([01]):(support|outreach)$/, async (ctx) => {
 
 bot.action(/^DOSEND:(.+):([01]):(support|outreach)$/, async (ctx) => {
   if (!isAdmin(ctx)) return;
-  await ctx.answerCbQuery();
+  try { await ctx.answerCbQuery(); } catch (_) {}
 
   const convId = ctx.match[1];
   const cc = ctx.match[2] === "1";
@@ -2143,9 +2147,20 @@ async function dailyDigestLoopNY() {
   const ny = nyParts(new Date());
 
   if (ny.dayKey === lastDigestDayKeyNY) return;
-  if (Number(ny.hour) === 8 && Number(ny.minute) === 30) {
-    lastDigestDayKeyNY = ny.dayKey;
 
+  // 8:30 AM in NY (by formatted time parsing is messy; use NY parts by hour/minute in that TZ)
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: NY_TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(new Date());
+  const hh = Number(parts.find((p) => p.type === "hour")?.value || "0");
+  const mm = Number(parts.find((p) => p.type === "minute")?.value || "0");
+
+  if (hh === 8 && mm === 30) {
+    lastDigestDayKeyNY = ny.dayKey;
     try {
       await notifyShort("📌 Complete Daily Operations");
     } catch (_) {}
@@ -2168,7 +2183,8 @@ function fmtCoachLine(c, followupCount = null) {
 async function showCallsHub(ctx) {
   const coaches = await sbListCoaches({ limit: 10 });
   if (!coaches.length) {
-    await ctx.reply(
+    await smartRender(
+      ctx,
       `📲 Calls (Coach Pools)\n\n(No coaches in ops.coaches yet)\n\nWhen clicks/forwards/people come in, they will appear here.`,
       Markup.inlineKeyboard([[Markup.button.callback("⬅️ Back", "DASH:back")]])
     );
@@ -2184,13 +2200,14 @@ async function showCallsHub(ctx) {
     [Markup.button.callback("⬅️ Back", "DASH:back")],
   ]);
 
-  await ctx.reply(`📲 Calls (Coach Pools)\n${lines}`, kb);
+  await smartRender(ctx, `📲 Calls (Coach Pools)\n\n${lines}`, kb);
 }
 
 async function showCoachOverview(ctx, coach_id) {
   const coach = await sbGetCoach(coach_id);
   if (!coach) {
-    await ctx.reply(
+    await smartRender(
+      ctx,
       "Coach not found.",
       Markup.inlineKeyboard([[Markup.button.callback("⬅️ Back", "CALLS:hub")]])
     );
@@ -2234,7 +2251,7 @@ async function showCoachOverview(ctx, coach_id) {
     [Markup.button.callback("⬅️ Back", "CALLS:hub")],
   ]);
 
-  await ctx.reply(text, kb);
+  await smartRender(ctx, text, kb);
 }
 
 async function showPeoplePool(ctx, coach_id) {
@@ -2244,7 +2261,8 @@ async function showPeoplePool(ctx, coach_id) {
   const title = `👥 People Pool\nCoach: ${coach?.coach_name || coach_id}\nShowing ${people.length}`;
 
   if (!people.length) {
-    await ctx.reply(
+    await smartRender(
+      ctx,
       `${title}\n\n(No people yet for this coach)\n\nPeople appear here from /webhook/person or when you choose to attach them in automation.`,
       Markup.inlineKeyboard([[Markup.button.callback("⬅️ Back", `COACH:${coach_id}`)]])
     );
@@ -2267,13 +2285,14 @@ async function showPeoplePool(ctx, coach_id) {
     [Markup.button.callback("⬅️ Back", `COACH:${coach_id}`)],
   ]);
 
-  await ctx.reply(`${title}\n\n${lines}`, kb);
+  await smartRender(ctx, `${title}\n\n${lines}`, kb);
 }
 
 async function showPersonOverview(ctx, person_id) {
   const p = await sbGetPerson(person_id);
   if (!p) {
-    await ctx.reply(
+    await smartRender(
+      ctx,
       "Person not found.",
       Markup.inlineKeyboard([[Markup.button.callback("⬅️ Back", "CALLS:hub")]])
     );
@@ -2292,7 +2311,8 @@ async function showPersonOverview(ctx, person_id) {
     `⏱️ Updated: ${p.updated_at ? fmtISOShort(p.updated_at) : "—"}\n` +
     `⏱️ Last Activity: ${p.last_activity_at ? fmtISOShort(p.last_activity_at) : "—"}`;
 
-  await ctx.reply(
+  await smartRender(
+    ctx,
     text,
     Markup.inlineKeyboard([
       [Markup.button.callback("⬅️ Back to People", `PEOPLE:${p.coach_id}`)],
@@ -2304,34 +2324,29 @@ async function showPersonOverview(ctx, person_id) {
 
 bot.action("CALLS:hub", async (ctx) => {
   if (!isAdmin(ctx)) return;
-  await ctx.answerCbQuery();
   await showCallsHub(ctx);
 });
 
 bot.action(/^COACH:(.+)$/, async (ctx) => {
   if (!isAdmin(ctx)) return;
-  await ctx.answerCbQuery();
   const coachId = ctx.match[1];
   await showCoachOverview(ctx, coachId);
 });
 
 bot.action(/^PEOPLE:(.+)$/, async (ctx) => {
   if (!isAdmin(ctx)) return;
-  await ctx.answerCbQuery();
   const coachId = ctx.match[1];
   await showPeoplePool(ctx, coachId);
 });
 
 bot.action(/^PERSON:(.+)$/, async (ctx) => {
   if (!isAdmin(ctx)) return;
-  await ctx.answerCbQuery();
   const personId = ctx.match[1];
   await showPersonOverview(ctx, personId);
 });
 
 bot.action(/^COACHVIEW:(.+):(followups|forwarded|needs_reply)$/, async (ctx) => {
   if (!isAdmin(ctx)) return;
-  await ctx.answerCbQuery();
   const coachId = ctx.match[1];
   const pipe = ctx.match[2];
 
@@ -2356,7 +2371,8 @@ async function showFollowupsGroupedByCoach(ctx, filterSource) {
 
   const rows = error ? [] : data || [];
   if (!rows.length) {
-    await ctx.reply(
+    await smartRender(
+      ctx,
       `📚 Follow-Ups (Grouped)\n\n(None right now)`,
       Markup.inlineKeyboard([[Markup.button.callback("⬅️ Back", "DASH:back")]])
     );
@@ -2398,7 +2414,7 @@ async function showFollowupsGroupedByCoach(ctx, filterSource) {
     [Markup.button.callback("⬅️ Back", "DASH:back")],
   ]);
 
-  await ctx.reply(`📚 Follow-Ups (Grouped by Coach)\n\n${lines}`, kb);
+  await smartRender(ctx, `📚 Follow-Ups (Grouped by Coach)\n\n${lines}`, kb);
 }
 
 // -------------------- WEBHOOK SERVER --------------------
@@ -2460,7 +2476,7 @@ app.post("/webhook/item", async (req, res) => {
 
     const effectivePipeline = pipeline || (dir === "inbound" ? "needs_reply" : "active");
 
-    // ✅ If this is a website submission, write to ops.submissions (source of truth)
+    // ✅ Website submission -> ops.submissions (source of truth)
     if (effectivePipeline === "website_submissions") {
       const submissionId = uuidv4();
 
@@ -2492,7 +2508,7 @@ app.post("/webhook/item", async (req, res) => {
         return res.status(500).json({ ok: false, error: insErr.message });
       }
 
-      // Optional audit conversation (does NOT affect Submissions UI)
+      // Optional audit conversation (does NOT affect submissions UI)
       try {
         const convId = await sbUpsertConversationByThreadKey(`submission:${submissionId}`, {
           source: "support",
@@ -2500,7 +2516,6 @@ app.post("/webhook/item", async (req, res) => {
           subject: `🧾 Website Submission · ${payloadObj?.name || payloadObj?.email || "New"}`,
           preview: preview || shorten(body || JSON.stringify(payloadObj || {}), 220),
           created_at: isoNow(),
-          contact_email: safeEmail(payloadObj?.email) || null,
         });
 
         const msgBody = body || (payloadObj ? JSON.stringify(payloadObj, null, 2) : "");
@@ -2514,20 +2529,18 @@ app.post("/webhook/item", async (req, res) => {
         });
       } catch (_) {}
 
-      notifyAdmins(
-        `🧾 Website Submission`,
-        {
-          keyboard: Markup.inlineKeyboard([
-            [Markup.button.callback("Open 🧾 Submissions", "VIEW:website_submissions")],
-            [Markup.button.callback("📅 Today", "TODAY:open")],
-          ]),
-        }
-      ).catch(() => {});
+      // Notify submissions (short / safe)
+      notifyAdmins(`🧾 Website Submission`, {
+        keyboard: Markup.inlineKeyboard([
+          [Markup.button.callback("Open 🧾 Submissions", "VIEW:website_submissions")],
+          [Markup.button.callback("📅 Today", "TODAY:open")],
+        ]),
+      }).catch(() => {});
 
       return res.json({ ok: true, submission_id: submissionId });
     }
 
-    // -------------------- Normal conversation path --------------------
+    // Normal conversation path
     const convId = await sbUpsertConversationByThreadKey(tk, {
       source: src,
       pipeline: effectivePipeline,
