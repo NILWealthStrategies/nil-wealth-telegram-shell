@@ -1,16 +1,12 @@
 /**
- * NIL Wealth Telegram Ops Shell — SUPABASE OPS (Index.js v3.2)
+ * NIL Wealth Telegram Ops Shell — SUPABASE OPS (Index.js v3.4)
  *
- * v3.2 updates (ONLY what’s necessary):
- * - ✅ Enforced: “Submissions” pulls from ops.submissions (NOT public, NOT ops.items, NOT an unintended view)
- * - ✅ Dashboard Submissions count = ops.submissions
- * - ✅ Submitted list view = ops.submissions (newest first)
- * - ✅ Submission card renderer maps ops.submissions fields:
- *    - shows submission_id
- *    - Email Sent ✅/❌, Text Sent ✅/❌
- *    - includes email_error / text_error only when present
- *
- * No dashboard UI row changes. No button-row changes on the main dashboard.
+ * v3.4 updates (ONLY what's necessary):
+ * - ✅ Live refreshing cards (auto-refresh every 60s via editMessageText)
+ * - ✅ Short lock-screen notifications (no sensitive data)
+ * - ✅ Tap notification → opens Today view
+ * - ✅ Delete confirmation ("Are you sure?") for conversations + submissions
+ * - ✅ Keeps dashboard UI rows and emojis identical to v3.2
  *
  * Node 18+ recommended (for fetch)
  */
@@ -23,7 +19,7 @@ const { v4: uuidv4 } = require("uuid");
 const { createClient } = require("@supabase/supabase-js");
 
 // -------------------- VERSION MARKERS --------------------
-const CODE_VERSION = "Index.js v3.2";
+const CODE_VERSION = "Index.js v3.4";
 const BUILD_VERSION =
   process.env.BUILD_VERSION ||
   process.env.RENDER_GIT_COMMIT ||
@@ -393,7 +389,13 @@ function normalizeSubmissionRow(s) {
       : undefined;
 
   const email_error = s.email_error || s.email_send_error || s.emailError || null;
-  const text_error = s.text_error || s.text_send_error || s.sms_send_error || s.textError || s.smsError || null;
+  const text_error =
+    s.text_error ||
+    s.text_send_error ||
+    s.sms_send_error ||
+    s.textError ||
+    s.smsError ||
+    null;
 
   return {
     // We keep "id" for compatibility with existing OPENCARD flow
@@ -760,6 +762,15 @@ async function notifyAdmins(text, extra = {}) {
   }
 }
 
+// v3.4: lock-screen safe notification (no data shown)
+async function notifyShort(text = "📌 Complete Daily Operations") {
+  await notifyAdmins(text, {
+    keyboard: Markup.inlineKeyboard([
+      [Markup.button.callback("📅 Today", "TODAY:open")],
+    ]),
+  });
+}
+
 // -------------------- UI BUILDERS (SUMMARY CARDS) --------------------
 async function buildConversationSummary(conv) {
   const msgCount = await sbCountMessages(conv.id);
@@ -890,7 +901,8 @@ function buildConversationKeyboard(conv) {
       ),
       Markup.button.callback(sendLabel, sendCb),
     ],
-    [Markup.button.callback("🧹 Dismiss", `DISMISS:${conv.id}`)],
+    // v3.4: confirm delete
+    [Markup.button.callback("🧹 Dismiss", `DELETECONFIRM:conv:${conv.id}`)],
     [Markup.button.callback("⬅️ Back", "DASH:back")],
   ]);
 }
@@ -919,7 +931,8 @@ ${deliveryLines.join("\n")}`.trim();
 
 function buildSubmissionKeyboard(submission_id) {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("🧹 Dismiss", `DISMISSSUB:${submission_id}`)],
+    // v3.4: confirm delete
+    [Markup.button.callback("🧹 Dismiss", `DELETECONFIRM:sub:${submission_id}`)],
     [Markup.button.callback("⬅️ Back", "DASH:back")],
   ]);
 }
@@ -1281,6 +1294,51 @@ function setAdminFilter(ctx, val) {
   adminState.set(id, { filterSource: val });
 }
 
+// -------------------- LIVE CARD TRACKING (v3.4) --------------------
+const liveCards = new Map(); 
+// message_id -> { chat_id, type, ref_id }
+
+function registerLiveCard(msg, type, ref_id) {
+  if (!msg?.message_id) return;
+  liveCards.set(msg.message_id, {
+    chat_id: msg.chat.id,
+    type,   // "conversation" | "submission"
+    ref_id,
+  });
+}
+
+async function refreshLiveCards() {
+  for (const [messageId, meta] of liveCards.entries()) {
+    try {
+      if (meta.type === "conversation") {
+        const conv = await sbGetConversation(meta.ref_id);
+        if (!conv) continue;
+
+        await bot.telegram.editMessageText(
+          meta.chat_id,
+          messageId,
+          undefined,
+          await buildConversationText(conv),
+          buildConversationKeyboard(conv)
+        );
+      }
+
+      if (meta.type === "submission") {
+        const sub = await sbGetSubmission(meta.ref_id);
+        if (!sub) continue;
+
+        await bot.telegram.editMessageText(
+          meta.chat_id,
+          messageId,
+          undefined,
+          buildSubmissionText(sub),
+          buildSubmissionKeyboard(sub.submission_id)
+        );
+      }
+    } catch (_) {}
+  }
+}
+
 // -------------------- COMMANDS --------------------
 bot.start(async (ctx) => {
   await ctx.reply(
@@ -1425,14 +1483,16 @@ bot.action(/^OPENCARD:(.+)$/, async (ctx) => {
 
   const conv = await sbGetConversation(id);
   if (conv) {
-    await ctx.reply(await buildConversationText(conv), buildConversationKeyboard(conv));
+    const msg = await ctx.reply(await buildConversationText(conv), buildConversationKeyboard(conv));
+    registerLiveCard(msg, "conversation", conv.id);
     return;
   }
 
   // ✅ fallback: submission card
   const sub = await sbGetSubmission(id);
   if (!sub) return ctx.reply("Card not found.");
-  await ctx.reply(buildSubmissionText(sub), buildSubmissionKeyboard(sub.submission_id));
+  const msg = await ctx.reply(buildSubmissionText(sub), buildSubmissionKeyboard(sub.submission_id));
+  registerLiveCard(msg, "submission", sub.submission_id);
 });
 
 // -------------------- MIRROR OPEN --------------------
@@ -1445,7 +1505,8 @@ bot.action(/^OPENMIRROR:(.+)$/, async (ctx) => {
   const mirror = await sbGetConversation(conv.mirror_conversation_id);
   if (!mirror) return ctx.reply("Mirror not found.");
   await ctx.reply(`🔗 Opening mirror 🪞 ${idShort(mirror.id)}`);
-  await ctx.reply(await buildConversationText(mirror), buildConversationKeyboard(mirror));
+  const msg = await ctx.reply(await buildConversationText(mirror), buildConversationKeyboard(mirror));
+  registerLiveCard(msg, "conversation", mirror.id);
 });
 
 // -------------------- CC SUGGESTED TOGGLE + MIRROR CREATION --------------------
@@ -1501,38 +1562,59 @@ bot.action(/^CC:(.+)$/, async (ctx) => {
   await ctx.reply(`CC Suggested: ${turningOn ? "➕ ON" : "📝 OFF"}`);
 });
 
-// -------------------- DISMISS (CONVERSATIONS) --------------------
-bot.action(/^DISMISS:(.+)$/, async (ctx) => {
+// -------------------- DELETE CONFIRMATION (v3.4) --------------------
+bot.action(/^DELETECONFIRM:(conv|sub):(.+)$/, async (ctx) => {
   if (!isAdmin(ctx)) return;
   await ctx.answerCbQuery();
 
-  const convId = ctx.match[1];
-  const conv = await sbGetConversation(convId);
-  if (!conv) return ctx.reply("Card not found.");
-
-  try {
-    await supabase.schema("ops").from("messages").delete().eq("conversation_id", convId);
-  } catch (_) {}
-
-  const { error } = await supabase.schema("ops").from("conversations").delete().eq("id", convId);
-  if (error) return ctx.reply(`Dismiss error: ${error.message}`);
+  const kind = ctx.match[1];
+  const id = ctx.match[2];
 
   await ctx.reply(
-    "🧹 Dismissed.",
-    Markup.inlineKeyboard([[Markup.button.callback("⬅️ Back", "DASH:back")]])
+    "⚠️ Are you sure you want to delete this card?",
+    Markup.inlineKeyboard([
+      [Markup.button.callback("✅ Yes Delete", `DELETE:${kind}:${id}`)],
+      [Markup.button.callback("Cancel", "DASH:back")],
+    ])
   );
 });
 
-// ✅ DISMISS (SUBMISSIONS)
-bot.action(/^DISMISSSUB:(.+)$/, async (ctx) => {
+bot.action(/^DELETE:(conv|sub):(.+)$/, async (ctx) => {
   if (!isAdmin(ctx)) return;
   await ctx.answerCbQuery();
 
-  const submission_id = ctx.match[1];
+  const kind = ctx.match[1];
+  const id = ctx.match[2];
+
   try {
-    await sbDeleteSubmission(submission_id);
+    if (kind === "conv") {
+      try {
+        await supabase.schema("ops").from("messages").delete().eq("conversation_id", id);
+      } catch (_) {}
+
+      const { error } = await supabase.schema("ops").from("conversations").delete().eq("id", id);
+      if (error) return ctx.reply(`Dismiss error: ${error.message}`);
+    }
+
+    if (kind === "sub") {
+      try {
+        await sbDeleteSubmission(id);
+      } catch (e) {
+        return ctx.reply(`Dismiss error: ${String(e.message || e)}`);
+      }
+    }
   } catch (e) {
     return ctx.reply(`Dismiss error: ${String(e.message || e)}`);
+  }
+
+  // remove matching live cards so refresh loop doesn't try editing deleted cards
+  for (const [messageId, meta] of liveCards.entries()) {
+    if (kind === "conv" && meta.type === "conversation" && String(meta.ref_id) === String(id)) {
+      liveCards.delete(messageId);
+    }
+    if (kind === "sub" && meta.type === "submission" && String(meta.ref_id) === String(id)) {
+      liveCards.delete(messageId);
+    }
   }
 
   await ctx.reply(
@@ -1778,7 +1860,8 @@ async function urgentLoop() {
       });
 
       if (ms - lastNotified > notifyCooldownMs) {
-        await notifyAdmins(`‼️ URGENT\n${c.subject || "Thread"}${c.coach_name ? ` — ${c.coach_name}` : ""}`);
+        // v3.4: lock-screen safe notification
+        await notifyShort("⚠️ Complete Daily Operations");
       }
     } catch (_) {}
   }
@@ -1854,33 +1937,13 @@ async function dailyDigestLoopNY() {
     lastDigestDayKeyNY = ny.dayKey;
 
     try {
-      const urgent = await sbCountConversations({ pipeline: "urgent", source: "all" });
-      const needs = await sbCountConversations({ pipeline: "needs_reply", source: "all" });
-      const waiting = await sbCountConversations({ pipeline: "actions_waiting", source: "all" });
-      const active = await sbCountConversations({ pipeline: "active", source: "all" });
-      const followups = await sbCountConversations({ pipeline: "followups", source: "all" });
-
-      // ✅ Submissions count MUST come from ops.submissions
-      const submissions = await sbCountSubmissions();
-
-      const text =
-        `📌 Daily Ops Digest (NY ${ny.dayKey} 08:30)\n` +
-        `Filter: 🌐 ALL (hard-locked)\n\n` +
-        `‼️ Urgent: ${urgent}\n` +
-        `📝 Needs Reply: ${needs}\n` +
-        `⏳ Waiting: ${waiting}\n` +
-        `💬 Active: ${active}\n` +
-        `📚 Follow-Ups: ${followups}\n` +
-        `🧾 Submissions: ${submissions}`;
-
-      await notifyAdmins(text, { keyboard: dailyDigestKeyboard() });
+      // v3.4: lock-screen safe digest
+      await notifyShort("📌 Complete Daily Operations");
     } catch (_) {}
   }
 }
 
 // -------------------- COACH POOLS UI (Calls hub) --------------------
-// (Unchanged from your 3.1; omitted for brevity? NO — kept end-to-end below.)
-
 function fmtCoachLine(c, followupCount = null) {
   const name = c.coach_name ? `${c.coach_name}` : c.coach_id;
   const prog = c.program_name ? ` · ${c.program_name}` : "";
@@ -2144,7 +2207,7 @@ app.get("/health", (_req, res) => {
  * Supports:
  * - pipeline: urgent|needs_reply|actions_waiting|active|followups|forwarded|completed|website_submissions
  *
- * ✅ v3.2: website_submissions writes to ops.submissions (source of truth for Submissions UI)
+ * website_submissions writes to ops.submissions (source of truth for Submissions UI)
  * The Submissions UI never reads from conversations for “Submitted”.
  */
 app.post("/webhook/item", async (req, res) => {
@@ -2244,10 +2307,9 @@ app.post("/webhook/item", async (req, res) => {
         });
       } catch (_) {}
 
-      // Notify submissions
-      const who = payloadObj?.name || payloadObj?.email || "New submission";
+      // Notify submissions (short / safe)
       notifyAdmins(
-        `🧾 Website Submission\n${who}\nEmail Sent ${sentBadge(finalEmailSent)} · Text Sent ${sentBadge(finalTextSent)}`,
+        `🧾 Website Submission`,
         {
           keyboard: Markup.inlineKeyboard([
             [Markup.button.callback("Open 🧾 Submissions", "VIEW:website_submissions")],
@@ -2300,7 +2362,7 @@ app.post("/webhook/item", async (req, res) => {
     }
 
     if (dir === "inbound") {
-      notifyAdmins(`📝 Needs Reply\n${subject || "Thread"}${coach_name ? ` — ${coach_name}` : ""}`, {
+      notifyAdmins(`📝 Needs Reply`, {
         keyboard: Markup.inlineKeyboard([
           [Markup.button.callback("Open 📝 Needs Reply", "VIEW:needs_reply")],
           [Markup.button.callback("📅 Today", "TODAY:open")],
@@ -2313,10 +2375,6 @@ app.post("/webhook/item", async (req, res) => {
     return res.status(500).json({ ok: false, error: String(e.message || e) });
   }
 });
-
-// ---- Other webhook routes unchanged from your 3.1 (click/metric/forward/person/failure) ----
-// For brevity in this message: keep your existing implementations as-is below this line.
-// (If you want, paste your production file and I’ll merge these unchanged routes verbatim.)
 
 /**
  * Coach click webhook:
@@ -2515,8 +2573,11 @@ setInterval(() => {
   urgentLoop().catch(() => {});
   dailyDigestLoopNY().catch(() => {});
   autoCompleteSupportLoop().catch(() => {});
+  refreshLiveCards().catch(() => {});
 }, 60 * 1000);
 
 // -------------------- RUN BOT --------------------
 bot.launch();
 console.log(`Bot running... ${CODE_VERSION} · Build: ${BUILD_VERSION}`);
+
+
