@@ -1,18 +1,11 @@
 /**
- * NIL Wealth Telegram Ops Shell — SUPABASE OPS (Index.js v5.0)
+ * NIL Wealth Telegram Ops Shell — SUPABASE OPS (Index.js v5.1)
  *
- * Built from your last-working v4.8 baseline.
+ * Built from your last-working v5.0 baseline.
  *
- * v5.0 changes:
- * - Dashboard keyboard row order updated:
- *   Row 1: 🌐 All | 🏈 Programs | 🧑‍🧒 Support
- *   Row 2: 🗂 All Queues | ⚡ Triage | 🔎 Search
- *   Row 3: 📊 Metrics | 📅 Today | 👥 Clients
- * - Added 🌊 Pools button INSIDE All Queues (reuses existing coach pool logic).
- * - Included v4.9 stability fixes:
- *   - Safe live-card refresh (edit failures won’t kill bot responsiveness)
- *   - Send lock to prevent double-send race conditions
- *   - Urgent loop stability (don’t bounce threads you just replied to)
+ * v5.1 change (ONLY):
+ * - Metrics screen: add "🎉 Year Summary" button under Week/Month/Year
+ * - Adds handler + Year Summary builder (no SQL changes required)
  *
  * Node 18+ recommended (for fetch)
  */
@@ -25,7 +18,7 @@ const { v4: uuidv4 } = require("uuid");
 const { createClient } = require("@supabase/supabase-js");
 
 // -------------------- VERSION MARKERS --------------------
-const CODE_VERSION = "Index.js v5.0";
+const CODE_VERSION = "Index.js v5.1";
 const BUILD_VERSION =
   process.env.BUILD_VERSION ||
   process.env.RENDER_GIT_COMMIT ||
@@ -283,6 +276,15 @@ function startOfNYYearISO(date = new Date()) {
   const p = nyParts(date);
   return makeDateInTZ(
     { year: p.year, month: "01", day: "01", hour: 0, minute: 0, second: 0 },
+    NY_TZ
+  ).toISOString();
+}
+
+function startOfNYMonthByYearMonthISO(yearStr, monthStr) {
+  const y = String(yearStr);
+  const m = String(monthStr).padStart(2, "0");
+  return makeDateInTZ(
+    { year: y, month: m, day: "01", hour: 0, minute: 0, second: 0 },
     NY_TZ
   ).toISOString();
 }
@@ -763,6 +765,51 @@ const CLICK_KINDS = [
   "eapp_click",
   "enroll_click",
 ];
+
+// -------------------- v5.1: YEAR SUMMARY (NO SQL REQUIRED) --------------------
+function monthNameFromIndex(i) {
+  const names = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  return names[i] || String(i + 1);
+}
+
+async function sbYearSummary({ filterSource = "all" } = {}) {
+  const scope = scopeFromFilter(filterSource);
+  const ny = nyParts(new Date());
+  const year = Number(ny.year);
+
+  const yearStartIso = startOfNYYearISO(new Date());
+  const yearEndIso = startOfNYMonthByYearMonthISO(String(year + 1), "01"); // next Jan 1
+
+  // totals across full year
+  const totalClicks = await sbCountMetricKinds(CLICK_KINDS, { scope, sinceIso: yearStartIso, untilIso: yearEndIso });
+  const totalProgramLinkOpens = await sbCountMetric("program_link_open", { scope, sinceIso: yearStartIso, untilIso: yearEndIso });
+  const totalSubmissions = await sbCountMetric("website_submission", { scope, sinceIso: yearStartIso, untilIso: yearEndIso });
+
+  // month by month click totals
+  const months = [];
+  for (let m = 1; m <= 12; m++) {
+    const mStr = String(m).padStart(2, "0");
+    const startIso = startOfNYMonthByYearMonthISO(String(year), mStr);
+    const endIso = m === 12 ? yearEndIso : startOfNYMonthByYearMonthISO(String(year), String(m + 1).padStart(2, "0"));
+    const clicks = await sbCountMetricKinds(CLICK_KINDS, { scope, sinceIso: startIso, untilIso: endIso });
+    months.push({ idx: m - 1, name: monthNameFromIndex(m - 1), clicks });
+  }
+
+  const bestMonth = months.reduce((best, cur) => (cur.clicks > best.clicks ? cur : best), months[0] || { name: "—", clicks: 0 });
+  const avgClicksPerMonth = Math.round((Number(totalClicks || 0) / 12) * 10) / 10;
+
+  return {
+    year,
+    yearStartIso,
+    yearEndIso,
+    totalClicks,
+    totalProgramLinkOpens,
+    totalSubmissions,
+    months,
+    bestMonth,
+    avgClicksPerMonth,
+  };
+}
 // -------------------- BOT + NOTIFY --------------------
 const bot = new Telegraf(BOT_TOKEN);
 
@@ -1481,6 +1528,7 @@ async function metricsText(filterSource = "all", which = "week") {
   return lines.join("\n");
 }
 
+// v5.1: add Year Summary button under Week/Month/Year
 function metricsKeyboard() {
   return Markup.inlineKeyboard([
     [
@@ -1488,10 +1536,47 @@ function metricsKeyboard() {
       Markup.button.callback("Month", "METRICS:month"),
       Markup.button.callback("Year", "METRICS:year"),
     ],
+    [Markup.button.callback("🎉 Year Summary", "METRICS:yearsummary")],
     [Markup.button.callback("⬅️ Back", "DASH:back")],
   ]);
 }
 
+// v5.1: Year Summary text (uses sbYearSummary)
+async function yearSummaryText(filterSource = "all") {
+  const s = await sbYearSummary({ filterSource });
+
+  const scope = scopeFromFilter(filterSource);
+  const title =
+    scope === "programs"
+      ? "🎉 Year Summary (🏈 Programs)"
+      : scope === "support"
+      ? "🎉 Year Summary (🧑‍🧒 Support)"
+      : "🎉 Year Summary (🌐 Company)";
+
+  const startLabel = new Date(s.yearStartIso).toLocaleDateString("en-US");
+  const endLabel = new Date(s.yearEndIso).toLocaleDateString("en-US");
+
+  const pad = (label, val) =>
+    `${String(label).padEnd(22, " ")}${String(val).padStart(6, " ")}`;
+
+  const monthLine = (s.months || [])
+    .map((m) => `${m.name}:${String(m.clicks).padStart(3, " ")}`)
+    .join("  ");
+
+  return [
+    title,
+    `${s.year}  (${startLabel} → ${endLabel})`,
+    "",
+    pad("Total Clicks", s.totalClicks),
+    pad("Program Link Opens", s.totalProgramLinkOpens),
+    pad("Website Submissions", s.totalSubmissions),
+    "",
+    `Best Month: ${s.bestMonth?.name || "—"} (${s.bestMonth?.clicks ?? 0})`,
+    `Avg / Month: ${s.avgClicksPerMonth}`,
+    "",
+    monthLine || "(No monthly data yet)",
+  ].join("\n");
+}
 // -------------------- SUMMARY LIST VIEWS --------------------
 function oneLineSummary(conv, idx) {
   const who = conv.coach_name ? ` — ${conv.coach_name}` : "";
@@ -1627,6 +1712,7 @@ function callCardKeyboard(call_id) {
     [Markup.button.callback("⬅️ Dashboard", "DASH:back")],
   ]);
 }
+
 // -------------------- COMMANDS --------------------
 bot.start(async (ctx) => {
   await ctx.reply(`✅ Connected.\n${CODE_VERSION} · Build: ${String(BUILD_VERSION).slice(0, 8)}\nType /dashboard`);
@@ -1736,6 +1822,13 @@ bot.action(/^METRICS:(week|month|year)$/, async (ctx) => {
   await smartRender(ctx, await metricsText(filterSource, which), metricsKeyboard());
 });
 
+// v5.1: Year Summary handler
+bot.action("METRICS:yearsummary", async (ctx) => {
+  if (!isAdmin(ctx)) return;
+  const filterSource = getAdminFilter(ctx);
+  await smartRender(ctx, await yearSummaryText(filterSource), metricsKeyboard());
+});
+
 // START help
 bot.action("START:help", async (ctx) => {
   if (!isAdmin(ctx)) return;
@@ -1799,7 +1892,6 @@ bot.action(/^OPENCARD:(.+)$/, async (ctx) => {
   const msg = await ctx.reply(buildSubmissionText(sub), buildSubmissionKeyboard(sub.submission_id));
   registerLiveCard(msg, "submission", sub.submission_id);
 });
-
 // -------------------- CALLS --------------------
 bot.action("CALLS:hub", async (ctx) => {
   if (!isAdmin(ctx)) return;
@@ -2350,6 +2442,7 @@ bot.action(/^COACHVIEW:(.+):(followups|forwarded|needs_reply)$/, async (ctx) => 
 
   await showQueueSummaryList(ctx, pipe, rows, `coach:${coachId}`);
 });
+
 // -------------------- URGENT LOOP (AUTO) --------------------
 async function urgentLoop() {
   const { data: rows, error } = await supabase
