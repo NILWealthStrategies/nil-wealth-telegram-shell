@@ -511,7 +511,7 @@ threads: trendOf("threads"),
 
 function viewTitle(key) {
 const map = {
-urgent: "‼ Urgent",
+urgent: "‼️ Urgent",
 needs_reply: "📝 Needs Reply",
 actions_waiting: "⏳ Waiting",
 active: "💬 Active",
@@ -524,7 +524,7 @@ metrics: "📊 Metrics",
 year_summary: "🎉 Year Summary",
 calls: "📱 Calls",
 today: "📅 Today",
-triage: "⚡ Triage",
+triage: "⚡️ Triage",
 all_queues: "🗂 All Queues",
 clients: "👥 Clients",
 pools: "🌊 Pools",
@@ -572,7 +572,7 @@ return { mode: "reply", message_id: msg?.message_id, chat_id: msg?.chat?.id };
 async function dashboardText(filterSource = "all") {
 const { dayKey, time } = nyParts(new Date());
 const filterLabel =
-filterSource === "support" ? "󰼡 Support" : filterSource === "programs" ? "🏈 Programs" :
+filterSource === "support" ? "🧑‍🧒 Support" : filterSource === "programs" ? "🏈 Programs" :
 "🌐 All";
 const counts = {
 urgentCount: await sbCountConversations({ pipeline: "urgent", source: filterSource }),
@@ -601,7 +601,7 @@ ${CODE_VERSION} · Build: ${String(BUILD_VERSION).slice(0, 8)}
 ⏰ NY Time: ${time}
 Filter: ${filterLabel}
 🗂 Queues
-‼ Urgent: ${counts.urgentCount}
+‼️ Urgent: ${counts.urgentCount}
 📝 Needs Reply: ${counts.needsReplyCount}
 ⏳ Waiting: ${counts.waitingCount}
 💬 Active: ${counts.activeCount}
@@ -622,12 +622,12 @@ return Markup.inlineKeyboard([
 [
 Markup.button.callback("🌐 All", "FILTER:all"),
 Markup.button.callback("🏈 Programs", "FILTER:programs"),
-Markup.button.callback(" 󰼡 Support", "FILTER:support"),
+Markup.button.callback("🧑‍🧒 Support", "FILTER:support"),
 ],
 // Row 2 (nav)
 [
 Markup.button.callback("🗂 All Queues", "ALLQ:open"),
-Markup.button.callback("⚡ Triage", "TRIAGE:open"),
+Markup.button.callback("⚡️ Triage", "TRIAGE:open"),
 Markup.button.callback("🔎 Search", "SEARCH:help"),
 
 ],
@@ -646,7 +646,7 @@ Markup.button.callback("👥 Clients", "CLIENTS:open"),
 async function allQueuesText(filterSource = "all") {
 const filterLabel =
 filterSource === "support"
-? "󰼡 Support"
+? "🧑‍🧒 Support"
 : filterSource === "programs"
 ? "🏈 Programs"
 : "🌐 All";
@@ -657,7 +657,7 @@ Tap a queue below to open it.`;
 function allQueuesKeyboard() {
 return Markup.inlineKeyboard([
 [
-Markup.button.callback("‼ Urgent", "VIEW:urgent"),
+Markup.button.callback("‼️ Urgent", "VIEW:urgent"),
 Markup.button.callback("📝 Needs Reply", "VIEW:needs_reply"),
 ],
 [
@@ -697,7 +697,7 @@ ${sla} · ${until}`;
 async function showConversationList(ctx, viewKey, rows, filterSource) {
 const filterLabel =
 filterSource === "support"
-? "󰼡 Support"
+? "🧑‍🧒 Support"
 : filterSource === "programs"
 ? "🏈 Programs"
 : "🌐 All";
@@ -1493,9 +1493,9 @@ const body = convs.length
 const pipe = c.pipeline || "active";
 const label =
 pipe === "urgent"
-? "‼ Urgent"
+? "‼️ Urgent"
 : pipe === "needs_reply"
-? "⏳ Needs Reply"
+? "📝 Needs Reply"
 : pipe === "followups"
 ? "📚 Follow Up"
 : pipe === "completed"
@@ -1907,10 +1907,10 @@ Markup.inlineKeyboard([
 // ===============================
 // TODAY (v5.3) — FINAL (WITH COUNTS + LIVE REFRESH)
 // Shows:
-// - ⚡ Triage Due (all due-now items incl calls/no-answer followups if your triage view counts
+// - ⚡️ Triage Due (all due-now items incl calls/no-answer followups if your triage view counts
 // them)
 // - 📱 Calls Today (scheduled calls that fall within NY day boundary)
-// - ⏳ Needs Reply (conversations in needs_reply pipeline)
+// - 📝 Needs Reply (conversations in needs_reply pipeline)
 // - 📚 Follow-Ups Due (coach follow-ups due now)
 //
 // Requires you to map these 4 count functions to your OPS views/tables:
@@ -2008,12 +2008,12 @@ sbCountCoachFollowupsDueNow({ source: filterSource }).catch(() => 0),
 const text =
 `📅 Today
 ${dayKey} · ${time}
-⚡ Triage Due: ${triageDue}
+⚡️ Triage Due: ${triageDue}
 📱 Calls Today: ${callsToday}
 ⏳ Needs Reply: ${needsReply}
 📚 Follow-Ups Due: ${followupsDue}`;
 const kb = Markup.inlineKeyboard([
-[Markup.button.callback("⚡ Triage", "TRIAGE:open")],
+[Markup.button.callback("⚡️ Triage", "TRIAGE:open")],
 [Markup.button.callback("📱 Calls", "CALLS:hub"), Markup.button.callback("🗂 All Queues",
 "ALLQ:open")],
 [Markup.button.callback("🕘 Recent", "SEARCH:recent")],
@@ -2047,7 +2047,7 @@ const activePrograms = rows.filter(
 r => !r.needs_reply && !r.followup_due && !r.is_active
 );
 // ---------- SMART SORTING ----------
-// ⏳ longest waiting first
+// 📝 longest waiting first
 needsReply.sort(
 (a,b) => (b.waiting_minutes || 0) - (a.waiting_minutes || 0)
 );
@@ -2086,7 +2086,7 @@ lines.push(builder(r,i));
 });
 lines.push("──────────────");
 };
-section("⏳ Needs Reply", needsReply,
+section("📝 Needs Reply", needsReply,
 (r,i)=>`${i+1}) Coach ${r.coach_full_name}
 ${r.program_name}
 Waiting: ${r.waiting_minutes || 0}m`
@@ -2194,12 +2194,12 @@ const text =
 `Total Clients: ${stats?.total || 0}\n` +
 `New This Month: ${stats?.newMonth || 0}\n` +
 `With Conversations: ${stats?.withConversations || 0}\n` +
-`⏳ Awaiting Reply: ${stats?.needsReply || 0}\n\n` +
+` 📝 Awaiting Reply: ${stats?.needsReply || 0}\n\n` +
 `Quick Views\n` +
 `• 💬 Active: ${stats?.active || 0}\n` +
 `• ✅ Completed: ${stats?.completed || 0}`;
 const kb = Markup.inlineKeyboard([
-[Markup.button.callback("⏳ Awaiting Reply", "CLIENTS:list:needs_reply")],
+[Markup.button.callback("📝 Awaiting Reply", "CLIENTS:list:needs_reply")],
 [
 Markup.button.callback("💬 Active", "CLIENTS:list:active"),
 Markup.button.callback("✅ Completed", "CLIENTS:list:completed"),
@@ -2229,7 +2229,7 @@ const bucket = ctx.match[1];
 
 const rows = await sbListClients({ bucket, limit: 12 });
 const title =
-bucket === "needs_reply" ? "⏳ Clients · Awaiting Reply"
+bucket === "needs_reply" ? "📝 Clients · Awaiting Reply"
 : bucket === "active" ? "💬 Clients · Active"
 : bucket === "completed" ? "✅ Clients · Completed"
 : bucket === "new_month" ? "🆕 Clients · New This Month"
@@ -2244,7 +2244,7 @@ const st = c.state || "—";
 const threads = (c.convo_count ?? c.threads_total ?? "—");
 const nr = (c.needs_reply_count ?? c.threads_needs_reply ?? "—");
 const pool = c.pool_label ? `\n 🌊 ${c.pool_label}` : "";
-return `• ${nm} (${st})${pool}\n ${em} · ${ph}\n Threads: ${threads} · ⏳ ${nr}`;
+return `• ${nm} (${st})${pool}\n ${em} · ${ph}\n Threads: ${threads} · 📝 ${nr}`;
 }).join("\n\n")
 : "No clients found.";
 const kb = (rows || []).slice(0, 10).map((c) => [
@@ -2311,7 +2311,7 @@ const text =
 `${poolsBlock ? `\n────────────────\n\n${poolsBlock}` : ""}\n` +
 `────────────────\n\n` +
 `📊 Activity\n` +
-`Threads: ${c.threads_total || 0} ⏳ Needs Reply: ${c.threads_needs_reply || 0}\n` +
+`Threads: ${c.threads_total || 0}  📝 Needs Reply: ${c.threads_needs_reply || 0}\n` +
 `Submissions: ${c.submissions_total || 0}\n` +
 `Calls Open: ${c.calls_open || 0}\n\n` +
 `────────────────\n\n` +
@@ -2349,8 +2349,8 @@ const body = threads?.length
 ? threads.slice(0, 10).map((t) => {
 const pipe = t.pipeline || "active";
 const label =
-pipe === "urgent" ? "‼ Urgent"
-: pipe === "needs_reply" ? "⏳ Needs Reply"
+pipe === "urgent" ? "‼️ Urgent"
+: pipe === "needs_reply" ? "📝 Needs Reply"
 : pipe === "followups" ? "📚 Follow Up"
 : pipe === "completed" ? "✅ Completed"
 : "💬 Active";
@@ -2505,12 +2505,12 @@ ref_id: clientId,
 // `Total Clients: ${stats?.total || 0}\n` +
 // `New This Month: ${stats?.newMonth || 0}\n` +
 // `With Conversations: ${stats?.withConversations || 0}\n` +
-// `⏳ Awaiting Reply: ${stats?.needsReply || 0}\n\n` +
+// ` 📝 Awaiting Reply: ${stats?.needsReply || 0}\n\n` +
 // `Quick Views\n` +
 // `• 💬 Active: ${stats?.active || 0}\n` +
 // `• ✅ Completed: ${stats?.completed || 0}`;
 // const kb = Markup.inlineKeyboard([
-// [Markup.button.callback("⏳ Awaiting Reply", "CLIENTS:list:needs_reply")],
+// [Markup.button.callback("📝 Awaiting Reply", "CLIENTS:list:needs_reply")],
 // [Markup.button.callback("💬 Active", "CLIENTS:list:active"), Markup.button.callback("✅ Completed", "CLIENTS:list:completed")],
 // [Markup.button.callback("🆕 New This Month", "CLIENTS:list:new_month")],
 // [Markup.button.callback("🕘 Recent", "CLIENTS:list:recent"), Markup.button.callback("📜 History", "CLIENTS:list:history")],
@@ -2525,7 +2525,7 @@ ref_id: clientId,
 
 // const rows = await sbListClients({ bucket, limit: 12 });
 // const title =
-// bucket === "needs_reply" ? "⏳ Clients · Awaiting Reply"
+// bucket === "needs_reply" ? "📝 Clients · Awaiting Reply"
 // : bucket === "active" ? "💬 Clients · Active"
 // : bucket === "completed" ? "✅ Clients · Completed"
 // : bucket === "new_month" ? "🆕 Clients · New This Month"
@@ -2540,7 +2540,7 @@ ref_id: clientId,
 // const threads = (c.convo_count ?? c.threads_total ?? "—");
 // const nr = (c.needs_reply_count ?? c.threads_needs_reply ?? "—");
 // const pool = c.pool_label ? `\n 🌊 ${c.pool_label}` : "";
-// return `• ${nm} (${st})${pool}\n ${em} · ${ph}\n Threads: ${threads} · ⏳ ${nr}`;
+// return `• ${nm} (${st})${pool}\n ${em} · ${ph}\n Threads: ${threads} · 📝 ${nr}`;
 // }).join("\n\n")
 // : "No clients found.";
 // const kb = (rows || []).slice(0, 10).map((c) => [Markup.button.callback("Open",
