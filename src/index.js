@@ -90,6 +90,22 @@ function verifyHmac(req) {
 }
 
 // ---------- UTIL ----------
+// ---------- ADMIN FILTER HELPER (v5.4) ----------
+function getAdminFilter(ctx) {
+  try {
+    return (
+      ctx.session?.admin_filter ||
+      ctx.session?.adminFilter ||
+      ctx.state?.admin_filter ||
+      ctx.state?.adminFilter ||
+      ctx.scene?.state?.admin_filter ||
+      ctx.scene?.state?.adminFilter ||
+      "all"
+    );
+  } catch (_) {
+    return "all";
+  }
+}
 function safeStr(v) {
   if (v === null || v === undefined) return "";
   return String(v);
