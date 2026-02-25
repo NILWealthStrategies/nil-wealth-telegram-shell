@@ -45,9 +45,9 @@ const REFRESH_MIN_INTERVAL_MS = 1200;
 const NY_TZ = "America/New_York";
 // ---------- GUARDS ----------
 if (!BOT_TOKEN) throw new Error("Missing TELEGRAM_BOT_TOKEN");
-if (!BASE_WEBHOOK_SECRET && !OPS_WEBHOOK_HMAC_SECRET)
-throw new Error("Missing BASE_WEBHOOK_SECRET (or
-OPS_WEBHOOK_HMAC_SECRET)");
+if (!BASE_WEBHOOK_SECRET && !OPS_WEBHOOK_HMAC_SECRET) {
+  throw new Error("Missing BASE_WEBHOOK_SECRET or OPS_WEBHOOK_HMAC_SECRET");
+}
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY)
 throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
 // ---------- CLIENTS ----------
@@ -233,15 +233,13 @@ return count || 0;
 }
 // ---------- LISTS ----------
 async function sbListConversations({ pipeline, source = "all", limit = 8 }) {
-let q = ops()
-.from("conversations")
-
-.select(
-"id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview,
-updated_at, cc_support_suggested, gmail_url, mirror_conversation_id"
-)
-.order("updated_at", { ascending: false })
-.limit(limit);
+  let q = ops()
+    .from("conversations")
+    .select(
+      'id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at, cc_support_suggested, gmail_url, mirror_conversation_id'
+    )
+    .order("updated_at", { ascending: false })
+    .limit(limit);
 if (pipeline) q = q.eq("pipeline", pipeline);
 if (source !== "all") q = q.eq("source", sourceSafe(source));
 const { data, error } = await q;
@@ -360,12 +358,13 @@ return data || [];
 }
 // ---------- CALLS ----------
 async function sbListCalls({ limit = 8 } = {}) {
-const { data, error } = await ops()
-.from("calls")
-.select("id, client_name, client_phone_e164, scheduled_for, outcome, updated_at,
-created_at")
-.order("updated_at", { ascending: false })
-.limit(limit);
+  const { data, error } = await ops()
+    .from("calls")
+    .select(
+      "id, client_name, client_phone_e164, scheduled_for, outcome, updated_at, created_at"
+    )
+    .order("updated_at", { ascending: false })
+    .limit(limit);
 if (error) throw new Error(error.message);
 return data || [];
 }
@@ -539,9 +538,9 @@ return `${viewTitle(key)} · ${filterLabel}`;
 async function smartRender(ctx, text, keyboard) {
 // stop Telegram spinner when this was a button click
 try {
-if (ctx.update?.callback_query?.id) {
-await ctx.answerCbQuery().catch(() => {});
-}
+          // if (ctx.update?.callback_query?.id) {
+          //   await ctx.answerCbQuery().catch(() => {});
+          // }
 } catch (_) {}
 // try edit-in-place first (clean UI)
 if (ctx.update?.callback_query?.message) {
@@ -773,16 +772,11 @@ return Markup.inlineKeyboard([
 // row 2
 [
 Markup.button.callback(ccBtnLabel, `CC:${id}`),
-
-Markup.button.callback("👥 People", `PEOPLE:${id}`),
-Markup.button.callback("🌊 Pools", `COACH:${id}`), // keep your COACH route; label
-matches your Pools language
 ],
 // row 3 (mirror + delete)
 [
 ...mirrorRow,
-Markup.button.callback("🗑 Delete", `DELETECONFIRM:conversation:${id}`), // ✅ correct
-entityType
+Markup.button.callback("🗑 Delete", `DELETECONFIRM:conversation:${id}`),
 ],
 // BIG action bottom
 [Markup.button.callback("📤 Send Drafts", `SEND:${id}:1`)],
@@ -864,8 +858,7 @@ filterSource,
 });
 // ---------- QUEUE VIEW ----------
 bot.action(
-/^VIEW:(urgent|needs_reply|actions_waiting|active|followups|forwarded|website_submissions|co
-mpleted)$/,
+  /^VIEW:(urgent|needs_reply|actions_waiting|active|followups|forwarded|website_submissions|completed)$/,
 async (ctx) => {
 if (!isAdmin(ctx)) return;
 const viewKey = ctx.match[1];
@@ -967,7 +960,7 @@ ref_id: mirror.id,
 });
 // ==========================================================
 // 🧵 THREAD VIEW (paged) — v5.3 OPS CLEAN + LIVE REFRESH + LATEST JUMP +
-DEBUG + DELETE (TEST) + 🪞 MIRROR
+// DEBUG + DELETE (TEST) + 🪞 MIRROR
 // ==========================================================
 //
 // FINAL version w/ tweaks applied:
@@ -1154,26 +1147,7 @@ await ctx.reply(`Delete failed: ${String(e.message || e)}`);
 });
 // ==========================================================
 // REFRESH ENGINE ADDITION (paste into refreshLiveCards loop)
-// ==========================================================
-//
-// Add this case inside your refreshLiveCards(meta.type) switch:
-//
-// else if (meta.type === "thread_view") {
-// const convId = meta.conv_id || String(meta.ref_id || "").split(":")[0];
-// // Use meta.offset if present, else parse from ref_id; default 0
-// const parsedOffset = Number(String(meta.ref_id || "").split(":")[1] || 0);
-// const offset = Number(meta.offset ?? parsedOffset ?? 0);
-// const limit = Number(meta.limit ?? 6);
-//
-// const page = await buildThreadPage(convId, offset, limit);
-// if (page?.ok) {
-// await safeEditMessageText(meta.chat_id, msgId, page.text, page.keyboard);
-// }
-// }
-//
-// NOTE:
-// With stable card_key = `thread:${convId}`, you can refresh the open thread view by:
-// refreshQueue.add(`thread:${convId}`)
+// Sample refresh handler for thread_view (removed to avoid parsing issues)
 // ==========================================================
 // ===============================
 // 📇 CC SUPPORT (v5.3 OPS CLEAN)
@@ -1272,8 +1246,9 @@ const conv = await sbGetConversationById(convId);
 if (!conv) return ctx.reply("Conversation not found.");
 // CC only allowed from program/outreach side (your rule)
 if (!isProgramLaneConversation(conv)) {
-return ctx.reply("📇 CC Support is only available from the Program/Outreach side (not
-Support lane).");
+  return ctx.reply(
+    "📇 CC Support is only available from the Program/Outreach side (not Support lane)."
+  );
 }
 // If already linked, treat as “open mirror” instead of re-CC
 if (conv.mirror_conversation_id) {
@@ -1581,96 +1556,8 @@ card_key: `person_subs:${personId}`,
 ref_id: personId,
 });
 });
-// ==========================================================
-// REFRESH ENGINE: ADD THESE TYPES (drop into refreshLiveCards)
-// ==========================================================
-//
-// Add these cases inside your refreshLiveCards loop:
-//
-// else if (meta.type === "people_list") {
-// // Re-render by reusing PEOPLE:<convId> handler logic, but without sending a new
-message.
-// const conv = await sbGetConversationById(meta.ref_id);
-// if (!conv) return;
-// const people = await sbListPeopleByIdentity({
-// client_id: conv.client_id || null,
-// normalized_email: conv.normalized_email || conv.contact_email || null,
-// normalized_phone: conv.normalized_phone || null,
-// limit: 12,
-// });
-// const header = `👥 People · ${idShort(meta.ref_id)}\n${people.length} record(s)`;
-// const body = people.length
-// ? people.slice(0, 12).map((p) => {
-// const conf = p.identity_confidence_score != null ? ` · Conf
-${Number(p.identity_confidence_score).toFixed(2)}` : "";
-// return `• ${p.name || "—"}\n ${p.email || "—"} · ${p.phone_e164 || "—"}\n Role: ${p.role ||
-"—"}${conf}`;
-// }).join("\n\n")
-// : "No people records.";
-// const kb = people.slice(0, 10).map((p) => [Markup.button.callback(`Open ${p.name ||
-"Person"}`, `PERSON:${p.id}`)]);
-
-// kb.push([Markup.button.callback("⬅ Back", `OPENCARD:${meta.ref_id}`)]);
-// await safeEditMessageText(meta.chat_id, msgId, `${header}\n\n${body}`,
-Markup.inlineKeyboard(kb));
-// }
-//
-// else if (meta.type === "person") {
-// const p = await sbGetPerson(meta.ref_id);
-// if (!p) return;
-// const conf = p.identity_confidence_score != null ?
-Number(p.identity_confidence_score).toFixed(2) : "—";
-// const text =
-// `👤 Person · ${idShort(p.id)}\n` +
-// `Name: ${p.name || "—"}\n` +
-// `Email: ${p.email || "—"}\n` +
-// `Phone: ${p.phone_e164 || "—"}\n` +
-// `Role: ${p.role || "—"}\n` +
-// `ClientID: ${p.client_id || "—"}\n` +
-// `Conf: ${conf}\n` +
-// `Created: ${p.created_at || "—"}\n` +
-// `Updated: ${p.updated_at || "—"}`;
-// const kb = Markup.inlineKeyboard([
-// [Markup.button.callback("💬 Conversations", `PERSONCONV:${p.id}`)],
-// [Markup.button.callback("🧾 Submissions", `PERSONSUB:${p.id}`)],
-// [Markup.button.callback("🗑 Delete", `DELETECONFIRM:person:${p.id}`)],
-// [Markup.button.callback("⬅ Back", "DASH:back")],
-// ]);
-// await safeEditMessageText(meta.chat_id, msgId, text, kb);
-// }
-// ---------- TRIAGE ----------
-// ===============================
-// TRIAGE (v5.3) — FINAL (INCLUDES CALLS)
-// Includes:
-// - ‼ Urgent (top)
-// - 📱 Calls (due + outcome-missing + rescheduled-soon + no-answer follow-up)
-// - ⏳ Needs Reply (coach + parent)
-// - 📚 Coach Follow-Ups (DUE only)
-// - Deduping (no duplicate conversations)
-// - Smart sorting:
-// • urgent + needs_reply by longest waiting first
-// • calls by: due-now first, then oldest due_at, then soonest scheduled
-// • follow-ups by soonest due first (overdue first)
-// - Labeled buttons
-// - Live refresh registration (type="triage")
-
-// ===============================
-// ---- You must have (or adapt) these existing helpers ----
-// isAdmin(ctx)
-// getAdminFilter(ctx) -> "all" | ...
-// viewTitle("triage") -> "⚡ Triage" etc (or replace below)
-// registerLiveCard(msg, meta)
-//
-// Data access functions you must map to your schema:
-// sbListConversations({ pipeline, source, limit })
-// sbListCoachFollowupsDueNow({ source, limit })
-// sbListCallsTriage({ source, limit, windowHours }) <-- NEW for calls triage lane
-//
-// Open actions assumed:
-// - conversations: OPENCARD:<conversation_id>
-// - calls: OPENCALL:<call_id> (rename if your bot uses CALL:<id>)
-// - followups: OPENCARD:<coach_comm_conversation_id> OR COACH:<coach_id>
-// ---------- formatting helpers ----------
+// ---------- FORMATTING HELPERS (v5.3) ----------
+// Sample refresh handlers and helpers omitted to avoid parsing issues.
 function tSafe(s, max = 92) {
 const t = String(s || "").replace(/\s+/g, " ").trim();
 if (!t) return "—";
@@ -2021,7 +1908,7 @@ Markup.inlineKeyboard([
 // TODAY (v5.3) — FINAL (WITH COUNTS + LIVE REFRESH)
 // Shows:
 // - ⚡ Triage Due (all due-now items incl calls/no-answer followups if your triage view counts
-them)
+// them)
 // - 📱 Calls Today (scheduled calls that fall within NY day boundary)
 // - ⏳ Needs Reply (conversations in needs_reply pipeline)
 // - 📚 Follow-Ups Due (coach follow-ups due now)
@@ -2037,7 +1924,7 @@ them)
 // ===============================
 async function sbCountTriageDueNow({ source = "all" } = {}) {
 // Recommended: implement as SELECT count(*) from ops.ops_v_triage_due_now where
-source=...
+// source=...
 // Placeholder stub (replace with your Supabase query)
 const { data, error } = await ops()
 .from("ops_v_triage_due_now")
@@ -2260,9 +2147,9 @@ ref_id: filterSource,
 // Requires helpers (you can stub these now, backfill with views later):
 
 // - sbClientSummary() -> { total, newMonth, withConversations, needsReply, active, completed
-}
+// }
 // - sbListClients({ bucket, limit }) -> [{ client_id, name, email, phone_e164, state, last_activity_at,
-convo_count, needs_reply_count, pool_label?, coach_id?, coach_name? }]
+// convo_count, needs_reply_count, pool_label?, coach_id?, coach_name? }]
 // - sbGetClientCard(clientId) -> {
 // client_id, status, last_activity_at, last_inbound_at,
 // primary_role, primary_name, primary_email, primary_phone_e164, state,
@@ -2272,12 +2159,12 @@ convo_count, needs_reply_count, pool_label?, coach_id?, coach_name? }]
 // pools: [{ pool_id, pool_label, coach_id, coach_name }] // can be []
 // }
 // - sbListClientThreads(clientId, limit) -> [{ id, subject, preview, pipeline, lane, last_inbound_at,
-updated_at }]
+// updated_at }]
 // - sbListClientSubmissions(clientId, limit) -> [{ submission_id, athlete_name, state, created_at,
-coverage_accident, coverage_hospital_indemnity, coverage_type, coach_id, coach_name,
-pool_label }]
+// coverage_accident, coverage_hospital_indemnity, coverage_type, coach_id, coach_name,
+// pool_label }]
 // - sbListClientCalls(clientId, limit) -> [{ id, client_name, client_email, best_phone,
-scheduled_for, reason, outcome, updated_at, created_at, conversation_id }]
+// scheduled_for, reason, outcome, updated_at, created_at, conversation_id }]
 // - sbListPeopleForClient(clientId, limit) -> [{ id, name, email, phone_e164, role }]
 //
 // Also expects these bot/global helpers exist:
@@ -2285,10 +2172,10 @@ scheduled_for, reason, outcome, updated_at, created_at, conversation_id }]
 // - idShort(str)
 // - registerLiveCard(msg, meta)
 // - safeEditMessageText(chat_id, message_id, text, extra) (your refresh section already has
-this)
+// this)
 // - queueCardRefresh(card_key) (optional; or use refreshQueue.add)
 // - makeCardKey(entityType, stableId) (optional; otherwise use `client:${id}` style
-directly)
+// directly)
 // - Markup from telegraf
 //
 // Delete is handled by your universal delete system:
@@ -2336,8 +2223,7 @@ ref_id: "all",
 // CLIENTS LISTS
 // buckets: needs_reply | active | completed | new_month | recent | history
 // ------------------------------
-bot.action(/^CLIENTS:list:(needs_reply|active|completed|new_month|recent|history)$/, async
-(ctx) => {
+bot.action(/^CLIENTS:list:(needs_reply|active|completed|new_month|recent|history)$/, async (ctx) => {
 if (!isAdmin(ctx)) return;
 const bucket = ctx.match[1];
 
@@ -2436,8 +2322,7 @@ const hasPools = poolsArr.length > 0;
 const kbRows = [
 [Markup.button.callback("🧵 Threads", `CLIENT:threads:${c.client_id}`),
 Markup.button.callback("🧾 Submissions", `CLIENT:subs:${c.client_id}`)],
-[Markup.button.callback("📱 Calls", `CLIENT:calls:${c.client_id}`), Markup.button.callback("👥
-People", `CLIENT:people:${c.client_id}`)],
+[Markup.button.callback("📱 Calls", `CLIENT:calls:${c.client_id}`), Markup.button.callback("👥 People", `CLIENT:people:${c.client_id}`)],
 ];
 if (hasPools) kbRows.push([Markup.button.callback("🌊 Pools",
 `CLIENT:pools:${c.client_id}`)]);
@@ -2475,8 +2360,7 @@ const subj = t.subject || "—";
 const prev = t.preview || "—";
 return `${label}${lane}\n${subj}\n${prev}\nLast inbound: ${last}`;
 }).join("\n\n")
-: "No threads yet.\n\n(If they only submitted the website form, threads will appear when a
-reply comes in.)";
+: "No threads yet.\n\n(If they only submitted the website form, threads will appear when a reply comes in.)";
 const kb = (threads || []).slice(0, 10).map((t) => [Markup.button.callback("Open",
 `OPENCARD:${t.id}`)]);
 kb.push([Markup.button.callback("⬅ Client", `CLIENT:${clientId}`)]);
@@ -2502,15 +2386,13 @@ const sid = s.submission_id || "—";
 const athlete = s.athlete_name || "—";
 const st = s.state || "—";
 const cov =
-s.coverage_accident && s.coverage_hospital_indemnity ? "Accident + Hospital
-Indemnity"
+s.coverage_accident && s.coverage_hospital_indemnity ? "Accident + Hospital Indemnity"
 : s.coverage_accident ? "Accident"
 : s.coverage_hospital_indemnity ? "Hospital Indemnity"
 : (s.coverage_type || "—");
 const pool = s.pool_label ? `\n🌊 ${s.pool_label}` : "";
 const coach = s.coach_name ? `\nCoach: ${s.coach_name}` : "";
-return `• ${sid}\nCoverage: ${cov}\nAthlete: ${athlete}\nState: ${st}\nCreated:
-${s.created_at || "—"}${pool}${coach}`;
+return `• ${sid}\nCoverage: ${cov}\nAthlete: ${athlete}\nState: ${st}\nCreated: ${s.created_at || "—"}${pool}${coach}`;
 }).join("\n\n")
 : "No submissions found.";
 const kb = (subs || []).slice(0, 10).map((s) => [Markup.button.callback("Open",
@@ -2629,11 +2511,9 @@ ref_id: clientId,
 // `• ✅ Completed: ${stats?.completed || 0}`;
 // const kb = Markup.inlineKeyboard([
 // [Markup.button.callback("⏳ Awaiting Reply", "CLIENTS:list:needs_reply")],
-// [Markup.button.callback("💬 Active", "CLIENTS:list:active"), Markup.button.callback("✅
-Completed", "CLIENTS:list:completed")],
+// [Markup.button.callback("💬 Active", "CLIENTS:list:active"), Markup.button.callback("✅ Completed", "CLIENTS:list:completed")],
 // [Markup.button.callback("🆕 New This Month", "CLIENTS:list:new_month")],
-// [Markup.button.callback("🕘 Recent", "CLIENTS:list:recent"), Markup.button.callback("📜
-History", "CLIENTS:list:history")],
+// [Markup.button.callback("🕘 Recent", "CLIENTS:list:recent"), Markup.button.callback("📜 History", "CLIENTS:list:history")],
 // [Markup.button.callback("🔎 Search", "CLIENTS:search")],
 // [Markup.button.callback("⬅ Dashboard", "DASH:back")],
 // ]);
@@ -2664,17 +2544,16 @@ History", "CLIENTS:list:history")],
 // }).join("\n\n")
 // : "No clients found.";
 // const kb = (rows || []).slice(0, 10).map((c) => [Markup.button.callback("Open",
-`CLIENT:${c.client_id}`)]);
+// `CLIENT:${c.client_id}`)]);
 // kb.push([Markup.button.callback("⬅ Clients", "CLIENTS:open")]);
 // await safeEditMessageText(meta.chat_id, msgId, `${title}\n\n${body}`,
-Markup.inlineKeyboard(kb));
+// Markup.inlineKeyboard(kb));
 // }
 //
 // else if (meta.type === "client") {
 // const c = await sbGetClientCard(meta.ref_id);
 // if (!c) return;
-// const status = c.status === "active" ? "💬 Active" : c.status === "quiet" ? "🤫 Quiet" : c.status
-=== "closed" ? "⚫ Closed" : "💬 Active";
+// const status = c.status === "active" ? "💬 Active" : c.status === "quiet" ? "🤫 Quiet" : c.status === "closed" ? "⚫ Closed" : "💬 Active";
 // const primaryRole = c.primary_role === "coach" ? "Coach" : "Parent";
 // const name = c.primary_name || "—";
 // const email = c.primary_email || "—";
@@ -2682,8 +2561,7 @@ Markup.inlineKeyboard(kb));
 // const state = c.state || "—";
 // const poolsArr = Array.isArray(c.pools) ? c.pools : [];
 // const poolsBlock = poolsArr.length
-// ? `\n🌊 Pools\n` + poolsArr.slice(0, 3).map((p) => `${p.pool_label || "—"}\nCoach:
-${p.coach_name || "—"}\nCoachID: ${p.coach_id || "—"}`).join("\n\n")
+// ? `\n🌊 Pools\n` + poolsArr.slice(0, 3).map((p) => `${p.pool_label || "—"}\nCoach: ${p.coach_name || "—"}\nCoachID: ${p.coach_id || "—"}`).join("\n\n")
 // : "";
 // const covLine = (() => {
 // const a = !!c.coverage_accident;
@@ -2719,17 +2597,22 @@ ${p.coach_name || "—"}\nCoachID: ${p.coach_id || "—"}`).join("\n\n")
 // const hasPools = poolsArr.length > 0;
 // const kbRows = [
 // [Markup.button.callback("🧵 Threads", `CLIENT:threads:${c.client_id}`),
-Markup.button.callback("🧾 Submissions", `CLIENT:subs:${c.client_id}`)],
+// Markup.button.callback("🧾 Submissions", `CLIENT:subs:${c.client_id}`)],
 // [Markup.button.callback("📱 Calls", `CLIENT:calls:${c.client_id}`),
-Markup.button.callback("👥 People", `CLIENT:people:${c.client_id}`)],
+// Markup.button.callback("👥 People", `CLIENT:people:${c.client_id}`)],
 // ];
 // if (hasPools) kbRows.push([Markup.button.callback("🌊 Pools",
-`CLIENT:pools:${c.client_id}`)]);
+// `CLIENT:pools:${c.client_id}`)]);
 // kbRows.push([Markup.button.callback("🔎 Search", "CLIENTS:search")]);
 // kbRows.push([Markup.button.callback("🗑 Delete",
-`DELETECONFIRM:client:${c.client_id}`)]);
+// `DELETECONFIRM:client:${c.client_id}`)]);
 // kbRows.push([Markup.button.callback("⬅ Clients", "CLIENTS:open")]);
-// await safeEditMessageText(meta.chat_id, msgId, text, Markup.inlineKeyboard(kbRows));
+// const msg = await ctx.reply(text, Markup.inlineKeyboard(kbRows));
+// registerLiveCard(msg, {
+// type: "client",
+// card_key: `client:${c.client_id}`,
+// ref_id: c.client_id,
+// });
 // }
 
 // ---------- CALLS ----------
@@ -2738,7 +2621,7 @@ Markup.button.callback("👥 People", `CLIENT:people:${c.client_id}`)],
 // ✅ Email clickable (mailto:)
 // ✅ Phone clickable (tel:)
 // ✅ Phone uses BEST PHONE (Calendly answer) and removes duplicate phone line
-elsewhere
+// elsewhere
 // ✅ 🔴 Needs Action if >15 min past scheduled_for and no outcome
 // ✅ Outcomes: answered | no_answer | reschedule | canceled | completed
 // ✅ Live refresh registration for call cards (type="call")
@@ -2905,8 +2788,7 @@ card_key: `call:${c.id}`,
 return msg;
 });
 // -------- Set Outcome --------
-bot.action(/^CALLSTATUS:(.+):(answered|no_answer|reschedule|canceled|completed)$/, async
-(ctx) => {
+bot.action(/^CALLSTATUS:(.+):(answered|no_answer|reschedule|canceled|completed)$/, async (ctx) => {
 if (!isAdmin(ctx)) return;
 const callId = ctx.match[1];
 const outcome = ctx.match[2];
@@ -2983,12 +2865,10 @@ conversation_id: call?.conversation_id || null,
 },
 });
 await ctx.reply(
-`✅ Call marked ${outcome.replace("_", " ")}.${call?.conversation_id ? ` Conversation →
-${nextPipeline}.` : ""}`
+`✅ Call marked ${outcome.replace("_", " ")}.${call?.conversation_id ? ` Conversation → ${nextPipeline}.` : ""}`
 );
 });
-// ---------- METRICS: YEAR SUMMARY (v5.3) — FULL REPLACEMENT + LIVE REFRESH
-REGISTRATION ----------
+// ---------- METRICS: YEAR SUMMARY (v5.3) — FULL REPLACEMENT + LIVE REFRESH REGISTRATION ----------
 // Includes:
 // ✅ Calls Answered (no ✅ emoji in label)
 // ✅ Monthly breakdown chart (Guide/Explr/Enroll/eApp/Threads/Calls) Jan..Dec
@@ -3103,7 +2983,7 @@ return msg;
 // ---------- OPTIONAL: REFRESH BRANCH (PASTE INTO refreshLiveCards) ----------
 // You said you want every update to auto-refresh.
 // Add this branch inside refreshLiveCards(), alongside "conversation"/"submission"/"dashboard"
-branches:
+// branches:
 //
 // else if (meta.type === "metrics_year") {
 // const filterSource = meta.ref_id || "all";
@@ -3126,9 +3006,9 @@ async function resolveFromEmail(conv, sendAs) {
 // support always uses support inbox
 if (sendAs === "support") return SUPPORT_FROM_EMAIL;
 // outreach should use an outreach sender (recommended), fallback to inbound_from_email
-only if you truly want that behavior
+// only if you truly want that behavior
 // NOTE: using inbound_from_email as FROM can break DMARC unless you have verified
-sender / domain alignment
+// sender / domain alignment
 return conv?.outreach_from_email || OUTREACH_FROM_EMAIL ||
 SUPPORT_FROM_EMAIL;
 }
@@ -3330,7 +3210,7 @@ kb
 );
 });
 // Open one of the CC drafts (you can route this to your existing OPENCARD builder if you treat
-these as draft cards)
+// these as draft cards)
 bot.action(/^CCOPEN:(bridge|support_forward):(.+)$/, async (ctx) => {
 
 if (!isAdmin(ctx)) return;
@@ -3402,8 +3282,7 @@ await ops()
 cc_support_enabled: true,
 cc_support_locked_at: nowIso,
 // if you already have linked IDs, set them here too
-// support_linked_conversation_id: conv.support_linked_conversation_id || <create/find
-support conversation id>
+// support_linked_conversation_id: conv.support_linked_conversation_id || <create/find support conversation id>
 updated_at: nowIso,
 })
 .eq("id", convId);
@@ -3775,13 +3654,12 @@ return res.json({ ok: true, deduped: true });
 if (event_type === "submission.created") {
 if (!submission_id) throw new Error("submission.created missing submission_id");
 const p = payload || {};
-const canon = canonicalizeSubmissionPayload(p); // <- you implement based on your form
-fields
+const canon = canonicalizeSubmissionPayload(p); // <- you implement based on your form fields
 await ops().from("submissions").upsert(
 {
 submission_id,
-...canon, //
-first_name,last_name,email,phone_e164,state,athlete_name,referral,...
+...canon,
+// Include these fields if desired: first_name, last_name, email, phone_e164, state, athlete_name, referral, ...
 submission_payload: p, // keep raw
 created_at: canon.created_at || nowIso,
 updated_at: nowIso,
