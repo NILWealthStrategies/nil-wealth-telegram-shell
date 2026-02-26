@@ -3992,6 +3992,8 @@ await ctx.reply(
 function buildYearSummaryText(y, filterSource) {
 const n = (v) => (typeof v === "number" && isFinite(v) ? v : 0);
 const avg = (total) => Math.round(n(total) / 12);
+const trendEmoji = (v) =>
+v === "up" ? "📈 Up-Trend" : v === "down" ? "📉 Down-Trend" : "➖ Flat";
 const months = Array.isArray(y.monthlyBreakdown) ? y.monthlyBreakdown : [];
 const byLabel = new Map(
 months.map((m) => [String(m.label || m.month || "").toLowerCase(), m])
@@ -4001,13 +4003,38 @@ const pick = (mon) => byLabel.get(mon.toLowerCase()) || {};
 const monthLine = order
 .map((mon) => `${mon} ${String(n(pick(mon).enrollClicks)).padStart(2, " ")}`)
 .join("  ");
-const bestMonth = y.bestMonth?.label || "—";
+const bestWeek = y.bestWeek
+? `🏆 Best Week: ${y.bestWeek.label || "—"} (Enroll ${n(y.bestWeek.enrollClicks)}, Threads ${n(y.bestWeek.threads)})`
+: "🏆 Best Week: —";
+const bestMonth = y.bestMonth
+? `⭐ Best Month: ${y.bestMonth.label || "—"} (Enroll ${n(y.bestMonth.enrollClicks)}, Threads ${n(y.bestMonth.threads)})`
+: "⭐ Best Month: —";
+const bestMonthEver = y.bestMonthEver
+? `👑 Best Month Ever: ${y.bestMonthEver.label || "—"} (Enroll ${n(y.bestMonthEver.enrollClicks)}, Threads ${n(y.bestMonthEver.threads)})`
+: "👑 Best Month Ever: —";
+const t = y.trend || {};
 return (
 `🎉 Year Summary · ${filterSource}\n\n` +
-`Total Clicks: ${n(y.enrollClicks)} (Avg ${avg(y.enrollClicks)}/mo)\n` +
-`Best Month: ${bestMonth}\n\n` +
-`Monthly Clicks\n` +
-`${monthLine}`
+`Totals\n` +
+`• Total Parent Guides Opened: ${n(y.programLinkOpens)} (Avg ${avg(y.programLinkOpens)}/mo)\n` +
+`• Coverage Exploration: ${n(y.coverageExploration)} (Avg ${avg(y.coverageExploration)}/mo)\n` +
+`• Enroll Clicks: ${n(y.enrollClicks)} (Avg ${avg(y.enrollClicks)}/mo)\n` +
+`• eApp Visits: ${n(y.eappVisits)} (Avg ${avg(y.eappVisits)}/mo)\n` +
+`• Threads (Replies): ${n(y.threadsCreated)} (Avg ${avg(y.threadsCreated)}/mo)\n` +
+`• Calls Answered: ${n(y.callsAnswered)} (Avg ${avg(y.callsAnswered)}/mo)\n\n` +
+`Monthly Breakdown (Enroll Clicks)\n` +
+`${monthLine}\n\n` +
+`Highlights\n` +
+`${bestWeek}\n` +
+`${bestMonth}\n` +
+`${bestMonthEver}\n\n` +
+`Trends (vs last month)\n` +
+`• Parent Guides: ${trendEmoji(t.opens)}\n` +
+`• Exploration: ${trendEmoji(t.exploration)}\n` +
+`• Enroll Clicks: ${trendEmoji(t.enrollClicks)}\n` +
+`• eApp Visits: ${trendEmoji(t.eappVisits)}\n` +
+`• Threads (Replies): ${trendEmoji(t.threads)}\n` +
+`• Calls Answered: ${trendEmoji(t.callsAnswered)}`
 );
 }
 function yearSummaryKeyboard() {
