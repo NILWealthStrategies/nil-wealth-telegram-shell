@@ -85,7 +85,15 @@ return String(sig) === String(expected);
 function getAdminFilter(ctx) {
 try {
 const userId = String(ctx.from?.id || "");
-return userFilters.get(userId) || "all";
+const legacy =
+ctx?.session?.admin_filter ??
+ctx?.session?.adminFilter ??
+ctx?.state?.admin_filter ??
+ctx?.state?.adminFilter ??
+ctx?.scene?.state?.admin_filter ??
+ctx?.scene?.state?.adminFilter ??
+null;
+return userFilters.get(userId) || legacy || "all";
 } catch (_) {
 return "all";
 }
@@ -120,6 +128,56 @@ return src === "support" ? "support" : "programs";
 function laneLabel(source) {
 return source === "support" ? "󰼡 Support" : "🏈 Programs";
 }
+// ---------- v5.4 UTILITY FUNCTIONS ----------
+function compact(v) {
+// Safe string display: converts null/undefined to "—"
+if (v === null || v === undefined) return "—";
+const s = String(v).trim();
+return s.length > 0 ? s : "—";
+}
+function logError(context, err) {
+// Structured error logging (v5.4)
+const msg = err?.message || String(err);
+const stack = err?.stack || "";
+console.error(`[ERROR] ${context}:`, msg);
+if (stack && process.env.NODE_ENV !== "production") {
+console.error(stack);
+}
+}
+function newTraceId() {
+// Generate trace ID for event tracking (v5.4)
+return uuidv4();
+}
+function hashStable(str) {
+// Deterministic hash for idempotency keys (v5.4)
+if (!str) return String(Date.now());
+try {
+let hash = 2166136261; // FNV-1a 32-bit offset
+for (let i = 0; i < str.length; i++) {
+hash ^= str.charCodeAt(i);
+hash = Math.imul(hash, 16777619);
+}
+return (hash >>> 0).toString(16);
+} catch (_) {
+return String(Date.now());
+}
+}
+async function dbSelectFirst(candidates) {
+// Try multiple DB query candidates (ops vs public schema fallback)
+// v5.4 pattern for schema migration compatibility
+for (const fn of candidates) {
+try {
+const result = await fn();
+if (result && !result.error && result.data) {
+return result;
+}
+} catch (_) {
+// Continue to next candidate
+}
+}
+return { data: null, error: new Error("All DB query candidates failed") };
+}
+// ---------- END v5.4 UTILITIES ----------
 function makeCardKey(entityType, stableId) {
 return `${entityType}:${stableId}`;
 }
@@ -148,7 +206,44 @@ hour: "numeric",
 minute: "2-digit",
 hour12: true,
 });
-return { dayKey: `${year}-${month}-${day}`, time: tfmt.format(date) };
+
+const toNyMidnightUtc = (y, m, d) => {
+const utcApprox = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d), 0, 0, 0));
+const tparts = new Intl.DateTimeFormat("en-US", {
+timeZone: NY_TZ,
+hour12: false,
+hour: "2-digit",
+minute: "2-digit",
+second: "2-digit",
+year: "numeric",
+month: "2-digit",
+day: "2-digit",
+}).formatToParts(utcApprox);
+const tget = (type) => tparts.find((p) => p.type === type)?.value;
+const nyHour = Number(tget("hour") || 0);
+const nyMinute = Number(tget("minute") || 0);
+const nySecond = Number(tget("second") || 0);
+const nyDay = Number(tget("day") || d);
+const dayShift = nyDay - Number(d);
+const offsetMinutes = (dayShift * 24 * 60) + (nyHour * 60) + nyMinute + (nySecond / 60);
+return new Date(utcApprox.getTime() - (offsetMinutes * 60 * 1000));
+};
+
+const dayStartUtc = toNyMidnightUtc(year, month, day);
+const nextBase = new Date(dayStartUtc.getTime() + (24 * 60 * 60 * 1000));
+const nextParts = fmt.formatToParts(nextBase);
+const nget = (type) => nextParts.find((p) => p.type === type)?.value;
+const nextYear = nget("year");
+const nextMonth = nget("month");
+const nextDay = nget("day");
+const dayEndUtc = toNyMidnightUtc(nextYear, nextMonth, nextDay);
+
+return {
+dayKey: `${year}-${month}-${day}`,
+time: tfmt.format(date),
+dayStartISO: dayStartUtc.toISOString(),
+dayEndISO: dayEndUtc.toISOString(),
+};
 }
 // ---------- OPS EVENTS LEDGER (v5.2) ----------
 function deriveIdempotencyKey(evt) {
@@ -211,6 +306,121 @@ return { deduped: true };
 if (error) throw new Error(error.message);
 return { deduped: false };
 }
+// ---------- EMAIL/SMS OUTBOX (v5.4) ----------
+async function queueEmailDraft({
+to,
+subject,
+html,
+threadKey = null,
+clientId = null,
+cardKey = null,
+cc = null,
+bcc = null,
+traceId = null,
+}) {
+// v5.4: Queue email to outbox table (safe if table doesn't exist)
+const payload = {
+to,
+subject,
+html,
+cc,
+bcc,
+thread_key: threadKey,
+client_id: clientId,
+card_key: cardKey,
+trace_id: traceId || newTraceId(),
+status: "queued",
+queued_at: new Date().toISOString(),
+};
+// Try ops_email_outbox first (v5.4 naming)
+try {
+const { data, error } = await ops()
+.from("ops_email_outbox")
+.insert(payload)
+.select("*")
+.maybeSingle();
+if (!error && data) return data;
+} catch (_) {}
+// Fallback to email_outbox (backward compatibility)
+try {
+const { data, error } = await ops()
+.from("email_outbox")
+.insert(payload)
+.select("*")
+.maybeSingle();
+if (!error && data) return data;
+} catch (_) {}
+// If no table exists, log and return null (graceful degradation)
+logError("queueEmailDraft", "No email_outbox table found - email not queued");
+return null;
+}
+async function queueSmsDraft({ to, text, clientId = null, cardKey = null, traceId = null }) {
+// v5.4: Queue SMS to outbox table (safe if table doesn't exist)
+const payload = {
+to,
+text,
+client_id: clientId,
+card_key: cardKey,
+trace_id: traceId || newTraceId(),
+status: "queued",
+queued_at: new Date().toISOString(),
+};
+// Try ops_sms_outbox first (v5.4 naming)
+try {
+const { data, error } = await ops()
+.from("ops_sms_outbox")
+.insert(payload)
+.select("*")
+.maybeSingle();
+if (!error && data) return data;
+} catch (_) {}
+// Fallback to sms_outbox (backward compatibility)
+try {
+const { data, error } = await ops()
+.from("sms_outbox")
+.insert(payload)
+.select("*")
+.maybeSingle();
+if (!error && data) return data;
+} catch (_) {}
+// If no table exists, log and return null (graceful degradation)
+logError("queueSmsDraft", "No sms_outbox table found - SMS not queued");
+return null;
+}
+// ---------- MIRROR SYSTEM (v5.4) ----------
+async function mirrorEvent(event) {
+// v5.4: Mirror events for linked cards (safe if ops_events doesn't exist)
+if (!event?.event_type || !event?.idempotency_key) return false;
+try {
+await sbInsertOpsEventSafe(event);
+return true;
+} catch (err) {
+logError("mirrorEvent", err);
+return false;
+}
+}
+async function getMirrors(cardKey) {
+// v5.4: Get mirrored/linked cards (safe if view doesn't exist)
+if (!cardKey) return [];
+try {
+const { data, error } = await ops()
+.from("ops_v_card_mirrors")
+.select("*")
+.eq("card_key", cardKey)
+.limit(25);
+if (!error && data) return data;
+} catch (_) {}
+// Fallback to card_mirrors table
+try {
+const { data, error } = await ops()
+.from("card_mirrors")
+.select("*")
+.eq("card_key", cardKey)
+.limit(25);
+if (!error && data) return data;
+} catch (_) {}
+return [];
+}
 // ---------- SLA / URGENT ----------
 function minsUntilUrgent(updatedAtIso) {
 if (!updatedAtIso) return URGENT_AFTER_MINUTES;
@@ -233,6 +443,30 @@ const h = Math.floor(mmAbs / 60);
 const mm = mmAbs % 60;
 if (m <= 0) return `⏳ 0h 0m until Urgent`;
 return `⏳ ${h}h ${mm}m until Urgent`;
+}
+// ---------- SMART SORTING (v5.4) ----------
+// Sorts items by: 1) Due-now first, 2) Priority tier, 3) Most recent
+function smartSortByPriority(rows = []) {
+if (!Array.isArray(rows) || rows.length === 0) return rows;
+return [...rows].sort((a, b) => {
+const now = Date.now();
+// Parse due dates
+const aDue = a.next_action_at ? new Date(a.next_action_at).getTime() : Infinity;
+const bDue = b.next_action_at ? new Date(b.next_action_at).getTime() : Infinity;
+// Due-now items come first
+const aDueNow = aDue <= now;
+const bDueNow = bDue <= now;
+if (aDueNow && !bDueNow) return -1;
+if (bDueNow && !aDueNow) return 1;
+// Priority tier (lower number = higher priority)
+const aPri = typeof a.priority_tier === 'number' ? a.priority_tier : 9;
+const bPri = typeof b.priority_tier === 'number' ? b.priority_tier : 9;
+if (aPri !== bPri) return aPri - bPri;
+// Most recent activity
+const aTime = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+const bTime = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+return bTime - aTime;
+});
 }
 // ---------- COUNTS ----------
 async function sbCountConversations({ pipeline, source }) {
@@ -262,15 +496,17 @@ async function sbListConversations({ pipeline, source = "all", limit = 8 }) {
   let q = ops()
     .from("conversations")
     .select(
-      'id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at, cc_support_suggested, gmail_url, mirror_conversation_id'
+      'id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at, next_action_at, priority_tier, cc_support_suggested, gmail_url, mirror_conversation_id'
     )
     .order("updated_at", { ascending: false })
-    .limit(limit);
+    .limit(limit * 2); // Fetch 2x limit for sorting
 if (pipeline) q = q.eq("pipeline", pipeline);
 if (source !== "all") q = q.eq("source", sourceSafe(source));
 const { data, error } = await q;
 if (error) throw new Error(error.message);
-return data || [];
+// Apply smart sorting and return requested limit
+const sorted = smartSortByPriority(data || []);
+return sorted.slice(0, limit);
 }
 async function sbGetConversationById(id) {
 const { data, error } = await ops()
@@ -398,16 +634,18 @@ return data || null;
 async function sbListConversationsByCoach({ coach_id, pipeline, source = "all", limit = 8 }) {
 let q = ops()
 .from("conversations")
-.select("id, source, pipeline, subject, preview, updated_at, coach_id, coach_name")
+.select("id, source, pipeline, subject, preview, updated_at, next_action_at, priority_tier, coach_id, coach_name")
 .eq("coach_id", coach_id)
 .order("updated_at", { ascending: false })
-.limit(limit);
+.limit(limit * 2); // Fetch 2x for sorting
 if (pipeline) q = q.eq("pipeline", pipeline);
 if (source !== "all") q = q.eq("source", sourceSafe(source));
 const { data, error } = await q;
 if (error) throw new Error(error.message);
 
-return data || [];
+// Apply smart sorting and return requested limit
+const sorted = smartSortByPriority(data || []);
+return sorted.slice(0, limit);
 }
 // ---------- CALLS ----------
 async function sbListCalls({ limit = 8, offset = 0 } = {}) {
@@ -666,17 +904,33 @@ enrollClicks: 0,
 eappVisits: 0,
 threadsCreated: 0, // ✅ new
 };
-for (const r of rows) {
-if (r.event_type === "program_link_open") counts.programLinkOpens++;
-if (r.event_type === "coverage_exploration") counts.coverageExploration++;
-if (r.event_type === "enroll_click") counts.enrollClicks++;
-if (r.event_type === "eapp_visit") counts.eappVisits++;
-// ✅ choose ONE canonical thread metric event name and stick to it
-if (r.event_type === "thread_created" || r.event_type === "conversation.created")
-counts.threadsCreated++;
-}
-// For week/month, return just counts (fast)
-if (window !== "year") return counts;
+  for (const r of rows) {
+    if (r.event_type === "program_link_open") counts.programLinkOpens++;
+    if (r.event_type === "coverage_exploration") counts.coverageExploration++;
+    if (r.event_type === "enroll_click") counts.enrollClicks++;
+    if (r.event_type === "eapp_visit") counts.eappVisits++;
+    // ✅ choose ONE canonical thread metric event name and stick to it
+    if (r.event_type === "thread_created" || r.event_type ===  "conversation.created")
+      counts.threadsCreated++;
+  }
+  
+  // Fetch calls answered for all windows
+  let callsAnswered = 0;
+  try {
+    let cq = ops()
+      .from("calls")
+      .select("id, outcome, updated_at, created_at")
+      .gte("created_at", since);
+    const { data: calls, error: callErr } = await cq;
+    if (!callErr && calls?.length) {
+      callsAnswered = calls.filter((c) => c.outcome === "completed" || c.outcome === "answered").length;
+    }
+  } catch (_) {}
+  
+  counts.callsAnswered = callsAnswered;
+  
+  // For week/month, return counts only
+  if (window !== "year") return counts;
 // ---------- YEAR EXTRAS ----------
 // Build monthly buckets
 const order = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -688,6 +942,7 @@ exploration: 0,
 enrollClicks: 0,
 eappVisits: 0,
 threads: 0,
+callsAnswered: 0,
 }));
 
 for (const r of rows) {
@@ -700,6 +955,24 @@ if (r.event_type === "eapp_visit") monthly[mi].eappVisits++;
 if (r.event_type === "thread_created" || r.event_type === "conversation.created")
 monthly[mi].threads++;
 }
+
+// Add calls to monthly buckets
+try {
+let cq2 = ops()
+.from("calls")
+.select("outcome, created_at")
+.gte("created_at", since);
+const { data: callsData, error: callErr2 } = await cq2;
+if (!callErr2 && callsData?.length) {
+for (const c of callsData) {
+if (c.outcome === "completed" || c.outcome === "answered") {
+const mi = monthIndex(c.created_at);
+if (mi >= 0 && mi <= 11) monthly[mi].callsAnswered++;
+}
+}
+}
+} catch (_) {}
+
 // best month / best month ever (same thing unless you later compare multi-years)
 const bestMonth = monthly.reduce((a, b) => (b.enrollClicks > a.enrollClicks ? b : a),
 monthly[0]);
@@ -736,22 +1009,9 @@ if (b > a) return "up";
 if (b < a) return "down";
 return "flat";
 };
-// calls answered (year) — assumes calls table has outcome + created_at or updated_at
-let callsAnswered = 0;
-try {
-let cq = ops()
-.from("calls")
-.select("id, outcome, updated_at, created_at")
-.gte("created_at", since);
-const { data: calls, error: callErr } = await cq;
-if (!callErr && calls?.length) {
-callsAnswered = calls.filter((c) => c.outcome === "completed" || c.outcome ===
-"answered").length;
-}
-} catch (_) {}
+
 return {
 ...counts,
-callsAnswered, // ✅ new
 monthlyBreakdown: monthly,
 bestWeek,
 bestMonth: { label: bestMonth.label, enrollClicks: bestMonth.enrollClicks, threads:
@@ -764,6 +1024,7 @@ exploration: trendOf("exploration"),
 enrollClicks: trendOf("enrollClicks"),
 eappVisits: trendOf("eappVisits"),
 threads: trendOf("threads"),
+callsAnswered: trendOf("callsAnswered"),
 },
 };
 }
@@ -1080,6 +1341,7 @@ return Markup.inlineKeyboard([
 // row 2
 [
 Markup.button.callback(ccBtnLabel, `CC:${id}`),
+Markup.button.callback("👥 People", `PEOPLE:${id}`),
 ],
 // row 3 (mirror + delete)
 [
@@ -1291,6 +1553,36 @@ type: "conversation",
 card_key: `conversation:${mirror.id}`,
 ref_id: mirror.id,
 });
+});
+// ---------- MIRRORS LIST (v5.4) ----------
+bot.action(/^MIRRORS:(.+)$/, async (ctx) => {
+if (!isAdmin(ctx)) return;
+const cardKey = ctx.match[1];
+const mirrors = await getMirrors(cardKey);
+
+if (!mirrors || mirrors.length === 0) {
+const kb = Markup.inlineKeyboard([
+[Markup.button.callback("⬅ Back", `OPENCARD:${cardKey}`)],
+]);
+return smartRender(ctx, `🪞 Mirrors\n\nNo linked cards found for:\n${cardKey}`, kb);
+}
+
+let text = `🪞 Mirrors\n\nLinked cards for: ${cardKey}\n\n`;
+const buttons = [];
+
+for (const m of mirrors.slice(0, 10)) {
+const mk = m.mirror_card_key || m.card_key || "";
+const label = m.label || m.title || mk || "Mirror";
+text += `• ${shorten(label, 50)}\n  ${mk}\n\n`;
+if (mk) {
+buttons.push([Markup.button.callback(shorten(label, 28), `OPENCARD:${mk}`)]);
+}
+}
+
+buttons.push([Markup.button.callback("🔄 Refresh", `MIRRORS:${cardKey}`)]);
+buttons.push([Markup.button.callback("⬅ Back", `OPENCARD:${cardKey}`)]);
+
+return smartRender(ctx, text, Markup.inlineKeyboard(buttons));
 });
 // ==========================================================
 // 🧵 THREAD VIEW (paged) — v5.3 OPS CLEAN + LIVE REFRESH + LATEST JUMP +
@@ -2297,14 +2589,154 @@ card_key: `triage:${filterSource}`,
 ref_id: filterSource,
 });
 });
+// ---------- v5.4 SEARCH STATE & ENHANCED SEARCH ----------
+const SEARCH_STATE = new Map(); // chatId -> { awaiting: true, startedAt: timestamp }
+
+function setSearchMode(chatId, active = true) {
+if (!active) {
+SEARCH_STATE.delete(chatId);
+} else {
+SEARCH_STATE.set(chatId, { awaiting: true, startedAt: Date.now() });
+}
+}
+
+function getSearchMode(chatId) {
+return SEARCH_STATE.get(chatId);
+}
+
+async function runSearch(chatId, query) {
+// v5.4 enhanced search with fallback queries
+const q = String(query || "").trim();
+if (!q) return [];
+
+let results = [];
+
+// Try unified search view first (v5.4 pattern)
+try {
+const { data, error } = await ops()
+.from("ops_v_search")
+.select("*")
+.ilike("search_text", `%${q}%`)
+.limit(40);
+if (!error && Array.isArray(data) && data.length > 0) {
+return smartSortByPriority(data).slice(0, 25);
+}
+} catch (_) {}
+
+// Fallback: search multiple tables
+const fallbackQueries = [
+// Conversations
+async () => {
+const { data } = await ops()
+.from("conversations")
+.select("id, subject, preview, updated_at, next_action_at, priority_tier, source, pipeline")
+.or(`subject.ilike.%${q}%,preview.ilike.%${q}%,contact_email.ilike.%${q}%`)
+.limit(15);
+return (data || []).map(r => ({ ...r, entity_type: "conversation", card_key: `conversation:${r.id}` }));
+},
+// Submissions
+async () => {
+const { data } = await ops()
+.from("submissions")
+.select("submission_id, submission_payload, created_at")
+.limit(15);
+const filtered = (data || []).filter(s => {
+const p = s.submission_payload || {};
+const searchable = [p.first_name, p.last_name, p.email, p.phone, p.state].join(" ").toLowerCase();
+return searchable.includes(q.toLowerCase());
+});
+return filtered.map(r => ({ ...r, entity_type: "submission", card_key: `submission:${r.submission_id}` }));
+},
+// People
+async () => {
+const { data } = await ops()
+.from("people")
+.select("id, name, email, role, created_at")
+.or(`name.ilike.%${q}%,email.ilike.%${q}%`)
+.limit(15);
+return (data || []).map(r => ({ ...r, entity_type: "person", card_key: `person:${r.id}` }));
+},
+];
+
+for (const fn of fallbackQueries) {
+try {
+const items = await fn();
+results = results.concat(items);
+} catch (err) {
+logError("runSearch fallback", err);
+}
+}
+
+return smartSortByPriority(results).slice(0, 25);
+}
+
+async function renderSearchResults(ctx, query, rows) {
+const title = `🔎 Search Results: ${query}`;
+if (!rows || rows.length === 0) {
+const kb = Markup.inlineKeyboard([
+[Markup.button.callback("🔎 New Search", "SEARCH:help")],
+[Markup.button.callback("⬅ Dashboard", "DASH:back")],
+]);
+return smartRender(ctx, `${title}\n\nNo results found.`, kb);
+}
+
+let text = `${title}\n\n`;
+const buttons = [];
+
+for (const r of rows.slice(0, 12)) {
+const cardKey = r.card_key || `${r.entity_type}:${r.id || r.submission_id}`;
+const label = r.subject || r.name || r.title || r.display_title || "Item";
+const sub = r.preview || r.email || r.role || r.entity_type || "";
+text += `• ${shorten(label, 50)}\n  ${shorten(sub, 60)}\n  ${cardKey}\n\n`;
+buttons.push([Markup.button.callback(shorten(label, 28), `OPENCARD:${cardKey}`)]);
+}
+
+buttons.push([Markup.button.callback("🔎 New Search", "SEARCH:help"), Markup.button.callback("🕘 Recent", "SEARCH:recent")]);
+buttons.push([Markup.button.callback("⬅ Dashboard", "DASH:back")]);
+
+return smartRender(ctx, text, Markup.inlineKeyboard(buttons));
+}
+
+// Message handler for search input (v5.4)
+bot.on("message", async (ctx, next) => {
+try {
+const chatId = ctx.chat?.id;
+if (!chatId) return next();
+
+const searchState = getSearchMode(chatId);
+if (!searchState?.awaiting) return next();
+
+// User is in search mode - process the query
+const query = ctx.message?.text;
+if (!query) return next();
+
+setSearchMode(chatId, false); // Exit search mode
+
+const results = await runSearch(chatId, query);
+await renderSearchResults(ctx, query, results);
+return; // Don't call next() - we handled it
+} catch (err) {
+logError("search message handler", err);
+return next();
+}
+});
+
 // ---------- SEARCH HELP (keep) ----------
 bot.action("SEARCH:help", async (ctx) => {
 if (!isAdmin(ctx)) return;
-await ctx.reply(
-`🔎 Search usage:\n/search your text\n\nExamples:\n/search Jordan Smith\n/search
-submission_id:SUB_123\n/search coach:COACH_8F2A`,
-Markup.inlineKeyboard([[Markup.button.callback("⬅ Dashboard", "DASH:back")]])
-);
+
+// v5.4: Activate search mode
+const chatId = ctx.chat?.id;
+if (chatId) setSearchMode(chatId, true);
+
+const text =
+`🔎 Search\n\nType your search query now:\n• Coach name\n• Client name or email\n• Submission ID\n• Phone number\n• Any keyword\n\nTip: Keep it simple - fewer words work better.\n\nOr use /search <text> anytime.`;
+
+const kb = Markup.inlineKeyboard([
+[Markup.button.callback("🕘 Recent", "SEARCH:recent")],
+[Markup.button.callback("⬅ Dashboard", "DASH:back")],
+]);
+await smartRender(ctx, text, kb);
 });
 // ---------- SEARCH RECENT ----------
 bot.action("SEARCH:recent", async (ctx) => {
@@ -2343,7 +2775,7 @@ async function sbCountTriageDueNow({ source = "all" } = {}) {
 // Recommended: implement as SELECT count(*) from ops.ops_v_triage_due_now where
 // source=...
 // Placeholder stub (replace with your Supabase query)
-const { data, error } = await ops()
+const { count, error } = await ops()
 .from("ops_v_triage_due_now")
 .select("card_key", { count: "exact", head: true })
 .eq("source", source === "all" ? "all" : source); // adjust if your view stores source differently
@@ -2351,8 +2783,7 @@ if (error) {
 console.log("sbCountTriageDueNow error:", error);
 return 0;
 }
-return data?.length ? data.length : (data?.count ?? 0); // depending on client; safest fallback
-below
+return Number(count) || 0;
 }
 async function sbCountNeedsReply({ source = "all" } = {}) {
 // Recommended: view like ops.ops_v_conversations_card with pipeline field
@@ -2460,7 +2891,7 @@ const kb = Markup.inlineKeyboard([
 [Markup.button.callback("🔎 Search", "SEARCH:help"), Markup.button.callback("🕘 Recent", "SEARCH:recent")],
 [Markup.button.callback("⬅ Dashboard", "DASH:back")],
 ]);
-const msg = await ctx.reply(text, kb);
+const msg = await smartRender(ctx, text, kb);
 // ✅ live refresh registration
 registerLiveCard(msg, {
 type: "today",
@@ -2579,31 +3010,75 @@ ref_id: filterSource,
 // ==========================================================
 // METRICS CARD
 // ==========================================================
-bot.action("METRICS:open", async (ctx) => {
+async function showMetricsCard(ctx, window = "month") {
 if (!isAdmin(ctx)) return;
 
 const filterSource = getAdminFilter(ctx) || "all";
-const metrics = await sbMetricSummary({ source: filterSource, window: "month" });
+const metrics = await sbMetricSummary({ source: filterSource, window });
 
-const title = `📊 Metrics · Last 30 Days`;
-const body = `
-🔗 Program Link Opens: ${metrics.programLinkOpens || 0}
-🔍 Coverage Exploration: ${metrics.coverageExploration || 0}
-✅ Enroll Clicks: ${metrics.enrollClicks || 0}
-📝 eApp Visits: ${metrics.eappVisits || 0}
-🧵 Threads Created: ${metrics.threadsCreated || 0}
+const titleMap = {
+week: "📊 Metrics · Last 7 Days",
+month: "📊 Metrics · Last 30 Days",
+year: "📊 Metrics · This Year"
+};
+const title = titleMap[window] || titleMap.month;
+
+// Calculate averages
+const divisor = window === "week" ? 7 : window === "year" ? 365 : 30;
+const perLabel = window === "year" ? "/mo" : "/day";
+const avgDivisor = window === "year" ? 12 : divisor; // year shows per month average
+
+const avg = (val) => Math.round((val || 0) / avgDivisor);
+
+let body = `
+Parent Guide Link Opens: ${metrics.programLinkOpens || 0} (Avg ${avg(metrics.programLinkOpens)}${perLabel})
+Coverage Exploration: ${metrics.coverageExploration || 0} (Avg ${avg(metrics.coverageExploration)}${perLabel})
+Enroll Clicks: ${metrics.enrollClicks || 0} (Avg ${avg(metrics.enrollClicks)}${perLabel})
+eApp Visits: ${metrics.eappVisits || 0} (Avg ${avg(metrics.eappVisits)}${perLabel})
+Threads Created (replies): ${metrics.threadsCreated || 0} (Avg ${avg(metrics.threadsCreated)}${perLabel})
+Calls Answered: ${metrics.callsAnswered || 0} (Avg ${avg(metrics.callsAnswered)}${perLabel})
 `.trim();
 
+// Add best week/month for year view
+if (window === "year" && metrics.bestWeek && metrics.bestMonth) {
+const bestWeek = `🏆 Best Week: ${metrics.bestWeek.label || "—"} (Enroll ${metrics.bestWeek.enrollClicks || 0}, Threads ${metrics.bestWeek.threads || 0})`;
+const bestMonth = `⭐ Best Month: ${metrics.bestMonth.label || "—"} (Enroll ${metrics.bestMonth.enrollClicks || 0}, Threads ${metrics.bestMonth.threads || 0})`;
+body += `\n\n${bestWeek}\n${bestMonth}`;
+}
+
 const kb = [
+[
+Markup.button.callback(window === "week" ? "• Week" : "Week", "METRICS:week"),
+Markup.button.callback(window === "month" ? "• Month" : "Month", "METRICS:month"),
+Markup.button.callback(window === "year" ? "• Year" : "Year", "METRICS:year"),
+],
+[Markup.button.callback("🎉 Year Summary", "METRICS:yearsummary")],
 [Markup.button.callback("⬅ Dashboard", "DASH:back")],
 ];
 
 const msg = await smartRender(ctx, `${title}\n\n${body}`, Markup.inlineKeyboard(kb));
 registerLiveCard(msg, {
 type: "metrics",
-card_key: `metrics:${filterSource}`,
-ref_id: filterSource,
+card_key: `metrics:${filterSource}:${window}`,
+ref_id: `${filterSource}:${window}`,
 });
+return msg;
+}
+
+bot.action("METRICS:open", async (ctx) => {
+return showMetricsCard(ctx, "month");
+});
+
+bot.action("METRICS:week", async (ctx) => {
+return showMetricsCard(ctx, "week");
+});
+
+bot.action("METRICS:month", async (ctx) => {
+return showMetricsCard(ctx, "month");
+});
+
+bot.action("METRICS:year", async (ctx) => {
+return showMetricsCard(ctx, "year");
 });
 // ==========================================================
 // CLIENTS + CLIENT CARD (v5.3 OPS CLEAN + POOLS)
@@ -3534,7 +4009,7 @@ if (!isAdmin(ctx)) return;
 const filterSource = getAdminFilter(ctx);
 const y = await sbMetricSummary({ source: filterSource, window: "year" });
 const text = buildYearSummaryText(y, filterSource);
-const msg = await ctx.reply(text, yearSummaryKeyboard());
+const msg = await smartRender(ctx, text, yearSummaryKeyboard());
 // ✅ Live refresh registration (auto-updating card)
 if (typeof registerLiveCard === "function") {
 registerLiveCard(msg, {
@@ -4087,12 +4562,27 @@ submissionKeyboard(sub)
 else if (meta.type === "call") {
 const call = await sbGetCall(meta.ref_id);
 if (!call) continue;
+const textHtml = buildCallCardTextHTML(call);
 await safeEditMessageText(
 meta.chat_id,
 msgId,
-await buildCallCard(call),
-callKeyboard(call)
+textHtml,
+{ parse_mode: "HTML", ...callKeyboard(call) }
 );
+}
+// ======================
+// THREAD VIEW
+// ======================
+else if (meta.type === "thread_view") {
+const convId = meta.conv_id || String(meta.ref_id || "").split(":")[0];
+if (!convId) continue;
+const parsedOffset = Number(String(meta.ref_id || "").split(":")[1] || 0);
+const offset = Number(meta.offset ?? parsedOffset ?? 0);
+const limit = Number(meta.limit ?? 6);
+const page = await buildThreadPage(convId, offset, limit);
+if (page?.ok) {
+await safeEditMessageText(meta.chat_id, msgId, page.text, page.keyboard);
+}
 }
 // ======================
 // POOLS / COACH CARD
@@ -4141,6 +4631,20 @@ meta.chat_id,
 msgId,
 await metricsText(filterSource),
 metricsKeyboard()
+);
+}
+// ======================
+// METRICS YEAR SUMMARY
+// ======================
+else if (meta.type === "metrics_year") {
+const filterSource = meta.ref_id || "all";
+const y = await sbMetricSummary({ source: filterSource, window: "year" });
+const text = buildYearSummaryText(y, filterSource);
+await safeEditMessageText(
+meta.chat_id,
+msgId,
+text,
+yearSummaryKeyboard()
 );
 }
 // ======================
