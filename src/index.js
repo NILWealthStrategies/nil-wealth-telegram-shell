@@ -886,13 +886,13 @@ return data || [];
 // ---------- METRICS (v5.3 aligned) ----------
 async function sbMetricSummary({ source = "all", window = "month" }) {
 const now = new Date();
-const sinceDays = window === "week" ? 7 : window === "year" ? 365 : 30;
-const since = new Date(now.getTime() - sinceDays * 24 * 3600 * 1000).toISOString();
+const sinceDays = window === "week" ? 7 : window === "year" ? 365 : window === "all" ? null : 30;
+const since = sinceDays ? new Date(now.getTime() - sinceDays * 24 * 3600 * 1000).toISOString() : null;
 // metric events
 let q = ops()
 .from("metric_events")
-.select("event_type, source, created_at")
-.gte("created_at", since);
+.select("event_type, source, created_at");
+if (since) q = q.gte("created_at", since);
 
 if (source !== "all") q = q.eq("source", sourceSafe(source));
 const { data, error } = await q;
@@ -920,8 +920,8 @@ threadsCreated: 0, // ✅ new
   try {
     let cq = ops()
       .from("calls")
-      .select("id, outcome, updated_at, created_at")
-      .gte("created_at", since);
+      .select("id, outcome, updated_at, created_at");
+    if (since) cq = cq.gte("created_at", since);
     const { data: calls, error: callErr } = await cq;
     if (!callErr && calls?.length) {
       callsAnswered = calls.filter((c) => c.outcome === "completed" || c.outcome === "answered").length;
@@ -1150,14 +1150,7 @@ completedCount: await sbCountConversations({ pipeline: "completed", source: filt
 submissionsCount: await sbCountSubmissions(),
 callsCount: await sbCountCalls(),
 };
-const scopeTitle =
-filterSource === "support"
-? "📊 Metrics (Support)"
-
-: filterSource === "programs"
-? "📊 Metrics (Programs)"
-: "📊 Metrics (Company)";
-const m = await sbMetricSummary({ source: filterSource, window: "month" });
+const m = await sbMetricSummary({ source: filterSource, window: "all" });
 return `🏠 NIL Wealth Ops Dashboard
 
 ${CODE_VERSION} · Build: ${String(BUILD_VERSION).slice(0, 8)}
@@ -1177,11 +1170,14 @@ ${CODE_VERSION} · Build: ${String(BUILD_VERSION).slice(0, 8)}
 📚 Follow-Ups: ${counts.followCount}
 📱 Calls: ${counts.callsCount}
 ✅ Completed: ${counts.completedCount}
-${scopeTitle}
 
-📊Metrics:
-Engagement: ${m.programLinkOpens} opens
-Exploration: ${m.coverageExploration}
+📊 Metrics:
+Total Parent Guide Opens: ${m.programLinkOpens}
+Total Coverage Exploration: ${m.coverageExploration}
+Total Enroll Portal Visits: ${m.enrollClicks}
+Total eApp Visits: ${m.eappVisits}
+Total Threads: ${m.threadsCreated}
+Total Calls Answered: ${m.callsAnswered}
 
 Use buttons below.`;
 }
@@ -1323,6 +1319,7 @@ Coach: ${coach}
 Contact: ${contact}
 Subject: ${subj}
 Preview: ${prev}
+Updated: ${tFmtDateTimeShort(conv.updated_at)}
 💬 Messages: ${msgCount}
 ${sla} · ${until}
 CC: ${ccOn ? "📇 Enabled" : "Off"}${gmail}`;
@@ -1375,7 +1372,7 @@ State: ${p.state || "—"}
 Coverage: ${coverageLabel(p)}
 Referral: ${p.referral_source || p.referral || "—"}
 
-Created: ${sub.created_at || "—"}`;
+Received: ${tFmtDateTimeShort(sub.created_at)}`;
 }
 function submissionKeyboard(sub) {
 return Markup.inlineKeyboard([
@@ -2345,6 +2342,22 @@ return d.toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2
 return "—";
 }
 }
+function tFmtDateTimeShort(dt) {
+if (!dt) return "—";
+try {
+const d = new Date(dt);
+if (isNaN(d.getTime())) return "—";
+return d.toLocaleString("en-US", {
+year: "numeric",
+month: "short",
+day: "2-digit",
+hour: "numeric",
+minute: "2-digit",
+});
+} catch (_) {
+return "—";
+}
+}
 // ---------- conversation triage helpers ----------
 function tComputeWaitingMinutes(c) {
 if (Number.isFinite(Number(c.waiting_minutes))) return Number(c.waiting_minutes);
@@ -3077,7 +3090,7 @@ const avg = (val) => Math.round((val || 0) / avgDivisor);
 let body = `
 Parent Guide Link Opens: ${metrics.programLinkOpens || 0} (Avg ${avg(metrics.programLinkOpens)}${perLabel})
 Coverage Exploration: ${metrics.coverageExploration || 0} (Avg ${avg(metrics.coverageExploration)}${perLabel})
-Enroll Clicks: ${metrics.enrollClicks || 0} (Avg ${avg(metrics.enrollClicks)}${perLabel})
+Enroll Portal Visits: ${metrics.enrollClicks || 0} (Avg ${avg(metrics.enrollClicks)}${perLabel})
 eApp Visits: ${metrics.eappVisits || 0} (Avg ${avg(metrics.eappVisits)}${perLabel})
 Threads Created (replies): ${metrics.threadsCreated || 0} (Avg ${avg(metrics.threadsCreated)}${perLabel})
 Calls Answered: ${metrics.callsAnswered || 0} (Avg ${avg(metrics.callsAnswered)}${perLabel})
@@ -3765,6 +3778,7 @@ const phoneLine = rawPhone
 : "—";
 const role = esc(c.role || c.client_role || "—");
 const when = esc(fmtWhen(c.scheduled_for));
+const updatedAt = esc(tFmtDateTimeShort(c.updated_at || c.created_at));
 // Calendly reasoning fields (flexible mapping)
 const sportLevel = esc(
 c.sport_level ||
@@ -3791,6 +3805,7 @@ Role: ${role}
 <b>When</b>
 Scheduled: ${when}
 Status: <b>${esc(status)}</b>
+Updated: ${updatedAt}
 <b>Reason (Calendly)</b>
 
 Sport/Level: ${sportLevel}
@@ -3977,79 +3992,22 @@ await ctx.reply(
 function buildYearSummaryText(y, filterSource) {
 const n = (v) => (typeof v === "number" && isFinite(v) ? v : 0);
 const avg = (total) => Math.round(n(total) / 12);
-const trendEmoji = (v) =>
-v === "up" ? "📈 Up-Trend" : v === "down" ? "📉 Down-Trend" : "➖ Flat";
 const months = Array.isArray(y.monthlyBreakdown) ? y.monthlyBreakdown : [];
 const byLabel = new Map(
 months.map((m) => [String(m.label || m.month || "").toLowerCase(), m])
 );
 const order = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const pick = (mon) => byLabel.get(mon.toLowerCase()) || {};
-const row = (name, key) => {
-const vals = order.map((mon) => {
-const mm = pick(mon);
-const v =
-key === "opens" ? n(mm.opens)
-: key === "exploration" ? n(mm.exploration)
-: key === "enrollClicks" ? n(mm.enrollClicks)
-: key === "eappVisits" ? n(mm.eappVisits)
-: key === "threads" ? n(mm.threads)
-: key === "callsAnswered" ? n(mm.callsAnswered)
-: 0;
-return String(v).padStart(3, " ");
-});
-return `${name.padEnd(8, " ")} ${vals.join(" ")}`;
-};
-const header = ` ${order.join(" ")}`;
-const chartBlock =
-"```\n" +
-`${header}\n` +
-`${row("Guide:", "opens")}\n` +
-`${row("Explr:", "exploration")}\n` +
-
-`${row("Enroll:", "enrollClicks")}\n` +
-`${row("eApp:", "eappVisits")}\n` +
-`${row("Threads:", "threads")}\n` +
-`${row("Calls:", "callsAnswered")}\n` +
-"```";
-const bestWeek = y.bestWeek
-? `🏆 Best Week: ${y.bestWeek.label || "—"} (Enroll ${n(y.bestWeek.enrollClicks)}, Threads
-${n(y.bestWeek.threads)})`
-: "🏆 Best Week: —";
-const bestMonth = y.bestMonth
-? `⭐ Best Month: ${y.bestMonth.label || "—"} (Enroll ${n(y.bestMonth.enrollClicks)}, Threads
-${n(y.bestMonth.threads)})`
-: "⭐ Best Month: —";
-const bestMonthEver = y.bestMonthEver
-? `👑 Best Month Ever: ${y.bestMonthEver.label || "—"} (Enroll
-${n(y.bestMonthEver.enrollClicks)}, Threads ${n(y.bestMonthEver.threads)})`
-: "👑 Best Month Ever: —";
-const t = y.trend || {};
+const monthLine = order
+.map((mon) => `${mon} ${String(n(pick(mon).enrollClicks)).padStart(2, " ")}`)
+.join("  ");
+const bestMonth = y.bestMonth?.label || "—";
 return (
 `🎉 Year Summary · ${filterSource}\n\n` +
-`Totals\n` +
-`• Total Parent Guides Opened: ${n(y.programLinkOpens)} (Avg
-${avg(y.programLinkOpens)}/mo)\n` +
-`• Coverage Exploration: ${n(y.coverageExploration)} (Avg
-${avg(y.coverageExploration)}/mo)\n` +
-`• Enroll Clicks: ${n(y.enrollClicks)} (Avg ${avg(y.enrollClicks)}/mo)\n` +
-`• eApp Visits: ${n(y.eappVisits)} (Avg ${avg(y.eappVisits)}/mo)\n` +
-`• Threads (Replies): ${n(y.threadsCreated)} (Avg ${avg(y.threadsCreated)}/mo)\n` +
-`• Calls Answered: ${n(y.callsAnswered)} (Avg ${avg(y.callsAnswered)}/mo)\n\n` +
-`Monthly Breakdown\n\n` +
-`${chartBlock}\n\n` +
-`Highlights\n` +
-`${bestWeek}\n` +
-`${bestMonth}\n` +
-`${bestMonthEver}\n\n` +
-`Trends (vs last month)\n` +
-`• Parent Guides: ${trendEmoji(t.opens)}\n` +
-`• Exploration: ${trendEmoji(t.exploration)}\n` +
-`• Enroll Clicks: ${trendEmoji(t.enrollClicks)}\n` +
-
-`• eApp Visits: ${trendEmoji(t.eappVisits)}\n` +
-`• Threads (Replies): ${trendEmoji(t.threads)}\n` +
-`• Calls Answered: ${trendEmoji(t.callsAnswered)}`
+`Total Clicks: ${n(y.enrollClicks)} (Avg ${avg(y.enrollClicks)}/mo)\n` +
+`Best Month: ${bestMonth}\n\n` +
+`Monthly Clicks\n` +
+`${monthLine}`
 );
 }
 function yearSummaryKeyboard() {
