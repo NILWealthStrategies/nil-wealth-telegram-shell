@@ -2011,6 +2011,30 @@ Markup.inlineKeyboard([[Markup.button.callback("⬅ Dashboard", "DASH:back")]])
 );
 });
 // ---------- SEARCH HELP (v5.3 + History) ----------
+bot.action("SEARCH:help", async (ctx) => {
+
+if (!isAdmin(ctx)) return;
+await ctx.reply(
+`🔎 Search
+Use:
+/search <text>
+Best searches:
+• /search Coach Jordan Smith
+• /search Sarah Johnson
+• /search submission_id: SUB_12345
+• /search phone: +14045551234
+• /search coach_id: COACH_8F2A
+• /search thread_key: coach:COACH_8F2A:comm
+Tip:
+If you don’t get results, try fewer words.
+History:
+• /recent (shows your last opened cards)`,
+Markup.inlineKeyboard([
+[Markup.button.callback("🕘 Recent", "SEARCH:recent")],
+[Markup.button.callback("⬅ Dashboard", "DASH:back")],
+])
+);
+});
 // ===============================
 // TODAY (v5.3) — FINAL (WITH COUNTS + LIVE REFRESH)
 // Shows:
