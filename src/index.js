@@ -354,6 +354,31 @@ const { data, error } = await ops()
 if (error) throw new Error(error.message);
 return data || null;
 }
+async function sbListPeopleByIdentity({ client_id = null, normalized_email = null, normalized_phone = null, limit = 12 } = {}) {
+// Query people by various identifiers
+let q = ops()
+.from("people")
+.select("id, name, email, phone_e164, role, created_at, updated_at, conversation_id")
+.order("updated_at", { ascending: false })
+.limit(limit);
+
+// Build OR conditions dynamically
+const conditions = [];
+if (client_id) conditions.push(`id.eq.${client_id}`);
+if (normalized_email) conditions.push(`email.ilike.%${normalized_email}%`);
+if (normalized_phone) conditions.push(`phone_e164.ilike.%${normalized_phone}%`);
+
+if (conditions.length > 0) {
+q = q.or(conditions.join(","));
+}
+
+const { data, error } = await q;
+if (error) {
+console.log("sbListPeopleByIdentity error:", error);
+return [];
+}
+return data || [];
+}
 // ---------- COACHES / POOLS ----------
 async function sbListCoaches({ limit = 10 } = {}) {
 const { data, error } = await ops()
@@ -624,6 +649,50 @@ const mi = monthIndex(r.created_at);
 if (mi < 0 || mi > 11) continue;
 if (r.event_type === "program_link_open") monthly[mi].opens++;
 if (r.event_type === "coverage_exploration") monthly[mi].exploration++;
+async function sbPoolsOverview({ source = "all", limit = 40 } = {}) {
+// Get pools overview - coaches with their conversations and activity metrics
+// If there's a view like ops_v_pools_overview, use it; otherwise build from coaches + conversations
+// For now, try the view first, fallback to basic coaches query
+let q = ops()
+.from("coaches")
+.select(`
+id,
+coach_id,
+coach_name,
+program,
+school,
+updated_at,
+created_at
+`)
+.order("updated_at", { ascending: false })
+.limit(limit);
+
+if (source !== "all") q = q.eq("program", source === "programs" ? "programs" : "support");
+
+const { data, error } = await q;
+if (error) {
+console.log("sbPoolsOverview error:", error);
+return [];
+}
+
+// Map to expected format with derived flags
+const rows = (data || []).map(coach => ({
+coach_id: coach.coach_id,
+coach_full_name: coach.coach_name,
+program_name: coach.program || coach.school || "Unknown",
+needs_reply: false,
+followup_due: false,
+is_active: true,
+waiting_minutes: 0,
+followup_next_action_at: null,
+last_activity_at: coach.updated_at,
+guide_opens_year: 0,
+enroll_clicks_year: 0,
+eapp_visits_year: 0,
+}));
+
+return rows;
+}
 if (r.event_type === "enroll_click") monthly[mi].enrollClicks++;
 if (r.event_type === "eapp_visit") monthly[mi].eappVisits++;
 if (r.event_type === "thread_created" || r.event_type === "conversation.created")
@@ -2139,6 +2208,30 @@ return 0;
 }
 return Number(count) || 0;
 }
+async function sbListCoachFollowupsDueNow({ source = "all", limit = 24 } = {}) {
+// List coach followups that are due now
+// Try to use view first, fallback to conversations query
+const now = new Date().toISOString();
+
+let q = ops()
+.from("conversations")
+.select("id, coach_id, coach_name, contact_name, contact_email, source, pipeline, subject, preview, updated_at, created_at")
+.eq("pipeline", "followups")
+.lte("next_action_at", now)
+.order("next_action_at", { ascending: true })
+.limit(limit);
+
+if (source !== "all") {
+q = q.eq("source", sourceSafe(source));
+}
+
+const { data, error } = await q;
+if (error) {
+console.log("sbListCoachFollowupsDueNow error:", error);
+return [];
+}
+return data || [];
+}
 async function sbCountCallsToday({ source = "all", dayStartISO, dayEndISO } = {}) {
 // Recommended: view like ops.ops_v_calls_card with scheduled_at
 // Calls Today = scheduled_at within [dayStart, dayEnd)
@@ -2190,7 +2283,7 @@ const kb = Markup.inlineKeyboard([
 [Markup.button.callback("⚡️ Triage", "TRIAGE:open")],
 [Markup.button.callback("📱 Calls", "CALLS:hub"), Markup.button.callback("🗂 All Queues",
 "ALLQ:open")],
-[Markup.button.callback("🕘 Recent", "SEARCH:recent")],
+[Markup.button.callback("🔎 Search", "SEARCH:help"), Markup.button.callback("🕘 Recent", "SEARCH:recent")],
 [Markup.button.callback("⬅ Dashboard", "DASH:back")],
 ]);
 const msg = await ctx.reply(text, kb);
