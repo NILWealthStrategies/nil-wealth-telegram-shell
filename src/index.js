@@ -58,6 +58,8 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 auth: { persistSession: false },
 });
 const ops = () => supabase.schema("ops");
+// ---------- IN-MEMORY FILTER STORAGE ----------
+const userFilters = new Map(); // userId -> filter value ("all" | "programs" | "support")
 // ---------- AUTH ----------
 function isAdmin(ctx) {
 if (!ADMIN_IDS.length) return true;
@@ -82,24 +84,17 @@ return String(sig) === String(expected);
 // ---------- ADMIN FILTER HELPER (v5.4) ----------
 function getAdminFilter(ctx) {
 try {
-return (
-ctx.session?.admin_filter ||
-ctx.session?.adminFilter ||
-ctx.state?.admin_filter ||
-ctx.state?.adminFilter ||
-ctx.scene?.state?.admin_filter ||
-ctx.scene?.state?.adminFilter ||
-"all"
-);
+const userId = String(ctx.from?.id || "");
+return userFilters.get(userId) || "all";
 } catch (_) {
 return "all";
 }
 }
 function setAdminFilter(ctx, v) {
-if (!ctx.session) ctx.session = {};
-ctx.session.admin_filter = v;
-if (!ctx.state) ctx.state = {};
-ctx.state.admin_filter = v;
+try {
+const userId = String(ctx.from?.id || "");
+userFilters.set(userId, v);
+} catch (_) {}
 }
 function safeStr(v) {
 if (v === null || v === undefined) return "";
@@ -700,50 +695,6 @@ const mi = monthIndex(r.created_at);
 if (mi < 0 || mi > 11) continue;
 if (r.event_type === "program_link_open") monthly[mi].opens++;
 if (r.event_type === "coverage_exploration") monthly[mi].exploration++;
-async function sbPoolsOverview({ source = "all", limit = 40 } = {}) {
-// Get pools overview - coaches with their conversations and activity metrics
-// If there's a view like ops_v_pools_overview, use it; otherwise build from coaches + conversations
-// For now, try the view first, fallback to basic coaches query
-let q = ops()
-.from("coaches")
-.select(`
-id,
-coach_id,
-coach_name,
-program,
-school,
-updated_at,
-created_at
-`)
-.order("updated_at", { ascending: false })
-.limit(limit);
-
-if (source !== "all") q = q.eq("program", source === "programs" ? "programs" : "support");
-
-const { data, error } = await q;
-if (error) {
-console.log("sbPoolsOverview error:", error);
-return [];
-}
-
-// Map to expected format with derived flags
-const rows = (data || []).map(coach => ({
-coach_id: coach.coach_id,
-coach_full_name: coach.coach_name,
-program_name: coach.program || coach.school || "Unknown",
-needs_reply: false,
-followup_due: false,
-is_active: true,
-waiting_minutes: 0,
-followup_next_action_at: null,
-last_activity_at: coach.updated_at,
-guide_opens_year: 0,
-enroll_clicks_year: 0,
-eapp_visits_year: 0,
-}));
-
-return rows;
-}
 if (r.event_type === "enroll_click") monthly[mi].enrollClicks++;
 if (r.event_type === "eapp_visit") monthly[mi].eappVisits++;
 if (r.event_type === "thread_created" || r.event_type === "conversation.created")
@@ -816,8 +767,49 @@ threads: trendOf("threads"),
 },
 };
 }
-// ---------- VIEW LABELS (v5.1) ----------
+// ---------- POOLS OVERVIEW ----------
+async function sbPoolsOverview({ source = "all", limit = 40 } = {}) {
+// Get pools overview - coaches with their conversations and activity metrics
+let q = ops()
+.from("coaches")
+.select(`
+id,
+coach_id,
+coach_name,
+program,
+school,
+updated_at,
+created_at
+`)
+.order("updated_at", { ascending: false })
+.limit(limit);
 
+if (source !== "all") q = q.eq("program", source === "programs" ? "programs" : "support");
+
+const { data, error } = await q;
+if (error) {
+console.log("sbPoolsOverview error:", error);
+return [];
+}
+
+// Map to expected format with derived flags
+const rows = (data || []).map(coach => ({
+coach_id: coach.coach_id,
+coach_full_name: coach.coach_name,
+program_name: coach.program || coach.school || "Unknown",
+needs_reply: false,
+followup_due: false,
+is_active: true,
+waiting_minutes: 0,
+followup_next_action_at: null,
+last_activity_at: coach.updated_at,
+guide_opens_year: 0,
+enroll_clicks_year: 0,
+eapp_visits_year: 0,
+}));
+
+return rows;
+}
 function viewTitle(key) {
 const map = {
 urgent: "‼️ Urgent",
@@ -1898,6 +1890,99 @@ card_key: `person_subs:${personId}`,
 ref_id: personId,
 });
 });
+// ---------- SUBMISSION DETAIL CARD ----------
+bot.action(/^SUB:(.+)$/, async (ctx) => {
+if (!isAdmin(ctx)) return;
+const submissionId = ctx.match[1];
+const sub = await sbGetSubmission(submissionId);
+if (!sub) return ctx.reply("Submission not found.");
+
+const p = sub.submission_payload || {};
+const name = [p.first_name, p.last_name].filter(Boolean).join(" ") || "—";
+const email = p.email || "—";
+const state = sub.state || "—";
+const athlete = sub.athlete_name || p.athlete_name || "—";
+const cov = sub.coverage_accident && sub.coverage_hospital_indemnity ? "Accident + Hospital Indemnity"
+: sub.coverage_accident ? "Accident"
+: sub.coverage_hospital_indemnity ? "Hospital Indemnity"
+: (sub.coverage_type || "—");
+const coach = sub.coach_name ? `Coach: ${sub.coach_name}` : "—";
+const pool = sub.pool_label ? `Pool: ${sub.pool_label}` : "—";
+
+const text = `🧾 Submission · ${idShort(submissionId)}\n\nSubmitter\n${name}\n${email}\n\nAthlete\n${athlete}\n\nDetails\nState: ${state}\nCoverage: ${cov}\n${coach}\n${pool}\n\nCreated: ${sub.created_at || "—"}`;
+
+const kb = Markup.inlineKeyboard([
+[Markup.button.callback("⬅ Back", "ALLQ:open")],
+]);
+
+const msg = await smartRender(ctx, text, kb);
+registerLiveCard(msg, {
+type: "submission",
+card_key: `submission:${submissionId}`,
+ref_id: submissionId,
+});
+});
+// ---------- COACH DETAIL CARD ----------
+bot.action(/^COACH:(.+)$/, async (ctx) => {
+if (!isAdmin(ctx)) return;
+const coachId = ctx.match[1];
+const coach = await sbGetCoach(coachId);
+if (!coach) return ctx.reply("Coach not found.");
+
+const name = coach.coach_name || "—";
+const program = coach.program || coach.school || "—";
+const filterSource = getAdminFilter(ctx);
+const convs = await sbListConversationsByCoach({ coach_id: coachId, source: filterSource, limit: 10 });
+
+const text = `🧑‍🏫 Coach · ${name}\n\nProgram\n${program}\n\nActive Conversations\n${convs.length}\n\nCreated: ${coach.created_at || "—"}`;
+
+const kb = [
+[Markup.button.callback("📬 Conversations", `COACH:convs:${coachId}`)],
+[Markup.button.callback("⬅ Back", "POOLS:open")],
+];
+
+const msg = await smartRender(ctx, text, Markup.inlineKeyboard(kb));
+registerLiveCard(msg, {
+type: "coach",
+card_key: `coach:${coachId}`,
+ref_id: coachId,
+});
+});
+// ---------- COACH CONVERSATIONS ----------
+bot.action(/^COACH:convs:(.+)$/, async (ctx) => {
+if (!isAdmin(ctx)) return;
+const coachId = ctx.match[1];
+const coach = await sbGetCoach(coachId);
+if (!coach) return ctx.reply("Coach not found.");
+
+const filterSource = getAdminFilter(ctx);
+const convs = await sbListConversationsByCoach({ coach_id: coachId, source: filterSource, limit: 12 });
+
+const title = `🧵 ${coach.coach_name || "Coach"}'s Conversations`;
+const body = convs.length ? convs.map((c, i) => `${i+1}. ${c.subject || "(no subject)"}\n${c.preview || ""}`).join("\n\n") : "No conversations.";
+
+const kb = convs.map((c) => [Markup.button.callback(`Open • ${idShort(c.id)}`, `OPENCARD:${c.id}`)]);
+kb.push([Markup.button.callback("⬅ Back", `COACH:${coachId}`)]);
+
+const msg = await smartRender(ctx, `${title}\n\n${body}`, Markup.inlineKeyboard(kb));
+registerLiveCard(msg, {
+type: "coach_convs",
+card_key: `coach_convs:${coachId}`,
+ref_id: coachId,
+});
+});
+// ---------- CLIENTS SEARCH ----------
+bot.action("CLIENTS:search", async (ctx) => {
+if (!isAdmin(ctx)) return;
+
+const text = `🔎 Search Clients\n\nSend a message with client name or email to search.\n\nExample:\njordan smith\njsmith@example.com`;
+
+const kb = Markup.inlineKeyboard([
+[Markup.button.callback("⬅ Back", "CLIENTS:open")],
+]);
+
+await smartRender(ctx, text, kb);
+});
 // ---------- FORMATTING HELPERS (v5.3) ----------
 // Sample refresh handlers and helpers omitted to avoid parsing issues.
 function tSafe(s, max = 92) {
@@ -2204,7 +2289,7 @@ const action = tFollowupTargetAction(f);
 if (action) kb.push([Markup.button.callback(tFollowupBtnLabel(f), action)]);
 });
 kb.push([Markup.button.callback("⬅ Dashboard", "DASH:back")]);
-const msg = await ctx.reply(lines.join("\n\n"), Markup.inlineKeyboard(kb));
+const msg = await smartRender(ctx, lines.join("\n\n"), Markup.inlineKeyboard(kb));
 // ✅ Register as live card for auto-refresh
 registerLiveCard(msg, {
 type: "triage",
@@ -2220,6 +2305,20 @@ await ctx.reply(
 submission_id:SUB_123\n/search coach:COACH_8F2A`,
 Markup.inlineKeyboard([[Markup.button.callback("⬅ Dashboard", "DASH:back")]])
 );
+});
+// ---------- SEARCH RECENT ----------
+bot.action("SEARCH:recent", async (ctx) => {
+if (!isAdmin(ctx)) return;
+
+const text = `🕘 Recent Items\n\nRecent feature shows your last accessed conversations.\n\nTo access: Open any conversation from a queue view.`;
+
+const kb = Markup.inlineKeyboard([
+[Markup.button.callback("📱 Calls", "CALLS:hub")],
+[Markup.button.callback("⚡️ Triage", "TRIAGE:open")],
+[Markup.button.callback("⬅ Dashboard", "DASH:back")],
+]);
+
+await smartRender(ctx, text, kb);
 });
 // ---------- SEARCH HELP (v5.3 + History) ----------
 // ===============================
@@ -2469,10 +2568,7 @@ kb.push([
 Markup.button.callback("⬅ Dashboard","DASH:back")
 ]);
 // ---------- SEND MESSAGE ----------
-const msg = await ctx.reply(
-lines.join("\n\n"),
-Markup.inlineKeyboard(kb)
-);
+const msg = await smartRender(ctx, lines.join("\n\n"), Markup.inlineKeyboard(kb));
 // ✅ REGISTER LIVE CARD (THIS IS THE IMPORTANT PART)
 registerLiveCard(msg, {
 type: "pools",
@@ -2583,7 +2679,7 @@ Markup.button.callback("📜 History", "CLIENTS:list:history"),
 [Markup.button.callback("🔎 Search", "CLIENTS:search")],
 [Markup.button.callback("⬅ Dashboard", "DASH:back")],
 ]);
-const msg = await ctx.reply(text, kb);
+const msg = await smartRender(ctx, text, kb);
 registerLiveCard(msg, {
 type: "clients",
 card_key: "clients:all",
