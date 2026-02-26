@@ -57,7 +57,7 @@ app.use(express.json({ limit: "2mb" }));
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 auth: { persistSession: false },
 });
-const ops = () => supabase.schema("ops");
+const ops = () => supabase.schema("nil");
 // ---------- IN-MEMORY FILTER STORAGE ----------
 const userFilters = new Map(); // userId -> filter value ("all" | "programs" | "support")
 // ---------- AUTH ----------
@@ -163,8 +163,8 @@ return String(Date.now());
 }
 }
 async function dbSelectFirst(candidates) {
-// Try multiple DB query candidates (ops vs public schema fallback)
-// v5.4 pattern for schema migration compatibility
+// Try multiple DB query candidates
+// v5.4 pattern for schema compatibility
 for (const fn of candidates) {
 try {
 const result = await fn();
@@ -260,7 +260,7 @@ payload: evt.payload || null,
 return crypto.createHash("sha256").update(raw).digest("hex");
 }
 async function sbInsertOpsEvent(evt) {
-// requires ops.ops_events (append-only) with unique constraint recommended:
+// requires nil.ops_events (append-only) with unique constraint recommended:
 // unique(event_type, idempotency_key)
 const row = {
 id: uuidv4(),
@@ -332,27 +332,19 @@ trace_id: traceId || newTraceId(),
 status: "queued",
 queued_at: new Date().toISOString(),
 };
-// Try ops_email_outbox first (v5.4 naming)
-try {
-const { data, error } = await ops()
-.from("ops_email_outbox")
-.insert(payload)
-.select("*")
-.maybeSingle();
-if (!error && data) return data;
-} catch (_) {}
-// Fallback to email_outbox (backward compatibility)
+// Insert to nil.email_outbox
 try {
 const { data, error } = await ops()
 .from("email_outbox")
 .insert(payload)
 .select("*")
 .maybeSingle();
-if (!error && data) return data;
-} catch (_) {}
-// If no table exists, log and return null (graceful degradation)
-logError("queueEmailDraft", "No email_outbox table found - email not queued");
+if (error) throw error;
+return data;
+} catch (err) {
+logError("queueEmailDraft", err);
 return null;
+}
 }
 async function queueSmsDraft({ to, text, clientId = null, cardKey = null, traceId = null }) {
 // v5.4: Queue SMS to outbox table (safe if table doesn't exist)
@@ -365,27 +357,19 @@ trace_id: traceId || newTraceId(),
 status: "queued",
 queued_at: new Date().toISOString(),
 };
-// Try ops_sms_outbox first (v5.4 naming)
-try {
-const { data, error } = await ops()
-.from("ops_sms_outbox")
-.insert(payload)
-.select("*")
-.maybeSingle();
-if (!error && data) return data;
-} catch (_) {}
-// Fallback to sms_outbox (backward compatibility)
+// Insert to nil.sms_outbox
 try {
 const { data, error } = await ops()
 .from("sms_outbox")
 .insert(payload)
 .select("*")
 .maybeSingle();
-if (!error && data) return data;
-} catch (_) {}
-// If no table exists, log and return null (graceful degradation)
-logError("queueSmsDraft", "No sms_outbox table found - SMS not queued");
+if (error) throw error;
+return data;
+} catch (err) {
+logError("queueSmsDraft", err);
 return null;
+}
 }
 // ---------- MIRROR SYSTEM (v5.4) ----------
 async function mirrorEvent(event) {
@@ -400,26 +384,20 @@ return false;
 }
 }
 async function getMirrors(cardKey) {
-// v5.4: Get mirrored/linked cards (safe if view doesn't exist)
+// Get mirrored/linked cards from nil.card_mirrors
 if (!cardKey) return [];
-try {
-const { data, error } = await ops()
-.from("ops_v_card_mirrors")
-.select("*")
-.eq("card_key", cardKey)
-.limit(25);
-if (!error && data) return data;
-} catch (_) {}
-// Fallback to card_mirrors table
 try {
 const { data, error } = await ops()
 .from("card_mirrors")
 .select("*")
 .eq("card_key", cardKey)
 .limit(25);
-if (!error && data) return data;
-} catch (_) {}
+if (error) throw error;
+return data || [];
+} catch (err) {
+logError("getMirrors", err);
 return [];
+}
 }
 // ---------- SLA / URGENT ----------
 function minsUntilUrgent(updatedAtIso) {
@@ -470,33 +448,57 @@ return bTime - aTime;
 }
 // ---------- COUNTS ----------
 async function sbCountConversations({ pipeline, source }) {
+try {
 let q = ops().from("conversations").select("id", { count: "exact", head: true });
 if (pipeline) q = q.eq("pipeline", pipeline);
 if (source && source !== "all") q = q.eq("source", sourceSafe(source));
 const { count, error } = await q;
-if (error) throw new Error(error.message);
+if (error) {
+  console.warn(`sbCountConversations(${pipeline}) error:`, error.message);
+  return 0; // Return 0 instead of throwing
+}
 return count || 0;
+} catch (err) {
+console.warn(`sbCountConversations(${pipeline}) exception:`, err.message);
+return 0;
+}
 }
 async function sbCountSubmissions() {
+try {
 const { count, error } = await ops()
 .from("submissions")
 .select("submission_id", { count: "exact", head: true });
-if (error) throw new Error(error.message);
+if (error) {
+  console.warn("sbCountSubmissions error:", error.message);
+  return 0;
+}
 return count || 0;
+} catch (err) {
+console.warn("sbCountSubmissions exception:", err.message);
+return 0;
+}
 }
 async function sbCountCalls() {
+try {
 const { count, error } = await ops()
 .from("calls")
 .select("id", { count: "exact", head: true });
-if (error) throw new Error(error.message);
+if (error) {
+  console.warn("sbCountCalls error:", error.message);
+  return 0;
+}
 return count || 0;
+} catch (err) {
+console.warn("sbCountCalls exception:", err.message);
+return 0;
+}
 }
 // ---------- LISTS ----------
 async function sbListConversations({ pipeline, source = "all", limit = 8 }) {
   let q = ops()
     .from("conversations")
     .select(
-      'id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at, next_action_at, priority_tier, cc_support_suggested, gmail_url, mirror_conversation_id'
+      'id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at, cc_support_suggested, gmail_url, mirror_conversation_id'
     )
     .order("updated_at", { ascending: false })
     .limit(limit * 2); // Fetch 2x limit for sorting
@@ -634,7 +636,7 @@ return data || null;
 async function sbListConversationsByCoach({ coach_id, pipeline, source = "all", limit = 8 }) {
 let q = ops()
 .from("conversations")
-.select("id, source, pipeline, subject, preview, updated_at, next_action_at, priority_tier, coach_id, coach_name")
+.select("id, source, pipeline, subject, preview, updated_at, coach_id, coach_name")
 .eq("coach_id", coach_id)
 .order("updated_at", { ascending: false })
 .limit(limit * 2); // Fetch 2x for sorting
@@ -642,7 +644,6 @@ if (pipeline) q = q.eq("pipeline", pipeline);
 if (source !== "all") q = q.eq("source", sourceSafe(source));
 const { data, error } = await q;
 if (error) throw new Error(error.message);
-
 // Apply smart sorting and return requested limit
 const sorted = smartSortByPriority(data || []);
 return sorted.slice(0, limit);
@@ -1175,10 +1176,10 @@ ${CODE_VERSION} · Build: ${String(BUILD_VERSION).slice(0, 8)}
 🧾 Submissions: ${counts.submissionsCount}
 📚 Follow-Ups: ${counts.followCount}
 📱 Calls: ${counts.callsCount}
-
 ✅ Completed: ${counts.completedCount}
 ${scopeTitle}
 
+📊Metrics:
 Engagement: ${m.programLinkOpens} opens
 Exploration: ${m.coverageExploration}
 
@@ -1389,29 +1390,50 @@ if (!isAdmin(ctx)) return;
 await ctx.reply("✅ NIL Wealth Ops Bot running.\nType /dashboard");
 });
 bot.command("dashboard", async (ctx) => {
+try {
 if (!isAdmin(ctx)) return;
 const filterSource = getAdminFilter(ctx);
 await ctx.reply(await dashboardText(filterSource), dashboardKeyboardV50());
+} catch (err) {
+logError(ctx, err);
+await ctx.reply(`❌ Error loading dashboard: ${err.message}`);
+}
 });
 bot.action("DASH:back", async (ctx) => {
+try {
 if (!isAdmin(ctx)) return;
 const filterSource = getAdminFilter(ctx);
 await smartRender(ctx, await dashboardText(filterSource), dashboardKeyboardV50());
+} catch (err) {
+logError(ctx, err);
+await ctx.reply(`❌ Error loading dashboard: ${err.message}`);
+}
 });
 bot.action("DASH:refresh", async (ctx) => {
+try {
 if (!isAdmin(ctx)) return;
 const filterSource = getAdminFilter(ctx);
 await smartRender(ctx, await dashboardText(filterSource), dashboardKeyboardV50());
+} catch (err) {
+logError(ctx, err);
+await ctx.reply(`❌ Error refreshing dashboard: ${err.message}`);
+}
 });
 // ---------- FILTER ----------
 bot.action(/^FILTER:(all|programs|support)$/, async (ctx) => {
+try {
 if (!isAdmin(ctx)) return;
 const v = ctx.match[1];
 setAdminFilter(ctx, v);
 await smartRender(ctx, await dashboardText(v), dashboardKeyboardV50());
+} catch (err) {
+logError(ctx, err);
+await ctx.reply(`❌ Error applying filter: ${err.message}`);
+}
 });
 // ---------- ALL QUEUES ----------
 bot.action("ALLQ:open", async (ctx) => {
+try {
 if (!isAdmin(ctx)) return;
 
 const filterSource = getAdminFilter(ctx);
@@ -1425,11 +1447,16 @@ ref_id: `allq:${filterSource}`,
 filterSource,
 });
 }
+} catch (err) {
+logError(ctx, err);
+await ctx.reply(`❌ Error loading queues: ${err.message}`);
+}
 });
 // ---------- QUEUE VIEW ----------
 bot.action(
   /^VIEW:(urgent|needs_reply|actions_waiting|active|followups|forwarded|website_submissions|completed):?(\d*)$/,
 async (ctx) => {
+try {
 if (!isAdmin(ctx)) return;
 const viewKey = ctx.match[1];
 const page = parseInt(ctx.match[2]) || 1;
@@ -1498,8 +1525,11 @@ const rows = await sbListConversations({ pipeline: viewKey, source: filterSource
 await showConversationList(ctx, viewKey, rows, filterSource);
 // If you want queue lists to live-refresh too, update showConversationList
 // to return the sent message and register it there.
+} catch (err) {
+logError(ctx, err);
+await ctx.reply(`❌ Error loading queue: ${err.message}`);
 }
-);
+});
 // ---------- OPENCARD (conversation + submission) ----------
 bot.action(/^OPENCARD:(.+)$/, async (ctx) => {
 if (!isAdmin(ctx)) return;
@@ -2477,6 +2507,7 @@ return `OPENCALL:${id}`;
 // TRIAGE HANDLER
 // ===============================
 bot.action("TRIAGE:open", async (ctx) => {
+try {
 if (!isAdmin(ctx)) return;
 const filterSource = getAdminFilter(ctx) || "all";
 // Conversations
@@ -2588,6 +2619,10 @@ type: "triage",
 card_key: `triage:${filterSource}`,
 ref_id: filterSource,
 });
+} catch (err) {
+logError(ctx, err);
+await ctx.reply(`❌ Error loading triage: ${err.message}`);
+}
 });
 // ---------- v5.4 SEARCH STATE & ENHANCED SEARCH ----------
 const SEARCH_STATE = new Map(); // chatId -> { awaiting: true, startedAt: timestamp }
@@ -2605,7 +2640,7 @@ return SEARCH_STATE.get(chatId);
 }
 
 async function runSearch(chatId, query) {
-// v5.4 enhanced search with fallback queries
+// v5.4 enhanced search (tries unified view first, then individual nil tables)
 const q = String(query || "").trim();
 if (!q) return [];
 
@@ -2614,7 +2649,7 @@ let results = [];
 // Try unified search view first (v5.4 pattern)
 try {
 const { data, error } = await ops()
-.from("ops_v_search")
+.from("v_search")
 .select("*")
 .ilike("search_text", `%${q}%`)
 .limit(40);
@@ -2623,7 +2658,7 @@ return smartSortByPriority(data).slice(0, 25);
 }
 } catch (_) {}
 
-// Fallback: search multiple tables
+// If view doesn't exist, search individual nil tables
 const fallbackQueries = [
 // Conversations
 async () => {
@@ -2663,7 +2698,7 @@ try {
 const items = await fn();
 results = results.concat(items);
 } catch (err) {
-logError("runSearch fallback", err);
+logError("runSearch (individual table)", err);
 }
 }
 
@@ -2772,11 +2807,11 @@ await smartRender(ctx, text, kb);
 
 // ===============================
 async function sbCountTriageDueNow({ source = "all" } = {}) {
-// Recommended: implement as SELECT count(*) from ops.ops_v_triage_due_now where
+// Recommended: implement as SELECT count(*) from nil.v_triage_due_now where
 // source=...
 // Placeholder stub (replace with your Supabase query)
 const { count, error } = await ops()
-.from("ops_v_triage_due_now")
+.from("v_triage_due_now")
 .select("card_key", { count: "exact", head: true })
 .eq("source", source === "all" ? "all" : source); // adjust if your view stores source differently
 if (error) {
@@ -2786,9 +2821,9 @@ return 0;
 return Number(count) || 0;
 }
 async function sbCountNeedsReply({ source = "all" } = {}) {
-// Recommended: view like ops.ops_v_conversations_card with pipeline field
+// Recommended: view like nil.v_conversations_card with pipeline field
 const q = ops()
-.from("ops_v_conversations_card")
+.from("v_conversations_card")
 .select("id", { count: "exact", head: true })
 .eq("pipeline", "needs_reply");
 if (source !== "all") q.eq("source", source);
@@ -2800,9 +2835,9 @@ return 0;
 return Number(count) || 0;
 }
 async function sbCountCoachFollowupsDueNow({ source = "all" } = {}) {
-// Recommended: view like ops.ops_v_coach_followups_due_now
+// Recommended: view like nil.v_coach_followups_due_now
 let q = ops()
-.from("ops_v_coach_followups_due_now")
+.from("v_coach_followups_due_now")
 .select("coach_id", { count: "exact", head: true });
 if (source !== "all") q = q.eq("source", source);
 
@@ -2814,8 +2849,7 @@ return 0;
 return Number(count) || 0;
 }
 async function sbListCoachFollowupsDueNow({ source = "all", limit = 24 } = {}) {
-// List coach followups that are due now
-// Try to use view first, fallback to conversations query
+// List coach followups that are due now from nil.conversations
 const now = new Date().toISOString();
 
 let q = ops()
@@ -2838,10 +2872,10 @@ return [];
 return data || [];
 }
 async function sbCountCallsToday({ source = "all", dayStartISO, dayEndISO } = {}) {
-// Recommended: view like ops.ops_v_calls_card with scheduled_at
+// Recommended: view like nil.v_calls_card with scheduled_at
 // Calls Today = scheduled_at within [dayStart, dayEnd)
 let q = ops()
-.from("ops_v_calls_card")
+.from("v_calls_card")
 .select("call_id", { count: "exact", head: true })
 .gte("scheduled_at", dayStartISO)
 .lt("scheduled_at", dayEndISO);
@@ -2855,6 +2889,7 @@ return Number(count) || 0;
 }
 // ---------- TODAY ----------
 bot.action("TODAY:open", async (ctx) => {
+try {
 if (!isAdmin(ctx)) return;
 const filterSource = getAdminFilter(ctx) || "all";
 const now = new Date();
@@ -2898,12 +2933,17 @@ type: "today",
 card_key: `today:${filterSource}`,
 ref_id: filterSource,
 });
+} catch (err) {
+logError(ctx, err);
+await ctx.reply(`❌ Error loading today: ${err.message}`);
+}
 });
 // ---------- POOLS ----------
 // ===============================
 // POOLS (v5.3 FINAL — Refresh Enabled)
 // ===============================
 bot.action("POOLS:open", async (ctx) => {
+try {
 if (!isAdmin(ctx)) return;
 
 const filterSource = getAdminFilter(ctx) || "all";
@@ -3006,6 +3046,10 @@ type: "pools",
 card_key: `pools:${filterSource}`,
 ref_id: filterSource,
 });
+} catch (err) {
+logError(ctx, err);
+await ctx.reply(`❌ Error loading pools: ${err.message}`);
+}
 });
 // ==========================================================
 // METRICS CARD
@@ -3128,6 +3172,7 @@ return showMetricsCard(ctx, "year");
 // CLIENTS HUB
 // ------------------------------
 bot.action("CLIENTS:open", async (ctx) => {
+try {
 if (!isAdmin(ctx)) return;
 const stats = await sbClientSummary();
 
@@ -3160,6 +3205,10 @@ type: "clients",
 card_key: "clients:all",
 ref_id: "all",
 });
+} catch (err) {
+logError(ctx, err);
+await ctx.reply(`❌ Error loading clients: ${err.message}`);
+}
 });
 // ------------------------------
 // CLIENTS LISTS
@@ -3770,6 +3819,7 @@ Markup.button.callback("🗑 Delete", `DELETECONFIRM:call:${c.id}`),
 }
 // -------- Calls Hub --------
 bot.action(/^CALLS:hub:?(\d*)$/, async (ctx) => {
+try {
 if (!isAdmin(ctx)) return;
 const page = parseInt(ctx.match[1]) || 1;
 const pageSize = 5;
@@ -3805,6 +3855,10 @@ if (navRow.length > 0) kb.push(navRow);
 kb.push([Markup.button.callback("⬅ Dashboard", "DASH:back")]);
 const msg = await smartRender(ctx, `${viewTitle("calls")}\n${pageInfo}\n\n${body}`, Markup.inlineKeyboard(kb));
 return msg;
+} catch (err) {
+logError(ctx, err);
+await ctx.reply(`❌ Error loading calls: ${err.message}`);
+}
 });
 // -------- Open Call Card --------
 bot.action(/^CALL:(.+)$/, async (ctx) => {
@@ -4069,10 +4123,10 @@ return crypto
 async function sbGetSelectedDraftBody(conversationId, kind = "conversation") {
 // kind: "conversation" | "bridge" | "support_forward"
 
-// Expected table: ops_message_drafts with fields:
+// Expected table: message_drafts with fields:
 // conversation_id, kind, version (1/2/3), selected (bool), subject, body
 const { data, error } = await ops()
-.from("ops_message_drafts")
+.from("message_drafts")
 .select("version, subject, body")
 .eq("conversation_id", conversationId)
 .eq("kind", kind)
@@ -4793,7 +4847,7 @@ return res.json({ ok: true });
 } catch (e) {
 // dead-letter
 try {
-await ops().from("ops_dead_letters").insert({
+await ops().from("dead_letters").insert({
 received_at: new Date().toISOString(),
 error: String(e.message || e),
 payload: req.body || null,
