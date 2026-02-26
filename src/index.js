@@ -316,12 +316,12 @@ if (error) throw new Error(error.message);
 return data || [];
 }
 // ---------- SUBMISSIONS ----------
-async function sbListSubmissions({ limit = 8 } = {}) {
+async function sbListSubmissions({ limit = 8, offset = 0 } = {}) {
 const { data, error } = await ops()
 .from("submissions")
 .select("submission_id, created_at, submission_payload")
 .order("created_at", { ascending: false })
-.limit(limit);
+.range(offset, offset + limit - 1);
 if (error) throw new Error(error.message);
 return data || [];
 }
@@ -338,10 +338,13 @@ return data || null;
 async function sbListPeopleForConversation(conversation_id) {
 const { data, error } = await ops()
 .from("people")
-.select("id, name, email, phone_e164, role, created_at, updated_at")
+.select("id, name, email, role, created_at, updated_at")
 .eq("conversation_id", conversation_id)
 .order("updated_at", { ascending: false });
-if (error) throw new Error(error.message);
+if (error) {
+console.log("sbListPeopleForConversation error:", error);
+return [];
+}
 return data || [];
 }
 
@@ -358,7 +361,7 @@ async function sbListPeopleByIdentity({ client_id = null, normalized_email = nul
 // Query people by various identifiers
 let q = ops()
 .from("people")
-.select("id, name, email, phone_e164, role, created_at, updated_at, conversation_id")
+.select("id, name, email, role, created_at, updated_at")
 .order("updated_at", { ascending: false })
 .limit(limit);
 
@@ -366,7 +369,6 @@ let q = ops()
 const conditions = [];
 if (client_id) conditions.push(`id.eq.${client_id}`);
 if (normalized_email) conditions.push(`email.ilike.%${normalized_email}%`);
-if (normalized_phone) conditions.push(`phone_e164.ilike.%${normalized_phone}%`);
 
 if (conditions.length > 0) {
 q = q.or(conditions.join(","));
@@ -413,14 +415,14 @@ if (error) throw new Error(error.message);
 return data || [];
 }
 // ---------- CALLS ----------
-async function sbListCalls({ limit = 8 } = {}) {
+async function sbListCalls({ limit = 8, offset = 0 } = {}) {
   const { data, error } = await ops()
     .from("calls")
     .select(
-      "id, client_name, client_phone_e164, scheduled_for, outcome, updated_at, created_at"
+      "id, client_name, scheduled_at, outcome, updated_at, created_at"
     )
     .order("updated_at", { ascending: false })
-    .limit(limit);
+    .range(offset, offset + limit - 1);
 if (error) throw new Error(error.message);
 return data || [];
 }
@@ -459,11 +461,14 @@ await ops().from("messages").update({ is_deleted: true }).eq("id", messageId);
 async function sbListConversationsByPersonId(personId, limit = 10) {
 const { data, error } = await ops()
 .from("conversations")
-.select("id, source, pipeline, subject, preview, updated_at, coach_name, contact_name")
+.select("id, source, pipeline, subject, preview, updated_at, coach_name, contact_email")
 .or(`coach_id.eq.${personId},contact_id.eq.${personId}`)
 .order("updated_at", { ascending: false })
 .limit(limit);
-if (error) throw new Error(error.message);
+if (error) {
+console.log("sbListConversationsByPersonId error:", error);
+return [];
+}
 return data || [];
 }
 async function sbListSubmissionsByPersonId(personId, limit = 10) {
@@ -476,33 +481,33 @@ const { data, error } = await ops()
 if (error) throw new Error(error.message);
 return data || [];
 }
-async function sbListClientSubmissions(clientId, limit = 10) {
+async function sbListClientSubmissions(clientId, limit = 10, offset = 0) {
 const { data, error } = await ops()
 .from("submissions")
 .select("submission_id, athlete_name, state, created_at, coverage_accident, coverage_hospital_indemnity, coverage_type, coach_id, coach_name, pool_label, submission_payload")
 .eq("client_id", clientId)
 .order("created_at", { ascending: false })
-.limit(limit);
+.range(offset, offset + limit - 1);
 if (error) throw new Error(error.message);
 return data || [];
 }
 async function sbListClientCalls(clientId, limit = 10) {
 const { data, error } = await ops()
 .from("calls")
-.select("id, client_name, client_email, best_phone, scheduled_for, reason, outcome, updated_at, created_at, conversation_id")
+.select("id, client_name, client_email, best_phone, scheduled_at, reason, outcome, updated_at, created_at, conversation_id")
 .eq("client_id", clientId)
 .order("updated_at", { ascending: false })
 .limit(limit);
 if (error) throw new Error(error.message);
 return data || [];
 }
-async function sbListClientThreads(clientId, limit = 10) {
+async function sbListClientThreads(clientId, limit = 10, offset = 0) {
 const { data, error } = await ops()
 .from("conversations")
-.select("id, source, pipeline, subject, preview, updated_at, coach_name, contact_name, thread_key")
+.select("id, source, pipeline, subject, preview, updated_at, coach_name, contact_email, thread_key")
 .eq("client_id", clientId)
 .order("updated_at", { ascending: false })
-.limit(limit);
+.range(offset, offset + limit - 1);
 if (error) throw new Error(error.message);
 return data || [];
 }
@@ -538,25 +543,20 @@ async function sbClientSummary() {
 // Since conversations doesn't have client_id, we use people as proxy
 const { data: people, error: peopleErr } = await ops()
 .from("people")
-.select("id, created_at, conversation_id");
+.select("id, created_at");
 if (peopleErr) {
 console.log("sbClientSummary error:", peopleErr);
 return { total: 0, newMonth: 0, withConversations: 0, needsReply: 0, active: 0, completed: 0 };
 }
 const rows = people || [];
 const monthAgo = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
-const withConv = rows.filter(p => p.conversation_id).length;
+const withConv = 0; // No conversation_id column
 const newMonth = rows.filter(p => p.created_at >= monthAgo).length;
 
-// Get pipeline stats from conversations
-const convIds = rows.map(p => p.conversation_id).filter(Boolean);
-if (convIds.length === 0) {
-return { total: rows.length, newMonth, withConversations: 0, needsReply: 0, active: 0, completed: 0 };
-}
+// Get pipeline stats from conversations - get all since we can't link directly
 const { data: convs } = await ops()
 .from("conversations")
-.select("id, pipeline")
-.in("id", convIds);
+.select("id, pipeline");
 const needsReply = (convs || []).filter(c => c.pipeline === "needs_reply").length;
 const active = (convs || []).filter(c => c.pipeline === "active").length;
 const completed = (convs || []).filter(c => c.pipeline === "completed").length;
@@ -570,12 +570,12 @@ active,
 completed,
 };
 }
-async function sbListClients({ bucket = "all", limit = 12 } = {}) {
+async function sbListClients({ bucket = "all", limit = 12, offset = 0 } = {}) {
 // Returns list of people (clients/contacts) with metadata
 // Since no dedicated clients table, use people as proxy
 let q = ops()
 .from("people")
-.select("id, name, email, phone_e164, role, conversation_id, created_at, updated_at")
+.select("id, name, email, role, created_at, updated_at")
 .order("updated_at", { ascending: false });
 
 if (bucket === "new_month") {
@@ -583,7 +583,7 @@ const monthAgo = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
 q = q.gte("created_at", monthAgo);
 }
 
-const { data, error } = await q.limit(limit);
+const { data, error } = await q.range(offset, offset + limit - 1);
 if (error) {
 console.log("sbListClients error:", error);
 return [];
@@ -593,7 +593,7 @@ return rows.map(p => ({
 client_id: p.id, // map id to client_id for compatibility
 name: p.name || "—",
 email: p.email || null,
-phone_e164: p.phone_e164 || null,
+phone_e164: null, // column doesn't exist
 role: p.role || null,
 last_activity_at: p.updated_at,
 }));
@@ -615,12 +615,12 @@ return {
 client_id: data.id,
 primary_name: data.name,
 primary_email: data.email,
-primary_phone_e164: data.phone_e164,
+primary_phone_e164: null, // column doesn't exist
 primary_role: data.role,
 status: "active",
 pool_label: null,
 state: null,
-conversation_id: data.conversation_id,
+conversation_id: null, // column doesn't exist
 created_at: data.created_at,
 updated_at: data.updated_at,
 };
@@ -634,14 +634,14 @@ const windowStart = new Date(now.getTime() - windowMs).toISOString();
 let q = ops()
 .from("calls")
 .select("*")
-.order("scheduled_for", { ascending: true })
+.order("scheduled_at", { ascending: true })
 .limit(limit);
 
 if (source !== "all") {
 q = q.eq("source", sourceSafe(source));
 }
 // Get calls scheduled within window or missing outcome
-q = q.or(`scheduled_for.gte.${windowStart},outcome.is.null`);
+q = q.or(`scheduled_at.gte.${windowStart},outcome.is.null`);
 const { data, error } = await q;
 if (error) {
 console.log("sbListCallsTriage error:", error);
@@ -981,7 +981,7 @@ Markup.button.callback("⏳ Waiting", "VIEW:actions_waiting"),
 Markup.button.callback("💬 Active", "VIEW:active"),
 ],
 [
-Markup.button.callback("📱 Calls", "TODAY:open"),
+Markup.button.callback("📱 Calls", "CALLS:hub"),
 Markup.button.callback("📚 Follow-Ups", "VIEW:followups"),
 ],
 [
@@ -1174,35 +1174,59 @@ filterSource,
 });
 // ---------- QUEUE VIEW ----------
 bot.action(
-  /^VIEW:(urgent|needs_reply|actions_waiting|active|followups|forwarded|website_submissions|completed)$/,
+  /^VIEW:(urgent|needs_reply|actions_waiting|active|followups|forwarded|website_submissions|completed):?(\d*)$/,
 async (ctx) => {
 if (!isAdmin(ctx)) return;
 const viewKey = ctx.match[1];
+const page = parseInt(ctx.match[2]) || 1;
 const filterSource = getAdminFilter(ctx);
 if (viewKey === "website_submissions") {
-const subs = await sbListSubmissions({ limit: 8 });
-const lineForSub = (s) => {
+const pageSize = 5;
+const offset = (page - 1) * pageSize;
+// Get total count + page of data
+const { data: allSubs, error: countErr } = await ops()
+.from("submissions")
+.select("submission_id", { count: "exact", head: false });
+const totalCount = allSubs?.length || 0;
+const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+const currentPage = Math.min(page, totalPages);
+  
+const subs = await sbListSubmissions({ limit: pageSize, offset });
+const lineForSub = (s, idx) => {
 const p = s.submission_payload || {};
 const name = [p.first_name, p.last_name].filter(Boolean).join(" ") || "—";
 const email = p.email || "—";
-const phone = p.phone_e164 || p.phone || "—";
 const state = p.state || "—";
 const athlete = p.athlete_name || "—";
 const acc = p.coverage_accident === true ? "✅ Accident" : "";
 const hosp = p.coverage_hospital_indemnity === true ? "✅ Hospital" : "";
 const cov = [acc, hosp].filter(Boolean).join(" + ") || (p.coverage_type || "—");
-return `• ${name}\n ${email} · ${phone}\n ${state} · ${athlete}\n ${cov}\n ID:
-${idShort(s.submission_id)}`;
+const shortId = idShort(s.submission_id);
+return `${offset + idx + 1}. ${name} • ${state}\n   ${athlete} • ${cov}\n   ID: ${shortId}`;
 };
 
+const pageInfo = `Page ${currentPage}/${totalPages} (${totalCount} total)`;
 const lines = subs.length ? subs.map(lineForSub).join("\n\n") : "No submissions.";
-const kb = subs.slice(0, 8).map((s) => [
-Markup.button.callback("Open", `OPENCARD:sub:${s.submission_id}`),
+const kb = subs.map((s, idx) => {
+const p = s.submission_payload || {};
+const name = [p.first_name, p.last_name].filter(Boolean).join(" ") || "—";
+return [
+Markup.button.callback(`Open • ${name} • ${idShort(s.submission_id)}`, `OPENCARD:sub:${s.submission_id}`),
 Markup.button.callback("🗑", `DELETECONFIRM:submission:${s.submission_id}`),
-]);
+];
+});
+// Pagination buttons
+const navRow = [];
+if (currentPage > 1) {
+navRow.push(Markup.button.callback("◀️ Prev", `VIEW:website_submissions:${currentPage - 1}`));
+}
+if (currentPage < totalPages) {
+navRow.push(Markup.button.callback("Next ▶️", `VIEW:website_submissions:${currentPage + 1}`));
+}
+if (navRow.length > 0) kb.push(navRow);
 kb.push([Markup.button.callback("⬅ Back", "ALLQ:open")]);
 const msg = await smartRender(ctx,
-`${headerLine("🧾 Submissions", filterSource)}\n\n${lines}`,
+`${headerLine("🧾 Submissions", filterSource)}\n${pageInfo}\n\n${lines}`,
 Markup.inlineKeyboard(kb)
 );
 // Optional: live list refresh
@@ -2266,7 +2290,7 @@ const now = new Date().toISOString();
 
 let q = ops()
 .from("conversations")
-.select("id, coach_id, coach_name, contact_name, contact_email, source, pipeline, subject, preview, updated_at, created_at")
+.select("id, coach_id, coach_name, contact_email, source, pipeline, subject, preview, updated_at, created_at")
 .eq("pipeline", "followups")
 .lte("next_action_at", now)
 .order("next_action_at", { ascending: true })
@@ -2457,6 +2481,35 @@ ref_id: filterSource,
 });
 });
 // ==========================================================
+// METRICS CARD
+// ==========================================================
+bot.action("METRICS:open", async (ctx) => {
+if (!isAdmin(ctx)) return;
+
+const filterSource = getAdminFilter(ctx) || "all";
+const metrics = await sbMetricSummary({ source: filterSource, window: "month" });
+
+const title = `📊 Metrics · Last 30 Days`;
+const body = `
+🔗 Program Link Opens: ${metrics.programLinkOpens || 0}
+🔍 Coverage Exploration: ${metrics.coverageExploration || 0}
+✅ Enroll Clicks: ${metrics.enrollClicks || 0}
+📝 eApp Visits: ${metrics.eappVisits || 0}
+🧵 Threads Created: ${metrics.threadsCreated || 0}
+`.trim();
+
+const kb = [
+[Markup.button.callback("⬅ Dashboard", "DASH:back")],
+];
+
+const msg = await smartRender(ctx, `${title}\n\n${body}`, Markup.inlineKeyboard(kb));
+registerLiveCard(msg, {
+type: "metrics",
+card_key: `metrics:${filterSource}`,
+ref_id: filterSource,
+});
+});
+// ==========================================================
 // CLIENTS + CLIENT CARD (v5.3 OPS CLEAN + POOLS)
 // ==========================================================
 //
@@ -2541,11 +2594,22 @@ ref_id: "all",
 // CLIENTS LISTS
 // buckets: needs_reply | active | completed | new_month | recent | history
 // ------------------------------
-bot.action(/^CLIENTS:list:(needs_reply|active|completed|new_month|recent|history)$/, async (ctx) => {
+bot.action(/^CLIENTS:list:(needs_reply|active|completed|new_month|recent|history):?(\d*)$/, async (ctx) => {
 if (!isAdmin(ctx)) return;
 const bucket = ctx.match[1];
+const page = parseInt(ctx.match[2]) || 1;
+const pageSize = 5;
+const offset = (page - 1) * pageSize;
 
-const rows = await sbListClients({ bucket, limit: 12 });
+// Get total count for this bucket
+const { data: allClients } = await ops()
+.from("people")
+.select("client_id", { count: "exact", head: false });
+const totalCount = allClients?.length || 0;
+const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+const currentPage = Math.min(page, totalPages);
+
+const rows = await sbListClients({ bucket, limit: pageSize, offset });
 const title =
 bucket === "needs_reply" ? "📝 Clients · Awaiting Reply"
 : bucket === "active" ? "💬 Clients · Active"
@@ -2553,8 +2617,10 @@ bucket === "needs_reply" ? "📝 Clients · Awaiting Reply"
 : bucket === "new_month" ? "🆕 Clients · New This Month"
 : bucket === "recent" ? "🕘 Clients · Recent"
 : "📜 Clients · History";
+const endItem = Math.min(offset + rows.length, totalCount);
+const pageInfo = `Page ${currentPage}/${totalPages} • Items ${endItem}/${totalCount}`;
 const body = rows?.length
-? rows.slice(0, 12).map((c) => {
+? rows.map((c, idx) => {
 const nm = c.primary_name || c.name || "—";
 const em = c.primary_email || c.email || "—";
 const ph = c.primary_phone_e164 || c.phone_e164 || "—";
@@ -2562,17 +2628,29 @@ const st = c.state || "—";
 const threads = (c.convo_count ?? c.threads_total ?? "—");
 const nr = (c.needs_reply_count ?? c.threads_needs_reply ?? "—");
 const pool = c.pool_label ? `\n 🌊 ${c.pool_label}` : "";
-return `• ${nm} (${st})${pool}\n ${em} · ${ph}\n Threads: ${threads} · 📝 ${nr}`;
+return `${offset + idx + 1}. ${nm} (${st})${pool}\n ${em} · ${ph}\n Threads: ${threads} · 📝 ${nr}`;
 }).join("\n\n")
 : "No clients found.";
-const kb = (rows || []).slice(0, 10).map((c) => [
-Markup.button.callback("Open", `CLIENT:${c.client_id}`),
-]);
+const kb = (rows || []).map((c) => {
+const nm = c.primary_name || c.name || "—";
+return [Markup.button.callback(`Open • ${nm} • ${idShort(c.client_id)}`, `CLIENT:${c.client_id}`)];
+});
+
+// Pagination buttons
+const navRow = [];
+if (currentPage > 1) {
+navRow.push(Markup.button.callback("◀️ Prev", `CLIENTS:list:${bucket}:${currentPage - 1}`));
+}
+if (currentPage < totalPages) {
+navRow.push(Markup.button.callback("Next ▶️", `CLIENTS:list:${bucket}:${currentPage + 1}`));
+}
+if (navRow.length > 0) kb.push(navRow);
+
 kb.push([Markup.button.callback("⬅ Clients", "CLIENTS:open")]);
-const msg = await ctx.reply(`${title}\n\n${body}`, Markup.inlineKeyboard(kb));
+const msg = await smartRender(ctx, `${title}\n${pageInfo}\n\n${body}`, Markup.inlineKeyboard(kb));
 registerLiveCard(msg, {
 type: "clients_list",
-card_key: `clients_list:${bucket}`,
+card_key: `clients_list:${bucket}:${page}`,
 ref_id: bucket,
 });
 });
@@ -2657,14 +2735,28 @@ ref_id: c.client_id,
 // ------------------------------
 // CLIENT → THREADS
 // ------------------------------
-bot.action(/^CLIENT:threads:(.+)$/, async (ctx) => {
+bot.action(/^CLIENT:threads:(.+):?(\d*)$/, async (ctx) => {
 
 if (!isAdmin(ctx)) return;
 const clientId = ctx.match[1];
-const threads = await sbListClientThreads(clientId, 10);
+const page = parseInt(ctx.match[2]) || 1;
+const pageSize = 5;
+const offset = (page - 1) * pageSize;
+
+// Get total count
+const { data: allThreads } = await ops()
+.from("conversations")
+.select("id", { count: "exact", head: false });
+const totalCount = allThreads?.length || 0;
+const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+const currentPage = Math.min(page, totalPages);
+
+const threads = await sbListClientThreads(clientId, pageSize, offset);
 const title = `🧵 Threads · ${idShort(clientId)}`;
+const endItem = Math.min(offset + threads.length, totalCount);
+const pageInfo = `Page ${currentPage}/${totalPages} • Items ${endItem}/${totalCount}`;
 const body = threads?.length
-? threads.slice(0, 10).map((t) => {
+? threads.map((t, idx) => {
 const pipe = t.pipeline || "active";
 const label =
 pipe === "urgent" ? "‼️ Urgent"
@@ -2676,30 +2768,55 @@ const lane = t.lane ? ` — ${String(t.lane).toUpperCase()}` : "";
 const last = t.last_inbound_at || t.updated_at || "—";
 const subj = t.subject || "—";
 const prev = t.preview || "—";
-return `${label}${lane}\n${subj}\n${prev}\nLast inbound: ${last}`;
+return `${offset + idx + 1}. ${label}${lane}\n${subj}\n${prev}\nLast inbound: ${last}`;
 }).join("\n\n")
 : "No threads yet.\n\n(If they only submitted the website form, threads will appear when a reply comes in.)";
-const kb = (threads || []).slice(0, 10).map((t) => [Markup.button.callback("Open",
+const kb = (threads || []).map((t) => [Markup.button.callback(`Open • ${idShort(t.id)}`,
 `OPENCARD:${t.id}`)]);
+
+// Pagination buttons
+const navRow = [];
+if (currentPage > 1) {
+navRow.push(Markup.button.callback("◀️ Prev", `CLIENT:threads:${clientId}:${currentPage - 1}`));
+}
+if (currentPage < totalPages) {
+navRow.push(Markup.button.callback("Next ▶️", `CLIENT:threads:${clientId}:${currentPage + 1}`));
+}
+if (navRow.length > 0) kb.push(navRow);
+
 kb.push([Markup.button.callback("⬅ Client", `CLIENT:${clientId}`)]);
-const msg = await ctx.reply(`${title}\n\n${body}`, Markup.inlineKeyboard(kb));
+const msg = await smartRender(ctx, `${title}\n${pageInfo}\n\n${body}`, Markup.inlineKeyboard(kb));
 registerLiveCard(msg, {
 type: "client_threads",
-card_key: `client_threads:${clientId}`,
+card_key: `client_threads:${clientId}:${page}`,
 ref_id: clientId,
 });
 });
 // ------------------------------
 // CLIENT → SUBMISSIONS
 // ------------------------------
-bot.action(/^CLIENT:subs:(.+)$/, async (ctx) => {
+bot.action(/^CLIENT:subs:(.+):?(\d*)$/, async (ctx) => {
 if (!isAdmin(ctx)) return;
 
 const clientId = ctx.match[1];
-const subs = await sbListClientSubmissions(clientId, 10);
+const page = parseInt(ctx.match[2]) || 1;
+const pageSize = 5;
+const offset = (page - 1) * pageSize;
+
+// Get total count
+const { data: allSubs } = await ops()
+.from("submissions")
+.select("submission_id", { count: "exact", head: false });
+const totalCount = allSubs?.length || 0;
+const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+const currentPage = Math.min(page, totalPages);
+
+const subs = await sbListClientSubmissions(clientId, pageSize, offset);
 const title = `🧾 Submissions · ${idShort(clientId)}`;
+const endItem = Math.min(offset + subs.length, totalCount);
+const pageInfo = `Page ${currentPage}/${totalPages} • Items ${endItem}/${totalCount}`;
 const body = subs?.length
-? subs.slice(0, 10).map((s) => {
+? subs.map((s, idx) => {
 const sid = s.submission_id || "—";
 const athlete = s.athlete_name || "—";
 const st = s.state || "—";
@@ -2710,16 +2827,27 @@ s.coverage_accident && s.coverage_hospital_indemnity ? "Accident + Hospital Inde
 : (s.coverage_type || "—");
 const pool = s.pool_label ? `\n🌊 ${s.pool_label}` : "";
 const coach = s.coach_name ? `\nCoach: ${s.coach_name}` : "";
-return `• ${sid}\nCoverage: ${cov}\nAthlete: ${athlete}\nState: ${st}\nCreated: ${s.created_at || "—"}${pool}${coach}`;
+return `${offset + idx + 1}. ${sid}\nCoverage: ${cov}\nAthlete: ${athlete}\nState: ${st}\nCreated: ${s.created_at || "—"}${pool}${coach}`;
 }).join("\n\n")
 : "No submissions found.";
-const kb = (subs || []).slice(0, 10).map((s) => [Markup.button.callback("Open",
+const kb = (subs || []).map((s) => [Markup.button.callback(`Open • ${idShort(s.submission_id)}`,
 `SUB:${s.submission_id}`)]);
+
+// Pagination buttons
+const navRow = [];
+if (currentPage > 1) {
+navRow.push(Markup.button.callback("◀️ Prev", `CLIENT:subs:${clientId}:${currentPage - 1}`));
+}
+if (currentPage < totalPages) {
+navRow.push(Markup.button.callback("Next ▶️", `CLIENT:subs:${clientId}:${currentPage + 1}`));
+}
+if (navRow.length > 0) kb.push(navRow);
+
 kb.push([Markup.button.callback("⬅ Client", `CLIENT:${clientId}`)]);
-const msg = await ctx.reply(`${title}\n\n${body}`, Markup.inlineKeyboard(kb));
+const msg = await smartRender(ctx, `${title}\n${pageInfo}\n\n${body}`, Markup.inlineKeyboard(kb));
 registerLiveCard(msg, {
 type: "client_subs",
-card_key: `client_subs:${clientId}`,
+card_key: `client_subs:${clientId}:${page}`,
 ref_id: clientId,
 });
 });
@@ -3070,18 +3198,41 @@ Markup.button.callback("🗑 Delete", `DELETECONFIRM:call:${c.id}`),
 ]);
 }
 // -------- Calls Hub --------
-bot.action("CALLS:hub", async (ctx) => {
+bot.action(/^CALLS:hub:?(\d*)$/, async (ctx) => {
 if (!isAdmin(ctx)) return;
-const calls = await sbListCalls({ limit: 8 });
+const page = parseInt(ctx.match[1]) || 1;
+const pageSize = 5;
+const offset = (page - 1) * pageSize;
+  
+// Get total count
+const { data: allCalls, error: countErr } = await ops()
+.from("calls")
+.select("id", { count: "exact", head: false });
+const totalCount = allCalls?.length || 0;
+const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+const currentPage = Math.min(page, totalPages);
+  
+const calls = await sbListCalls({ limit: pageSize, offset });
+const endItem = Math.min(offset + calls.length, totalCount);
+const pageInfo = `Page ${currentPage}/${totalPages} • Items ${endItem}/${totalCount}`;
 const body = calls.length ? calls.map(callSummaryLine).join("\n\n") : "No calls found.";
-const kb = calls.slice(0, 8).map((c, idx) => [
-Markup.button.callback(`Open ${idx + 1}`, `CALL:${c.id}`),
-]);
+const kb = calls.map((c, idx) => {
+const name = c.client_name || "—";
+return [Markup.button.callback(`Open • ${name} • ${idShort(c.id)}`, `CALL:${c.id}`)];
+});
+  
+// Pagination buttons
+const navRow = [];
+if (currentPage > 1) {
+navRow.push(Markup.button.callback("◀️ Prev", `CALLS:hub:${currentPage - 1}`));
+}
+if (currentPage < totalPages) {
+navRow.push(Markup.button.callback("Next ▶️", `CALLS:hub:${currentPage + 1}`));
+}
+if (navRow.length > 0) kb.push(navRow);
+  
 kb.push([Markup.button.callback("⬅ Dashboard", "DASH:back")]);
-const msg = await ctx.reply(`${viewTitle("calls")}\n\n${body}`, Markup.inlineKeyboard(kb));
-// Optional: register hub for refresh later if you add a refreshLiveCards branch for "calls_hub"
-// registerLiveCard(msg, { type: "calls_hub", ref_id: "calls_hub", card_key: "calls:hub" });
-
+const msg = await smartRender(ctx, `${viewTitle("calls")}\n${pageInfo}\n\n${body}`, Markup.inlineKeyboard(kb));
 return msg;
 });
 // -------- Open Call Card --------
