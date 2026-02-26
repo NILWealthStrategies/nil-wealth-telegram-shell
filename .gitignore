@@ -5,3 +5,9 @@ supabase/
 migrations/
 
 .DS_Store
+
+DEPLOYMENT_GUIDE.md
+N8N_WORKFLOWS.md
+SUPABASE_SCHEMA.sql
+VERIFICATION_REPORT.md
+
