@@ -508,6 +508,71 @@ notes: payload.notes || null,
 created_at: payload.created_at || new Date().toISOString(),
 };
 }
+async function sbClientSummary() {
+// Returns client stats: total, newMonth, withConversations, needsReply, active, completed
+const { data, error } = await ops()
+.from("conversations")
+.select("id, client_id, pipeline, created_at");
+if (error) throw new Error(error.message);
+const rows = data || [];
+const clientIds = new Set();
+let needsReply = 0;
+let active = 0;
+let completed = 0;
+const nowMs = Date.now();
+const monthAgo = new Date(nowMs - 30 * 24 * 3600 * 1000).toISOString();
+let newMonth = 0;
+for (const r of rows) {
+if (r.client_id) clientIds.add(r.client_id);
+if (r.created_at >= monthAgo) newMonth++;
+if (r.pipeline === "needs_reply") needsReply++;
+if (r.pipeline === "active") active++;
+if (r.pipeline === "completed") completed++;
+}
+return {
+total: clientIds.size,
+newMonth,
+withConversations: clientIds.size,
+needsReply,
+active,
+completed,
+};
+}
+async function sbListClients({ bucket = "all", limit = 12 } = {}) {
+// Returns list of clients with metadata
+// bucket: "all" | "needs_reply" | "active" | "new_month" | "recent" | "history" | "completed"
+let q = ops()
+.from("conversations")
+.select("client_id, client_name, client_email, client_phone_e164, updated_at, created_at, pipeline, state")
+.order("updated_at", { ascending: false });
+if (bucket === "needs_reply") q = q.eq("pipeline", "needs_reply");
+else if (bucket === "active") q = q.eq("pipeline", "active");
+else if (bucket === "completed") q = q.eq("pipeline", "completed");
+else if (bucket === "new_month") {
+const monthAgo = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+q = q.gte("created_at", monthAgo);
+}
+const { data, error } = await q.limit(limit * 3); // over-fetch to dedupe clients
+if (error) throw new Error(error.message);
+const rows = data || [];
+// Dedupe by client_id
+const seen = new Set();
+const clients = [];
+for (const r of rows) {
+if (!r.client_id || seen.has(r.client_id)) continue;
+seen.add(r.client_id);
+clients.push({
+client_id: r.client_id,
+name: r.client_name || "—",
+email: r.client_email || null,
+phone_e164: r.client_phone_e164 || null,
+state: r.state || null,
+last_activity_at: r.updated_at,
+});
+if (clients.length >= limit) break;
+}
+return clients;
+}
 // ---------- METRICS (v5.3 aligned) ----------
 async function sbMetricSummary({ source = "all", window = "month" }) {
 const now = new Date();
@@ -662,9 +727,9 @@ return `${viewTitle(key)} · ${filterLabel}`;
 async function smartRender(ctx, text, keyboard) {
 // stop Telegram spinner when this was a button click
 try {
-          // if (ctx.update?.callback_query?.id) {
-          //   await ctx.answerCbQuery().catch(() => {});
-          // }
+if (ctx.update?.callback_query?.id) {
+await ctx.answerCbQuery().catch(() => {});
+}
 } catch (_) {}
 // try edit-in-place first (clean UI)
 if (ctx.update?.callback_query?.message) {
@@ -796,18 +861,18 @@ Markup.button.callback("⏳ Waiting", "VIEW:actions_waiting"),
 Markup.button.callback("💬 Active", "VIEW:active"),
 ],
 [
-Markup.button.callback("📱 Calls", "VIEW:calls"),
+Markup.button.callback("📱 Calls", "TODAY:open"),
 Markup.button.callback("📚 Follow-Ups", "VIEW:followups"),
 ],
 [
 Markup.button.callback("📨 Forwarded", "VIEW:forwarded"),
-Markup.button.callback("🧾 Submissions", "VIEW:submissions"),
+Markup.button.callback("🧾 Submissions", "VIEW:website_submissions"),
 ],
 [
 Markup.button.callback("✅ Completed", "VIEW:completed"),
-Markup.button.callback("🌊 Pools", "VIEW:pools"),
+Markup.button.callback("🌊 Pools", "POOLS:open"),
 ],
-
+[Markup.button.callback("⬅ Dashboard", "DASH:back")],
 ]);
 }
 // ======================================================
@@ -845,7 +910,7 @@ Markup.button.callback("Open", `OPENCARD:${c.id}`),
 Markup.button.callback("🗑", `DELETECONFIRM:conversation:${c.id}`),
 ]);
 kb.push([Markup.button.callback("⬅ Back", "ALLQ:open")]);
-const msg = await ctx.reply(
+const msg = await smartRender(ctx,
 `${header}\n\n${body}`,
 Markup.inlineKeyboard(kb)
 );
@@ -1016,17 +1081,19 @@ Markup.button.callback("Open", `OPENCARD:sub:${s.submission_id}`),
 Markup.button.callback("🗑", `DELETECONFIRM:submission:${s.submission_id}`),
 ]);
 kb.push([Markup.button.callback("⬅ Back", "ALLQ:open")]);
-const msg = await ctx.reply(
+const msg = await smartRender(ctx,
 `${headerLine("🧾 Submissions", filterSource)}\n\n${lines}`,
 Markup.inlineKeyboard(kb)
 );
 // Optional: live list refresh
+if (msg?.message_id) {
 registerLiveCard(msg, {
 type: "dashboard",
 card_key: `queue:${filterSource}:website_submissions`,
 ref_id: `queue:${filterSource}:website_submissions`,
 filterSource,
 });
+}
 return;
 }
 const rows = await sbListConversations({ pipeline: viewKey, source: filterSource, limit: 8 });
