@@ -534,69 +534,120 @@ created_at: payload.created_at || new Date().toISOString(),
 };
 }
 async function sbClientSummary() {
-// Returns client stats: total, newMonth, withConversations, needsReply, active, completed
-const { data, error } = await ops()
-.from("conversations")
-.select("id, client_id, pipeline, created_at");
-if (error) throw new Error(error.message);
-const rows = data || [];
-const clientIds = new Set();
-let needsReply = 0;
-let active = 0;
-let completed = 0;
-const nowMs = Date.now();
-const monthAgo = new Date(nowMs - 30 * 24 * 3600 * 1000).toISOString();
-let newMonth = 0;
-for (const r of rows) {
-if (r.client_id) clientIds.add(r.client_id);
-if (r.created_at >= monthAgo) newMonth++;
-if (r.pipeline === "needs_reply") needsReply++;
-if (r.pipeline === "active") active++;
-if (r.pipeline === "completed") completed++;
+// Returns client stats derived from people table (contacts/coaches)
+// Since conversations doesn't have client_id, we use people as proxy
+const { data: people, error: peopleErr } = await ops()
+.from("people")
+.select("id, created_at, conversation_id");
+if (peopleErr) {
+console.log("sbClientSummary error:", peopleErr);
+return { total: 0, newMonth: 0, withConversations: 0, needsReply: 0, active: 0, completed: 0 };
 }
+const rows = people || [];
+const monthAgo = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+const withConv = rows.filter(p => p.conversation_id).length;
+const newMonth = rows.filter(p => p.created_at >= monthAgo).length;
+
+// Get pipeline stats from conversations
+const convIds = rows.map(p => p.conversation_id).filter(Boolean);
+if (convIds.length === 0) {
+return { total: rows.length, newMonth, withConversations: 0, needsReply: 0, active: 0, completed: 0 };
+}
+const { data: convs } = await ops()
+.from("conversations")
+.select("id, pipeline")
+.in("id", convIds);
+const needsReply = (convs || []).filter(c => c.pipeline === "needs_reply").length;
+const active = (convs || []).filter(c => c.pipeline === "active").length;
+const completed = (convs || []).filter(c => c.pipeline === "completed").length;
+
 return {
-total: clientIds.size,
+total: rows.length,
 newMonth,
-withConversations: clientIds.size,
+withConversations: withConv,
 needsReply,
 active,
 completed,
 };
 }
 async function sbListClients({ bucket = "all", limit = 12 } = {}) {
-// Returns list of clients with metadata
-// bucket: "all" | "needs_reply" | "active" | "new_month" | "recent" | "history" | "completed"
+// Returns list of people (clients/contacts) with metadata
+// Since no dedicated clients table, use people as proxy
 let q = ops()
-.from("conversations")
-.select("client_id, client_name, client_email, client_phone_e164, updated_at, created_at, pipeline, state")
+.from("people")
+.select("id, name, email, phone_e164, role, conversation_id, created_at, updated_at")
 .order("updated_at", { ascending: false });
-if (bucket === "needs_reply") q = q.eq("pipeline", "needs_reply");
-else if (bucket === "active") q = q.eq("pipeline", "active");
-else if (bucket === "completed") q = q.eq("pipeline", "completed");
-else if (bucket === "new_month") {
+
+if (bucket === "new_month") {
 const monthAgo = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
 q = q.gte("created_at", monthAgo);
 }
-const { data, error } = await q.limit(limit * 3); // over-fetch to dedupe clients
-if (error) throw new Error(error.message);
-const rows = data || [];
-// Dedupe by client_id
-const seen = new Set();
-const clients = [];
-for (const r of rows) {
-if (!r.client_id || seen.has(r.client_id)) continue;
-seen.add(r.client_id);
-clients.push({
-client_id: r.client_id,
-name: r.client_name || "—",
-email: r.client_email || null,
-phone_e164: r.client_phone_e164 || null,
-state: r.state || null,
-last_activity_at: r.updated_at,
-});
-if (clients.length >= limit) break;
+
+const { data, error } = await q.limit(limit);
+if (error) {
+console.log("sbListClients error:", error);
+return [];
 }
-return clients;
+const rows = data || [];
+return rows.map(p => ({
+client_id: p.id, // map id to client_id for compatibility
+name: p.name || "—",
+email: p.email || null,
+phone_e164: p.phone_e164 || null,
+role: p.role || null,
+last_activity_at: p.updated_at,
+}));
+}
+async function sbGetClientCard(clientId) {
+// Get person/client detail - using people table
+const { data, error } = await ops()
+.from("people")
+.select("*")
+.eq("id", clientId)
+.maybeSingle();
+if (error) {
+console.log("sbGetClientCard error:", error);
+return null;
+}
+if (!data) return null;
+// Return in client structure format
+return {
+client_id: data.id,
+primary_name: data.name,
+primary_email: data.email,
+primary_phone_e164: data.phone_e164,
+primary_role: data.role,
+status: "active",
+pool_label: null,
+state: null,
+conversation_id: data.conversation_id,
+created_at: data.created_at,
+updated_at: data.updated_at,
+};
+}
+async function sbListCallsTriage({ source = "all", limit = 24, windowHours = 48 } = {}) {
+// Get calls for triage view (due soon or needs action)
+const now = new Date();
+const windowMs = windowHours * 3600 * 1000;
+const windowStart = new Date(now.getTime() - windowMs).toISOString();
+
+let q = ops()
+.from("calls")
+.select("*")
+.order("scheduled_for", { ascending: true })
+.limit(limit);
+
+if (source !== "all") {
+q = q.eq("source", sourceSafe(source));
+}
+// Get calls scheduled within window or missing outcome
+q = q.or(`scheduled_for.gte.${windowStart},outcome.is.null`);
+const { data, error } = await q;
+if (error) {
+console.log("sbListCallsTriage error:", error);
+return [];
+}
+return data || [];
 }
 // ---------- METRICS (v5.3 aligned) ----------
 async function sbMetricSummary({ source = "all", window = "month" }) {
