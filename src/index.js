@@ -4022,7 +4022,7 @@ return (
 `• eApp Visits: ${n(y.eappVisits)} (Avg ${avg(y.eappVisits)}/mo)\n` +
 `• Threads (Replies): ${n(y.threadsCreated)} (Avg ${avg(y.threadsCreated)}/mo)\n` +
 `• Calls Answered: ${n(y.callsAnswered)} (Avg ${avg(y.callsAnswered)}/mo)\n\n` +
-`Monthly Breakdown (Enroll Clicks)\n` +
+`Monthly Breakdown (Total Clicks)\n` +
 `${monthLine}\n\n` +
 `Highlights\n` +
 `${bestWeek}\n` +
