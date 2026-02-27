@@ -60,6 +60,7 @@ auth: { persistSession: false },
 const ops = () => supabase.schema("nil");
 // ---------- IN-MEMORY FILTER STORAGE ----------
 const userFilters = new Map(); // userId -> filter value ("all" | "programs" | "support")
+const userRoleFilters = new Map(); // userId -> role filter ("all" | "parent" | "athlete" | "coach" | "trainer" | "other")
 // ---------- AUTH ----------
 function isAdmin(ctx) {
 if (!ADMIN_IDS.length) return true;
@@ -104,6 +105,20 @@ const userId = String(ctx.from?.id || "");
 userFilters.set(userId, v);
 } catch (_) {}
 }
+function getAdminRoleFilter(ctx) {
+try {
+const userId = String(ctx.from?.id || "");
+return userRoleFilters.get(userId) || "all";
+} catch (_) {
+return "all";
+}
+}
+function setAdminRoleFilter(ctx, v) {
+try {
+const userId = String(ctx.from?.id || "");
+userRoleFilters.set(userId, v);
+} catch (_) {}
+}
 function safeStr(v) {
 if (v === null || v === undefined) return "";
 return String(v);
@@ -119,6 +134,97 @@ return s.length <= 8 ? s : s.slice(0, 8);
 }
 function sourceSafe(src) {
 return src === "support" ? "support" : "programs";
+}
+// ---------- ROLE HELPERS ----------
+const ROLE_LABELS = {
+parent: "Parent",
+athlete: "Athlete",
+coach: "Coach",
+trainer: "Trainer",
+other: "Other",
+};
+const ROLE_VALUES = new Set(Object.keys(ROLE_LABELS));
+function normalizeRole(value) {
+if (!value) return null;
+const v = String(value).trim().toLowerCase();
+return ROLE_VALUES.has(v) ? v : null;
+}
+function roleLabel(role) {
+const r = normalizeRole(role) || "parent";
+return ROLE_LABELS[r] || "Parent";
+}
+function roleTag(role) {
+return `[${roleLabel(role)}]`;
+}
+function roleFilterLabel(role) {
+return role === "all" ? "All Roles" : roleLabel(role);
+}
+function normalizeEmail(email) {
+if (!email) return null;
+return String(email).trim().toLowerCase();
+}
+function conversationRoleForDisplay(conv) {
+const explicit = normalizeRole(conv?.role);
+if (explicit) return explicit;
+const kind = String(conv?.conversation_kind || "").toLowerCase();
+if (kind === "outreach") return "coach";
+const hasCoach = !!(conv?.coach_name || conv?.coach_full_name);
+const hasContact = !!(conv?.contact_name || conv?.contact_email || conv?.client_full_name);
+if (hasCoach && !hasContact) return "coach";
+return "parent";
+}
+function conversationIdentityText(conv) {
+const name =
+conv?.contact_name ||
+conv?.client_full_name ||
+conv?.contact_email ||
+conv?.coach_name ||
+conv?.coach_full_name ||
+conv?.email ||
+"—";
+return `${roleTag(conversationRoleForDisplay(conv))} ${name}`;
+}
+// ---------- ROLE-AWARE LANE ROUTING ----------
+function roleDefaultLane(role) {
+const r = normalizeRole(role) || "parent";
+switch (r) {
+case "coach":
+case "trainer":
+return "outreach";
+case "other":
+return "triage";
+case "parent":
+case "athlete":
+case null:
+default:
+return "support";
+}
+}
+function roleConflictBadge(conv) {
+const conflict = conv?.role_pending;
+const confidence = conv?.role_confidence;
+if (conflict && confidence === "low") {
+return `⚠️ Conflict: [${roleLabel(conflict)}] pending`;
+}
+return null;
+}
+// ---------- NEXT ACTION TYPE DEFAULTS ----------
+function roleDefaultNextAction(role, intentAnswer) {
+const r = normalizeRole(role) || "parent";
+const i = String(intentAnswer || "").trim().toLowerCase();
+if (r === "parent" && ["my athlete", "family coverage", "myself"].includes(i)) {
+return "send_sh_page";
+}
+if (r === "athlete" && i === "have my parent contacted") {
+return "parent_contact_request";
+}
+if ((r === "coach" || r === "trainer") && i === "share this with my athletes/clients") {
+return "send_parent_guide_to_program";
+}
+if (r === "other") {
+return "manual_review";
+}
+return null;
 }
 /**
 
@@ -447,13 +553,25 @@ return bTime - aTime;
 });
 }
 // ---------- COUNTS ----------
-async function sbCountConversations({ pipeline, source }) {
+async function sbCountConversations({ pipeline, source, role }) {
 try {
 let q = ops().from("conversations").select("id", { count: "exact", head: true });
 if (pipeline) q = q.eq("pipeline", pipeline);
 if (source && source !== "all") q = q.eq("source", sourceSafe(source));
+if (role && role !== "all") q = q.eq("role", role);
 const { count, error } = await q;
 if (error) {
+  if (role && String(error.message || "").toLowerCase().includes("role")) {
+    let fallback = ops().from("conversations").select("id", { count: "exact", head: true });
+    if (pipeline) fallback = fallback.eq("pipeline", pipeline);
+    if (source && source !== "all") fallback = fallback.eq("source", sourceSafe(source));
+    const { count: fallbackCount, error: fallbackErr } = await fallback;
+    if (fallbackErr) {
+      console.warn(`sbCountConversations(${pipeline}) fallback error:`, fallbackErr.message);
+      return 0;
+    }
+    return fallbackCount || 0;
+  }
   console.warn(`sbCountConversations(${pipeline}) error:`, error.message);
   return 0; // Return 0 instead of throwing
 }
@@ -494,20 +612,28 @@ return 0;
 }
 }
 // ---------- LISTS ----------
-async function sbListConversations({ pipeline, source = "all", limit = 8 }) {
+async function sbListConversations({ pipeline, source = "all", role = "all", limit = 8 }) {
+const buildQuery = (withRole) => {
   let q = ops()
     .from("conversations")
     .select(
-      'id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at, cc_support_suggested, gmail_url, mirror_conversation_id'
+      withRole
+        ? 'id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at, cc_support_suggested, gmail_url, mirror_conversation_id, role, role_pending, role_confidence'
+        : 'id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at, cc_support_suggested, gmail_url, mirror_conversation_id'
     )
     .order("updated_at", { ascending: false })
     .limit(limit * 2); // Fetch 2x limit for sorting
-if (pipeline) q = q.eq("pipeline", pipeline);
-if (source !== "all") q = q.eq("source", sourceSafe(source));
-const { data, error } = await q;
-if (error) throw new Error(error.message);
-// Apply smart sorting and return requested limit
-const sorted = smartSortByPriority(data || []);
+  if (pipeline) q = q.eq("pipeline", pipeline);
+  if (source !== "all") q = q.eq("source", sourceSafe(source));
+  if (withRole && role && role !== "all") q = q.eq("role", role);
+  return q;
+};
+const result = await dbSelectFirst([
+  () => buildQuery(true),
+  () => buildQuery(false),
+]);
+if (result?.error) throw new Error(result.error.message || result.error);
+const sorted = smartSortByPriority(result?.data || []);
 return sorted.slice(0, limit);
 }
 async function sbGetConversationById(id) {
@@ -527,6 +653,29 @@ const { data, error } = await ops()
 .maybeSingle();
 if (error) throw new Error(error.message);
 return data || null;
+}
+async function sbFindConversationByEmail(email) {
+const normalized = normalizeEmail(email);
+if (!normalized) return null;
+const buildQuery = (useNormalized) => {
+let q = ops()
+.from("conversations")
+.select("id, role, role_pending, role_confidence, role_source, contact_email, normalized_email, source, conversation_kind, coach_name")
+.order("updated_at", { ascending: false })
+.limit(1);
+if (useNormalized) {
+q = q.eq("normalized_email", normalized);
+} else {
+q = q.ilike("contact_email", normalized);
+}
+return q.maybeSingle();
+};
+const result = await dbSelectFirst([
+() => buildQuery(true),
+() => buildQuery(false),
+]);
+if (result?.error) return null;
+return result.data || null;
 }
 // ---------- MESSAGES / THREAD ----------
 async function sbCountMessages(conversation_id) {
@@ -755,9 +904,13 @@ const { data, error } = await ops()
 if (error) throw new Error(error.message);
 return data || [];
 }
-function canonicalizeSubmissionPayload(p) {
+function canonicalizeSubmissionPayload(p, { source = "unknown" } = {}) {
 // Normalize submission fields; return object with standard keys + raw payload
 const payload = p || {};
+const explicitRole = normalizeRole(
+payload.your_role || payload.user_role || payload.role
+);
+const defaultRole = "parent";
 return {
 first_name: payload.first_name || payload.firstName || null,
 last_name: payload.last_name || payload.lastName || null,
@@ -768,9 +921,54 @@ athlete_name: payload.athlete_name || payload.athleteName || null,
 coverage_accident: payload.coverage_accident === true,
 coverage_hospital_indemnity: payload.coverage_hospital_indemnity === true,
 referral_source: payload.referral_source || payload.referralSource || null,
+your_role: explicitRole || defaultRole,
+intent_answer: payload.intent_answer || payload.intentAnswer || payload.intent || null,
+how_heard_about: payload.how_heard_about || payload.howHeardAbout || payload.how_heard || null,
 notes: payload.notes || null,
 created_at: payload.created_at || new Date().toISOString(),
 };
+}
+function isMissingColumnError(error) {
+const msg = String(error?.message || "").toLowerCase();
+return msg.includes("column") && msg.includes("does not exist");
+}
+async function sbUpsertSubmissionSafe(row) {
+const { error } = await ops()
+.from("submissions")
+.upsert(row, { onConflict: "submission_id" });
+if (error && isMissingColumnError(error)) {
+const fallback = { ...row };
+delete fallback.your_role;
+delete fallback.intent_answer;
+delete fallback.how_heard_about;
+const { error: fallbackErr } = await ops()
+.from("submissions")
+.upsert(fallback, { onConflict: "submission_id" });
+if (fallbackErr) throw new Error(fallbackErr.message);
+return { fallback: true };
+}
+if (error) throw new Error(error.message);
+return { fallback: false };
+}
+async function sbUpdateSubmissionSafe(submission_id, patch) {
+const { error } = await ops()
+.from("submissions")
+.update(patch)
+.eq("submission_id", submission_id);
+if (error && isMissingColumnError(error)) {
+const fallback = { ...patch };
+delete fallback.your_role;
+delete fallback.intent_answer;
+delete fallback.how_heard_about;
+const { error: fallbackErr } = await ops()
+.from("submissions")
+.update(fallback)
+.eq("submission_id", submission_id);
+if (fallbackErr) throw new Error(fallbackErr.message);
+return { fallback: true };
+}
+if (error) throw new Error(error.message);
+return { fallback: false };
 }
 async function sbClientSummary() {
 // Returns client stats derived from people table (contacts/coaches)
@@ -1209,19 +1407,29 @@ Markup.button.callback("👥 Clients", "CLIENTS:open"),
 // ALL QUEUES (v5.5 OPS CLEAN + LIVE REFRESH)
 // ======================================================
 // ---------- ALL QUEUES TEXT ----------
-async function allQueuesText(filterSource = "all") {
+async function allQueuesText(filterSource = "all", roleFilter = "all") {
 const filterLabel =
 filterSource === "support"
 ? "🧑‍🧒 Support"
 : filterSource === "programs"
 ? "🏈 Programs"
 : "🌐 All";
-return `${headerLine("all_queues", filterLabel)}
+return `${headerLine("all_queues", filterLabel)} · ${roleFilterLabel(roleFilter)}
 Tap a queue below to open it.`;
 }
 // ---------- ALL QUEUES KEYBOARD ----------
 function allQueuesKeyboard() {
 return Markup.inlineKeyboard([
+[
+Markup.button.callback("Role: All", "ROLEFILTER:all"),
+Markup.button.callback("Parent", "ROLEFILTER:parent"),
+Markup.button.callback("Athlete", "ROLEFILTER:athlete"),
+],
+[
+Markup.button.callback("Coach", "ROLEFILTER:coach"),
+Markup.button.callback("Trainer", "ROLEFILTER:trainer"),
+Markup.button.callback("Other", "ROLEFILTER:other"),
+],
 [
 Markup.button.callback("‼️ Urgent", "VIEW:urgent"),
 Markup.button.callback("📝 Needs Reply", "VIEW:needs_reply"),
@@ -1255,19 +1463,21 @@ const sla = slaBadge(conv.updated_at);
 const until = urgentCountdown(conv.updated_at);
 const subj = shorten(conv.subject || "(no subject)", 60);
 const prev = shorten(conv.preview || "", 80);
-return `• ${subj} · ${lane}
+const identity = conversationIdentityText(conv);
+return `• ${identity} · ${lane}
+${subj}
 ${prev}
 ${sla} · ${until}`;
 }
 // ---------- SHOW LIST ----------
-async function showConversationList(ctx, viewKey, rows, filterSource) {
+async function showConversationList(ctx, viewKey, rows, filterSource, roleFilter = "all") {
 const filterLabel =
 filterSource === "support"
 ? "🧑‍🧒 Support"
 : filterSource === "programs"
 ? "🏈 Programs"
 : "🌐 All";
-const header = headerLine(viewKey, filterLabel);
+const header = `${headerLine(viewKey, filterLabel)} · ${roleFilterLabel(roleFilter)}`;
 
 const body =
 rows.length
@@ -1290,8 +1500,8 @@ Markup.inlineKeyboard(kb)
 if (msg?.message_id) {
 registerLiveCard(msg, {
 type: "dashboard",
-card_key: `queue:${filterSource}:${viewKey}`,
-ref_id: `queue:${filterSource}:${viewKey}`,
+card_key: `queue:${filterSource}:${roleFilter}:${viewKey}`,
+ref_id: `queue:${filterSource}:${roleFilter}:${viewKey}`,
 filterSource,
 });
 }
@@ -1301,19 +1511,28 @@ return msg;
 async function buildConversationCard(conv) {
 const msgCount = await sbCountMessages(conv.id);
 const lane = laneLabel(sourceSafe(conv.source));
-const sla = slaBadge(conv.updated_at); // your existing 3/6/12hr emoji logic
-const until = urgentCountdown(conv.updated_at); // your existing countdown string
-// CC state
-
+const sla = slaBadge(conv.updated_at);
+const until = urgentCountdown(conv.updated_at);
 const ccOn = conv.cc_support_suggested === true;
-const ccLabel = ccOn ? "📇 ON" : "CC OFF";
 const gmail = conv.gmail_url ? `\nGmail: ${conv.gmail_url}` : "";
 const pipeline = conv.pipeline || "—";
 const coach = conv.coach_name || "—";
 const contact = conv.contact_email || "—";
 const subj = conv.subject || "—";
 const prev = shorten(conv.preview || "", 420);
+const identity = conversationIdentityText(conv);
+const roleInfo = (() => {
+const r = normalizeRole(conv?.role) || "parent";
+let info = `Role: ${roleLabel(r)}`;
+const conflictBadge = roleConflictBadge(conv);
+if (conflictBadge) {
+info += `\n${conflictBadge}`;
+}
+return info;
+})();
 return `💬 Conversation · ${idShort(conv.id)} · ${lane}
+Identity: ${identity}
+${roleInfo}
 Pipeline: ${pipeline}
 Coach: ${coach}
 Contact: ${contact}
@@ -1333,6 +1552,10 @@ const mirrorRow = conv.mirror_conversation_id
 // CC label
 const ccOn = conv.cc_support_suggested === true;
 const ccBtnLabel = ccOn ? "📇 CC ON" : "CC OFF";
+// Role conflict confirmation row (if pending role exists)
+const roleConflictRow = conv?.role_pending && conv?.role_confidence === "low"
+? [Markup.button.callback(`✅ Confirm [${roleLabel(conv.role_pending)}]`, `CONFIRMROLE:${id}:${conv.role_pending}`)]
+: [];
 return Markup.inlineKeyboard([
 // row 1
 [Markup.button.callback("🧵 Thread (Full)", `THREAD:${id}:0`)],
@@ -1341,11 +1564,14 @@ return Markup.inlineKeyboard([
 Markup.button.callback(ccBtnLabel, `CC:${id}`),
 Markup.button.callback("👥 People", `PEOPLE:${id}`),
 ],
-// row 3 (mirror + delete)
+// row 3 - role conflict if exists (mirror + delete)
 [
+...roleConflictRow,
 ...mirrorRow,
 Markup.button.callback("🗑 Delete", `DELETECONFIRM:conversation:${id}`),
 ],
+// row 4 - role management
+[Markup.button.callback("🔧 Set Role", `SETROLE:${id}`)],
 // BIG action bottom
 [Markup.button.callback("📤 Send Drafts", `SEND:${id}:1`)],
 [Markup.button.callback("⬅ Dashboard", "DASH:back")],
@@ -1363,12 +1589,18 @@ return "—";
 function buildSubmissionCard(sub) {
 const p = sub.submission_payload || {};
 const name = `${p.first_name || ""} ${p.last_name || ""}`.trim() || "—";
+const role = sub.your_role || p.your_role || p.role || "parent";
+const intent = sub.intent_answer || p.intent_answer || "—";
+const heard = sub.how_heard_about || p.how_heard_about || "—";
 return `🧾 Submission · ${idShort(sub.submission_id)}
 Name: ${name}
 Email: ${p.email || "—"}
 Phone: ${p.phone_e164 || p.phone || "—"}
 Athlete: ${p.athlete_name || "—"}
 State: ${p.state || "—"}
+Role: ${roleLabel(role)}
+Intent: ${intent}
+How Heard: ${heard}
 Coverage: ${coverageLabel(p)}
 Referral: ${p.referral_source || p.referral || "—"}
 
@@ -1428,19 +1660,37 @@ logError(ctx, err);
 await ctx.reply(`❌ Error applying filter: ${err.message}`);
 }
 });
+// ---------- ROLE FILTER ----------
+bot.action(/^ROLEFILTER:(all|parent|athlete|coach|trainer|other)$/, async (ctx) => {
+try {
+if (!isAdmin(ctx)) return;
+const v = ctx.match[1];
+setAdminRoleFilter(ctx, v);
+const filterSource = getAdminFilter(ctx);
+await smartRender(ctx, await allQueuesText(filterSource, v), allQueuesKeyboard());
+} catch (err) {
+logError(ctx, err);
+await ctx.reply(`❌ Error applying role filter: ${err.message}`);
+}
+});
 // ---------- ALL QUEUES ----------
 bot.action("ALLQ:open", async (ctx) => {
 try {
 if (!isAdmin(ctx)) return;
 
 const filterSource = getAdminFilter(ctx);
-const msg = await smartRender(ctx, await allQueuesText(filterSource), allQueuesKeyboard());
+const roleFilter = getAdminRoleFilter(ctx);
+const msg = await smartRender(
+ctx,
+await allQueuesText(filterSource, roleFilter),
+allQueuesKeyboard()
+);
 // Optional: track as live card (queue list)
 if (msg?.message_id) {
 registerLiveCard(msg, {
 type: "dashboard",
-card_key: `dashboard:${filterSource}:allq`,
-ref_id: `allq:${filterSource}`,
+card_key: `dashboard:${filterSource}:${roleFilter}:allq`,
+ref_id: `allq:${filterSource}:${roleFilter}`,
 filterSource,
 });
 }
@@ -1458,6 +1708,7 @@ if (!isAdmin(ctx)) return;
 const viewKey = ctx.match[1];
 const page = parseInt(ctx.match[2]) || 1;
 const filterSource = getAdminFilter(ctx);
+const roleFilter = getAdminRoleFilter(ctx);
 if (viewKey === "website_submissions") {
 const pageSize = 5;
 const offset = (page - 1) * pageSize;
@@ -1518,8 +1769,8 @@ filterSource,
 }
 return;
 }
-const rows = await sbListConversations({ pipeline: viewKey, source: filterSource, limit: 8 });
-await showConversationList(ctx, viewKey, rows, filterSource);
+const rows = await sbListConversations({ pipeline: viewKey, source: filterSource, role: roleFilter, limit: 8 });
+await showConversationList(ctx, viewKey, rows, filterSource, roleFilter);
 // If you want queue lists to live-refresh too, update showConversationList
 // to return the sent message and register it there.
 } catch (err) {
@@ -1559,6 +1810,155 @@ type: "conversation",
 card_key: `conversation:${conv.id}`,
 ref_id: conv.id,
 });
+});
+// ---------- CONFIRM ROLE (CONFLICT RESOLUTION) ----------
+bot.action(/^CONFIRMROLE:([^:]+):(.+)$/, async (ctx) => {
+if (!isAdmin(ctx)) return;
+try {
+const convId = ctx.match[1];
+const confirmedRole = normalizeRole(ctx.match[2]);
+if (!confirmedRole) return ctx.reply("❌ Invalid role.");
+
+const conv = await sbGetConversationById(convId);
+if (!conv) return ctx.reply("Conversation not found.");
+
+const nowIso = new Date().toISOString();
+const { error } = await ops()
+.from("conversations")
+.update({
+role: confirmedRole,
+role_pending: null,
+role_confidence: "high",
+role_source: "manual",
+role_last_updated_at: nowIso,
+updated_at: nowIso,
+})
+.eq("id", convId);
+
+if (error) {
+if (isMissingColumnError(error)) {
+return ctx.reply("⚠️ Role columns not yet created. Run migration first.");
+}
+throw new Error(error.message);
+}
+
+await sbInsertOpsEventSafe({
+schema_version: "5.3",
+event_type: "conversation.role.confirmed",
+source: "telegram",
+direction: "inbound",
+entity_type: "conversation",
+entity_id: convId,
+payload: {
+confirmed_role: confirmedRole,
+resolution: "manual_confirm",
+},
+});
+
+refreshQueue.add(makeCardKey("conversation", convId));
+refreshQueue.add("triage:all");
+refreshQueue.add("dashboard:all");
+
+const updated = await sbGetConversationById(convId);
+const text = await buildConversationCard(updated);
+const kb = conversationCardKeyboard(updated);
+await smartRender(ctx, `✅ Role confirmed.\n\n${text}`, kb);
+} catch (err) {
+logError(ctx, err);
+await ctx.reply(`❌ Error confirming role: ${err.message}`);
+}
+});
+
+// ---------- SET ROLE (ADMIN) ----------
+bot.action(/^SETROLE:(.+)$/, async (ctx) => {
+if (!isAdmin(ctx)) return;
+try {
+const convId = ctx.match[1];
+const conv = await sbGetConversationById(convId);
+if (!conv) return ctx.reply("Conversation not found.");
+
+const currentRole = conversationRoleForDisplay(conv);
+const kb = Markup.inlineKeyboard([
+[Markup.button.callback("👨‍👩‍👧 Parent", `ROLESELECT:${convId}:parent`)],
+[Markup.button.callback("🏃 Athlete", `ROLESELECT:${convId}:athlete`)],
+[Markup.button.callback("🏆 Coach", `ROLESELECT:${convId}:coach`)],
+[Markup.button.callback("💪 Trainer", `ROLESELECT:${convId}:trainer`)],
+[Markup.button.callback("❓ Other", `ROLESELECT:${convId}:other`)],
+[Markup.button.callback("⬅ Back", `OPENCARD:conversation:${convId}`)],
+]);
+await ctx.editMessageText(
+`🔧 Select new role (currently: ${currentRole}):`,
+kb
+);
+} catch (err) {
+logError("SETROLE", err);
+await ctx.reply(`❌ Error: ${err.message}`);
+}
+});
+
+// ---------- ROLE SELECT (APPLY) ----------
+bot.action(/^ROLESELECT:([^:]+):(.+)$/, async (ctx) => {
+if (!isAdmin(ctx)) return;
+try {
+const convId = ctx.match[1];
+const selectedRole = normalizeRole(ctx.match[2]);
+if (!selectedRole) return ctx.reply("❌ Invalid role.");
+
+const conv = await sbGetConversationById(convId);
+if (!conv) return ctx.reply("Conversation not found.");
+
+const nowIso = new Date().toISOString();
+const traceId = newTraceId();
+
+// Update conversation with the new role
+const { error } = await ops()
+.from("conversations")
+.update({
+role: selectedRole,
+role_pending: null,
+role_confidence: "high",
+role_source: "manual",
+role_last_updated_at: nowIso,
+updated_at: nowIso,
+})
+.eq("id", convId);
+
+if (error) {
+if (isMissingColumnError(error)) {
+return ctx.reply("⚠️ Role columns not yet created. Run migration first.");
+}
+throw new Error(error.message);
+}
+
+// Log the role change event
+await sbInsertOpsEventSafe({
+schema_version: "5.3",
+event_type: "conversation.role.set_manual",
+source: "telegram",
+direction: "inbound",
+entity_type: "conversation",
+entity_id: convId,
+trace_id: traceId,
+payload: {
+new_role: selectedRole,
+previous_role: conv.role || "parent",
+set_by_admin: true,
+},
+});
+
+// Refresh the card
+refreshQueue.add(makeCardKey("conversation", convId));
+refreshQueue.add("triage:all");
+refreshQueue.add("dashboard:all");
+
+const updated = await sbGetConversationById(convId);
+const text = await buildConversationCard(updated);
+const kb = conversationCardKeyboard(updated);
+await smartRender(ctx, `✅ Role set to ${roleLabel(selectedRole)}.\n\n${text}`, kb);
+} catch (err) {
+logError("ROLESELECT", err);
+await ctx.reply(`❌ Error setting role: ${err.message}`);
+}
 });
 // ---------- OPEN MIRROR ----------
 bot.action(/^OPENMIRROR:(.+)$/, async (ctx) => {
@@ -2382,10 +2782,11 @@ c.client_full_name ||
 c.contact_name ||
 ((c.first_name || c.last_name) ? `${c.first_name || ""} ${c.last_name || ""}`.trim() : null);
 
-if (tIsCoachThread(c) && coach) return `Coach ${tSafe(coach, 40)}`;
-if (client) return tSafe(client, 40);
-if (coach) return `Coach ${tSafe(coach, 40)}`;
-return "—";
+const tag = roleTag(conversationRoleForDisplay(c));
+if (tIsCoachThread(c) && coach) return `${tag} Coach ${tSafe(coach, 40)}`;
+if (client) return `${tag} ${tSafe(client, 40)}`;
+if (coach) return `${tag} Coach ${tSafe(coach, 40)}`;
+return `${tag} —`;
 }
 function tConvoLine(c, idx) {
 const name = tDisplayName(c);
@@ -2523,10 +2924,11 @@ bot.action("TRIAGE:open", async (ctx) => {
 try {
 if (!isAdmin(ctx)) return;
 const filterSource = getAdminFilter(ctx) || "all";
+const roleFilter = getAdminRoleFilter(ctx) || "all";
 // Conversations
-const urgentRaw = await sbListConversations({ pipeline: "urgent", source: filterSource, limit: 24
+const urgentRaw = await sbListConversations({ pipeline: "urgent", source: filterSource, role: roleFilter, limit: 24
 });
-const needsRaw = await sbListConversations({ pipeline: "needs_reply", source: filterSource,
+const needsRaw = await sbListConversations({ pipeline: "needs_reply", source: filterSource, role: roleFilter,
 limit: 48 });
 // Calls (triage-focused list; your function should return ONLY relevant items)
 // Expected to include:
@@ -2579,7 +2981,7 @@ return at - bt;
 // ---- Build message text ----
 const lines = [];
 const title = (typeof viewTitle === "function") ? viewTitle("triage") : "⚡ Triage";
-lines.push(`${title} · ${filterSource}`);
+lines.push(`${title} · ${filterSource} · ${roleFilterLabel(roleFilter)}`);
 let hasAny = false;
 if (urgent.length) {
 hasAny = true;
@@ -4711,6 +5113,76 @@ refreshQueue.clear();
 setInterval(() => {
 refreshLiveCards(false).catch(() => {});
 }, 6 * 1000);
+async function syncConversationRoleFromSubmission({ email, role, submission_id, nowIso }) {
+const normalized = normalizeEmail(email);
+if (!normalized) return null;
+const convo = await sbFindConversationByEmail(normalized);
+if (!convo?.id) return null;
+
+const nextRole = normalizeRole(role) || "parent";
+const currentRole = normalizeRole(convo.role) || "parent";
+
+let updatePatch = {
+updated_at: nowIso,
+role_source: "submission_link",
+role_last_updated_at: nowIso,
+};
+
+// Safe linking rule:
+if (!convo.role) {
+// No existing role, set it directly
+updatePatch.role = nextRole;
+updatePatch.role_confidence = "high";
+} else if (currentRole === nextRole) {
+// Same role, no change needed
+return convo.id;
+} else {
+// CONFLICT: Different roles. Set pending instead of overwriting.
+updatePatch.role_pending = nextRole;
+updatePatch.role_confidence = "low";
+}
+
+try {
+const { error } = await ops()
+.from("conversations")
+.update(updatePatch)
+.eq("id", convo.id);
+if (error) {
+if (isMissingColumnError(error)) return null;
+throw new Error(error.message);
+}
+} catch (err) {
+logError("syncConversationRoleFromSubmission", err);
+return null;
+}
+
+try {
+await sbInsertOpsEventSafe({
+schema_version: "5.3",
+event_type: "conversation.role.updated",
+source: "ops",
+direction: "inbound",
+entity_type: "conversation",
+entity_id: convo.id,
+submission_id: submission_id || null,
+client_email: normalized,
+payload: {
+previous_role: convo.role || null,
+role: nextRole,
+conflict: currentRole !== nextRole,
+pending: updatePatch.role_pending || null,
+},
+});
+} catch (err) {
+logError("conversation.role.updated", err);
+}
+
+refreshQueue.add(makeCardKey("conversation", convo.id));
+refreshQueue.add("triage:all");
+refreshQueue.add("dashboard:all");
+refreshQueue.add("allq:all");
+return convo.id;
+}
 // ---------- CANONICAL OPS INGEST: /ops/ingest (v5.3 CLEAN) ----------
 app.post("/ops/ingest", async (req, res) => {
 try {
@@ -4762,19 +5234,22 @@ return res.json({ ok: true, deduped: true });
 if (event_type === "submission.created") {
 if (!submission_id) throw new Error("submission.created missing submission_id");
 const p = payload || {};
-const canon = canonicalizeSubmissionPayload(p); // <- you implement based on your form fields
-await ops().from("submissions").upsert(
-{
+const canon = canonicalizeSubmissionPayload(p, { source }); // <- you implement based on your form fields
+const row = {
 submission_id,
 ...canon,
 // Include these fields if desired: first_name, last_name, email, phone_e164, state, athlete_name, referral, ...
 submission_payload: p, // keep raw
 created_at: canon.created_at || nowIso,
 updated_at: nowIso,
-},
-
-{ onConflict: "submission_id" }
-);
+};
+await sbUpsertSubmissionSafe(row);
+await syncConversationRoleFromSubmission({
+email: canon.email,
+role: canon.your_role,
+submission_id,
+nowIso,
+});
 refreshQueue.add(makeCardKey("submission", submission_id));
 refreshQueue.add("dashboard:all");
 refreshQueue.add("allq:all");
@@ -4782,14 +5257,19 @@ refreshQueue.add("allq:all");
 if (event_type === "submission.updated") {
 if (!submission_id) throw new Error("submission.updated missing submission_id");
 const p = payload || {};
-const canon = canonicalizeSubmissionPayload(p);
-await ops().from("submissions").update(
-{
+const canon = canonicalizeSubmissionPayload(p, { source });
+const patch = {
 ...canon,
 submission_payload: p,
 updated_at: nowIso,
-}
-).eq("submission_id", submission_id);
+};
+await sbUpdateSubmissionSafe(submission_id, patch);
+await syncConversationRoleFromSubmission({
+email: canon.email,
+role: canon.your_role,
+submission_id,
+nowIso,
+});
 refreshQueue.add(makeCardKey("submission", submission_id));
 refreshQueue.add("dashboard:all");
 refreshQueue.add("allq:all");
