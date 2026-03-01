@@ -1586,12 +1586,20 @@ if (a) return "Accident";
 if (h) return "Hospital Indemnity";
 return "—";
 }
+function emailStatusIcon(sent) {
+return sent ? "✅" : "⏳";
+}
+function smsStatusIcon(sent) {
+return sent ? "✅" : "⏳";
+}
 function buildSubmissionCard(sub) {
 const p = sub.submission_payload || {};
 const name = `${p.first_name || ""} ${p.last_name || ""}`.trim() || "—";
 const role = sub.your_role || p.your_role || p.role || "parent";
 const intent = sub.intent_answer || p.intent_answer || "—";
 const heard = sub.how_heard_about || p.how_heard_about || "—";
+const emailSent = sub.email_sent === true || sub.enrollment_email_sent === true;
+const smsSent = sub.sms_sent === true || sub.enrollment_sms_sent === true;
 return `🧾 Submission · ${idShort(sub.submission_id)}
 Name: ${name}
 Email: ${p.email || "—"}
@@ -1603,6 +1611,9 @@ Intent: ${intent}
 How Heard: ${heard}
 Coverage: ${coverageLabel(p)}
 Referral: ${p.referral_source || p.referral || "—"}
+
+Sent Email: ${emailStatusIcon(emailSent)}
+Sent SMS: ${smsStatusIcon(smsSent)}
 
 Received: ${tFmtDateTimeShort(sub.created_at)}`;
 }
@@ -2627,8 +2638,10 @@ const cov = sub.coverage_accident && sub.coverage_hospital_indemnity ? "Accident
 : (sub.coverage_type || "—");
 const coach = sub.coach_name ? `Coach: ${sub.coach_name}` : "—";
 const pool = sub.pool_label ? `Pool: ${sub.pool_label}` : "—";
+const emailSent = sub.email_sent === true || sub.enrollment_email_sent === true;
+const smsSent = sub.sms_sent === true || sub.enrollment_sms_sent === true;
 
-const text = `🧾 Submission · ${idShort(submissionId)}\n\nSubmitter\n${name}\n${email}\n\nAthlete\n${athlete}\n\nDetails\nState: ${state}\nCoverage: ${cov}\n${coach}\n${pool}\n\nCreated: ${sub.created_at || "—"}`;
+const text = `🧾 Submission · ${idShort(submissionId)}\n\nSubmitter\n${name}\n${email}\n\nAthlete\n${athlete}\n\nDetails\nState: ${state}\nCoverage: ${cov}\n${coach}\n${pool}\n\nStatus\nSent Email: ${emailStatusIcon(emailSent)}\nSent SMS: ${smsStatusIcon(smsSent)}\n\nCreated: ${sub.created_at || "—"}`;
 
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("⬅ Back", "ALLQ:open")],
