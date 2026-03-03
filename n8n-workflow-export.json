@@ -86,6 +86,34 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.1,
       "position": [1050, 400]
+    },
+    {
+      "parameters": {
+        "chatId": "{{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "✅ Email Sent!\n\n👤 To: {{ $item.payload.client.first_name }} {{ $item.payload.client.last_name }}\n📧 Email: {{ $item.payload.client.email }}\n📋 Submission: {{ $item.submission_id }}"
+      },
+      "id": "uuid-telegram-success",
+      "name": "Notify Telegram - Success",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1250, 200],
+      "credentials": {
+        "telegramBotApi": "Telegram"
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "{{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "❌ Email Send Failed!\n\n👤 To: {{ $item.payload.client.first_name }} {{ $item.payload.client.last_name }}\n📧 Email: {{ $item.payload.client.email }}\n📋 Submission: {{ $item.submission_id }}\n⚠️ Error: {{ $error.message }}"
+      },
+      "id": "uuid-telegram-error",
+      "name": "Notify Telegram - Error",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1250, 400],
+      "credentials": {
+        "telegramBotApi": "Telegram"
+      }
     }
   ],
   "connections": {
@@ -136,6 +164,28 @@
         [
           {
             "node": "Report Failure to Bot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report Success to Bot": {
+      "main": [
+        [
+          {
+            "node": "Notify Telegram - Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report Failure to Bot": {
+      "main": [
+        [
+          {
+            "node": "Notify Telegram - Error",
             "type": "main",
             "index": 0
           }
