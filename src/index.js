@@ -5338,7 +5338,7 @@ return res.status(500).json({ ok: false, error: String(e.message || e) });
 app.post("/webhook/metric", async (req, res) => {
   try {
     const secret = req.header("x-nil-secret");
-    if (!secret || secret !== process.env.NIL_WEBHOOK_SECRET) {
+    if (!secret || secret !== BASE_WEBHOOK_SECRET) {
       return res.status(401).json({ ok: false, error: "unauthorized" });
     }
 
@@ -5359,11 +5359,13 @@ app.post("/webhook/metric", async (req, res) => {
       ]);
 
     if (error) {
+      console.error("[click_events insert error]", error.message);
       return res.status(500).json({ ok: false, error: error.message });
     }
 
     return res.status(200).json({ ok: true });
   } catch (e) {
+    console.error("[webhook/metric error]", String(e));
     return res.status(500).json({ ok: false, error: String(e) });
   }
 });
