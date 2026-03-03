@@ -1,0 +1,150 @@
+{
+  "name": "NIL Outbox - Send Emails/SMS",
+  "nodes": [
+    {
+      "parameters": {
+        "expression": "*/30 * * * * *"
+      },
+      "id": "uuid-cron-1",
+      "name": "Every 30 Seconds",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://nil-ops-bot.render.com/api/nil-outbox/claim?limit=10",
+        "method": "GET",
+        "headers": {
+          "x-nil-secret": "={{ $env.NIL_SECRET }}"
+        },
+        "responseFormat": "json"
+      },
+      "id": "uuid-http-claim",
+      "name": "Claim Messages from Bot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "loopOver": "={{ $json.items }}"
+      },
+      "id": "uuid-loop-items",
+      "name": "Loop Over Items",
+      "type": "n8n-nodes-base.loop",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "email": "={{ $item.payload.client.email }}",
+        "subject": "Your Coverage Options - {{ $item.payload.client.first_name }}",
+        "htmlBody": "<p>Hi {{ $item.payload.client.first_name }},</p>\n<p>Your coverage options are ready. We've sent you details about:</p>\n<ul>\n<li>Accident Coverage: {{ $item.payload.payload.coverage_accident ? 'Yes' : 'No' }}</li>\n<li>Hospital Indemnity: {{ $item.payload.payload.coverage_hospital_indemnity ? 'Yes' : 'No' }}</li>\n</ul>\n<p>Contact us if you have any questions.</p>\n<p>NIL Wealth Strategies</p>",
+        "fromEmail": "support@mynilwealthstrategies.com",
+        "credentialsType": "sendgridApi"
+      },
+      "id": "uuid-sendgrid",
+      "name": "Send Email via SendGrid",
+      "type": "n8n-nodes-base.sendGrid",
+      "typeVersion": 1,
+      "position": [850, 200],
+      "credentials": {
+        "sendGridApi": "SendGrid"
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://nil-ops-bot.render.com/api/nil-outbox/result",
+        "method": "POST",
+        "headers": {
+          "x-nil-secret": "={{ $env.NIL_SECRET }}",
+          "Content-Type": "application/json"
+        },
+        "bodyParametersJson": "={\n  \"submission_id\": \"{{ $item.submission_id }}\",\n  \"status\": \"sent\",\n  \"last_error\": null\n}",
+        "responseFormat": "json"
+      },
+      "id": "uuid-http-result",
+      "name": "Report Success to Bot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1050, 200]
+    },
+    {
+      "parameters": {
+        "url": "https://nil-ops-bot.render.com/api/nil-outbox/result",
+        "method": "POST",
+        "headers": {
+          "x-nil-secret": "={{ $env.NIL_SECRET }}",
+          "Content-Type": "application/json"
+        },
+        "bodyParametersJson": "={\n  \"submission_id\": \"{{ $item.submission_id }}\",\n  \"status\": \"failed\",\n  \"last_error\": \"SendGrid error: {{ $error.message }}\"\n}",
+        "responseFormat": "json"
+      },
+      "id": "uuid-http-error",
+      "name": "Report Failure to Bot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1050, 400]
+    }
+  ],
+  "connections": {
+    "Every 30 Seconds": {
+      "main": [
+        [
+          {
+            "node": "Claim Messages from Bot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Messages from Bot": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [
+          {
+            "node": "Send Email via SendGrid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email via SendGrid": {
+      "main": [
+        [
+          {
+            "node": "Report Success to Bot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ],
+      "error": [
+        [
+          {
+            "node": "Report Failure to Bot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
