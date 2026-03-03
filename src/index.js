@@ -38,6 +38,12 @@ const COMPLETE_AFTER_HOURS = Number(process.env.COMPLETE_AFTER_HOURS ||
 48);
 const SUPPORT_FROM_EMAIL =
 process.env.SUPPORT_FROM_EMAIL || "support@mynilwealthstrategies.com";
+const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY || "";
+const SENDGRID_FROM_EMAIL = process.env.SENDGRID_FROM_EMAIL || SUPPORT_FROM_EMAIL;
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID || "";
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN || "";
+const TWILIO_FROM_NUMBER = process.env.TWILIO_FROM_NUMBER || "";
+const OUTBOX_POLL_MS = Number(process.env.OUTBOX_POLL_MS || 7000);
 // live cards
 const LIVE_CARD_TTL_MINUTES = Number(process.env.LIVE_CARD_TTL_MINUTES || 360);
 const REFRESH_MIN_INTERVAL_MS = 1200;
@@ -71,7 +77,7 @@ const got = req.headers["x-nil-secret"];
 return got && String(got) === String(BASE_WEBHOOK_SECRET);
 }
 function verifyHmac(req) {
-if (!OPS_WEBHOOK_HMAC_SECRET) return true;
+if (!OPS_WEBHOOK_HMAC_SECRET) return false;
 
 const sig = req.headers["x-ops-signature"];
 if (!sig) return false;
@@ -80,6 +86,10 @@ const expected = crypto
 .update(JSON.stringify(req.body))
 .digest("hex");
 return String(sig) === String(expected);
+}
+function verifyOpsIngestAuth(req) {
+if (OPS_WEBHOOK_HMAC_SECRET) return verifyHmac(req);
+return verifyWebhookSecret(req);
 }
 // ---------- UTIL ----------
 // ---------- ADMIN FILTER HELPER (v5.4) ----------
@@ -475,6 +485,183 @@ return data;
 } catch (err) {
 logError("queueSmsDraft", err);
 return null;
+}
+}
+function parseDelimitedList(raw) {
+if (!raw) return [];
+if (Array.isArray(raw)) return raw.filter(Boolean).map((v) => String(v).trim()).filter(Boolean);
+return String(raw)
+.split(",")
+.map((s) => s.trim())
+.filter(Boolean);
+}
+async function sendEmailViaSendGrid(row) {
+if (!SENDGRID_API_KEY) throw new Error("Missing SENDGRID_API_KEY");
+const to = parseDelimitedList(row.to);
+if (!to.length) throw new Error("email_outbox row missing to");
+
+const payload = {
+personalizations: [
+{
+to: to.map((email) => ({ email })),
+cc: parseDelimitedList(row.cc).map((email) => ({ email })),
+bcc: parseDelimitedList(row.bcc).map((email) => ({ email })),
+},
+],
+from: { email: SENDGRID_FROM_EMAIL },
+subject: String(row.subject || ""),
+content: [{ type: "text/html", value: String(row.html || "") }],
+};
+
+const resp = await fetch("https://api.sendgrid.com/v3/mail/send", {
+method: "POST",
+headers: {
+"content-type": "application/json",
+authorization: `Bearer ${SENDGRID_API_KEY}`,
+},
+body: JSON.stringify(payload),
+});
+if (!resp.ok) {
+const text = await resp.text().catch(() => "");
+throw new Error(`SendGrid error ${resp.status}: ${text || "unknown"}`);
+}
+return resp.headers.get("x-message-id") || uuidv4();
+}
+async function sendSmsViaTwilio(row) {
+if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_FROM_NUMBER) {
+throw new Error("Missing Twilio credentials or TWILIO_FROM_NUMBER");
+}
+if (!row.to) throw new Error("sms_outbox row missing to");
+
+const body = new URLSearchParams({
+To: String(row.to),
+From: String(TWILIO_FROM_NUMBER),
+Body: String(row.text || ""),
+});
+const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64");
+const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
+const resp = await fetch(url, {
+method: "POST",
+headers: {
+authorization: `Basic ${auth}`,
+"content-type": "application/x-www-form-urlencoded",
+},
+body,
+});
+const json = await resp.json().catch(() => ({}));
+if (!resp.ok || json?.error_message) {
+throw new Error(`Twilio error ${resp.status}: ${json?.error_message || "unknown"}`);
+}
+return json?.sid || uuidv4();
+}
+function buildOpsSignature(bodyObj) {
+if (!OPS_WEBHOOK_HMAC_SECRET) return "";
+return crypto
+.createHmac("sha256", OPS_WEBHOOK_HMAC_SECRET)
+.update(JSON.stringify(bodyObj))
+.digest("hex");
+}
+async function postOpsIngestEvent(eventBody) {
+const headers = { "content-type": "application/json" };
+if (BASE_WEBHOOK_SECRET) headers["x-nil-secret"] = BASE_WEBHOOK_SECRET;
+if (OPS_WEBHOOK_HMAC_SECRET) {
+headers["x-ops-signature"] = buildOpsSignature(eventBody);
+}
+const resp = await fetch(`http://127.0.0.1:${PORT}/ops/ingest`, {
+method: "POST",
+headers,
+body: JSON.stringify(eventBody),
+});
+if (!resp.ok) {
+const txt = await resp.text().catch(() => "");
+throw new Error(`/ops/ingest ${resp.status}: ${txt || "unknown"}`);
+}
+}
+let outboxWorkerRunning = false;
+async function processEmailOutboxQueued(limit = 10) {
+const { data, error } = await ops()
+.from("email_outbox")
+.select("id,to,subject,html,cc,bcc,status")
+.eq("status", "queued")
+.limit(limit);
+if (error) throw error;
+for (const row of data || []) {
+try {
+const providerMessageId = await sendEmailViaSendGrid(row);
+const sentAt = new Date().toISOString();
+const { error: updateError } = await ops()
+.from("email_outbox")
+.update({
+status: "sent",
+provider_message_id: providerMessageId,
+sent_at: sentAt,
+})
+.eq("id", row.id)
+.eq("status", "queued");
+if (updateError) throw updateError;
+
+await postOpsIngestEvent({
+schema_version: "5.3",
+event_type: "outbox.email.sent",
+source: "ops",
+direction: "inbound",
+payload: {
+outbox_id: row.id,
+provider_message_id: providerMessageId,
+},
+});
+} catch (err) {
+logError("processEmailOutboxQueued", err);
+}
+}
+}
+async function processSmsOutboxQueued(limit = 10) {
+const { data, error } = await ops()
+.from("sms_outbox")
+.select("id,to,text,status")
+.eq("status", "queued")
+.limit(limit);
+if (error) throw error;
+for (const row of data || []) {
+try {
+const providerMessageId = await sendSmsViaTwilio(row);
+const sentAt = new Date().toISOString();
+const { error: updateError } = await ops()
+.from("sms_outbox")
+.update({
+status: "sent",
+provider_message_id: providerMessageId,
+sent_at: sentAt,
+})
+.eq("id", row.id)
+.eq("status", "queued");
+if (updateError) throw updateError;
+
+await postOpsIngestEvent({
+schema_version: "5.3",
+event_type: "outbox.sms.sent",
+source: "ops",
+direction: "inbound",
+payload: {
+outbox_id: row.id,
+provider_message_id: providerMessageId,
+},
+});
+} catch (err) {
+logError("processSmsOutboxQueued", err);
+}
+}
+}
+async function runOutboxSenderTick() {
+if (outboxWorkerRunning) return;
+outboxWorkerRunning = true;
+try {
+await processEmailOutboxQueued();
+await processSmsOutboxQueued();
+} catch (err) {
+logError("runOutboxSenderTick", err);
+} finally {
+outboxWorkerRunning = false;
 }
 }
 // ---------- MIRROR SYSTEM (v5.4) ----------
@@ -5126,6 +5313,12 @@ refreshQueue.clear();
 setInterval(() => {
 refreshLiveCards(false).catch(() => {});
 }, 6 * 1000);
+setInterval(() => {
+runOutboxSenderTick().catch(() => {});
+}, OUTBOX_POLL_MS);
+setTimeout(() => {
+runOutboxSenderTick().catch(() => {});
+}, 1500);
 async function syncConversationRoleFromSubmission({ email, role, submission_id, nowIso }) {
 const normalized = normalizeEmail(email);
 if (!normalized) return null;
@@ -5199,7 +5392,7 @@ return convo.id;
 // ---------- CANONICAL OPS INGEST: /ops/ingest (v5.3 CLEAN) ----------
 app.post("/ops/ingest", async (req, res) => {
 try {
-if (!verifyWebhookSecret(req) && !verifyHmac(req)) {
+if (!verifyOpsIngestAuth(req)) {
 return res.status(401).json({ ok: false });
 }
 const b = req.body || {};
@@ -5296,7 +5489,7 @@ refreshQueue.add("dashboard:all");
 refreshQueue.add("allq:all");
 }
 // OUTBOX STATUS (n8n callbacks)
-if (event_type.startsWith("outbox.email.")) {
+if (event_type.startsWith("outbox.email.") || event_type.startsWith("outbox.sms.")) {
 // ex: outbox.email.sent / outbox.email.failed
 if (payload?.outbox_id) {
 refreshQueue.add(`outbox:${payload.outbox_id}`);
