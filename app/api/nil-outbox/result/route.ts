@@ -36,6 +36,12 @@ export async function POST(request: NextRequest) {
 
     if (status === 'sent') {
       outboxUpdate.sent_at = now;
+      outboxUpdate.last_error = null;
+    } else if (status === 'failed') {
+      // Set retry attempt for 2 minutes from now
+      const retryTime = new Date(Date.now() + 2 * 60 * 1000);
+      outboxUpdate.next_attempt_at = retryTime.toISOString();
+      // Keep attempt_count as is (already incremented during claim)
     }
 
     // Update outbox row

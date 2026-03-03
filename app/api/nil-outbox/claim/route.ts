@@ -19,45 +19,22 @@ export async function GET(request: NextRequest) {
     }
 
     const { searchParams } = new URL(request.url);
-    const limit = Math.min(Number(searchParams.get('limit')) || 10, 100);
+    const limit = Math.min(Number(searchParams.get('limit')) || 25, 50);
 
-    // Query queued rows where next_attempt_at <= now()
-    const now = new Date().toISOString();
-    const { data: claimedRows, error } = await supabase
-      .schema('nil')
-      .from('n8n_outbox')
-      .select('outbox_id, submission_id, idempotency_key, payload, attempt_count')
-      .eq('status', 'queued')
-      .lte('next_attempt_at', now)
-      .order('next_attempt_at', { ascending: true })
-      .limit(limit);
+    // Use atomic RPC function to claim rows
+    // This function does SELECT FOR UPDATE SKIP LOCKED + UPDATE in a single transaction
+    const { data: claimedRows, error } = await supabase.rpc('claim_n8n_outbox', {
+      limit_count: limit
+    });
 
     if (error) {
-      throw new Error(`Claim query failed: ${error.message}`);
-    }
-
-    // Atomically update claimed rows to 'sending'
-    if (claimedRows && claimedRows.length > 0) {
-      const outboxIds = claimedRows.map((r) => r.outbox_id);
-      const { error: updateError } = await supabase
-        .schema('nil')
-        .from('n8n_outbox')
-        .update({ 
-          status: 'sending',
-          attempt_count: supabase.sql`attempt_count + 1`
-        })
-        .in('outbox_id', outboxIds);
-
-      if (updateError) {
-        throw new Error(`Update to sending failed: ${updateError.message}`);
-      }
+      throw new Error(`Claim RPC failed: ${error.message}`);
     }
 
     return NextResponse.json(
       {
         ok: true,
-        items: claimedRows || [],
-        count: claimedRows?.length || 0,
+        items: claimedRows || []
       },
       { status: 200 }
     );
