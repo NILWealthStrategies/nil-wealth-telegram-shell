@@ -5569,6 +5569,8 @@ app.listen(PORT, "0.0.0.0", () => {
 console.log(`Webhook server listening on 0.0.0.0:${PORT}`);
 console.log(`${CODE_VERSION} · Build ${BUILD_VERSION}`);
 });
-bot.launch();
+bot.launch().catch((err) => {
+logError("bot.launch", err);
+});
 console.log(`Bot running: ${CODE_VERSION}`);
 
