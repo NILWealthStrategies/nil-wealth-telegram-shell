@@ -5564,6 +5564,234 @@ app.post("/webhook/metric", async (req, res) => {
   }
 });
 
+// ---------- SUBMISSION OUTBOX API ----------
+// POST /api/submissions – Write to nil.submissions + nil.n8n_outbox, return fast
+app.post("/api/submissions", async (req, res) => {
+  try {
+    const body = req.body || {};
+
+    // Extract fields
+    const {
+      idempotency_key,
+      first_name,
+      last_name,
+      email,
+      phone,
+      state,
+      role,
+      intent = "coverage_interest",
+      coverage_accident,
+      coverage_hospital_indemnity,
+    } = body;
+
+    // Validate required fields
+    if (!first_name || !last_name || !email || !phone || !state || !role) {
+      return res.status(400).json({ ok: false, error: "Missing required fields" });
+    }
+
+    // Generate or use idempotency key
+    let finalIdempotencyKey = idempotency_key || uuidv4();
+
+    // Derive stable submission_id from idempotency_key
+    const part1 = finalIdempotencyKey.slice(0, 8).toUpperCase();
+    const part2 = finalIdempotencyKey.replace(/-/g, "").slice(8, 13).toUpperCase();
+    const submission_id = `NWS-${part1}-${part2}`;
+
+    // Build n8n payload (envelope for async delivery)
+    const n8nPayload = {
+      event_type: "submission.created",
+      source: "website",
+      direction: "inbound",
+      schema_version: "5.2",
+      trace_id: uuidv4(),
+      idempotency_key: finalIdempotencyKey,
+      entity_type: "submission",
+      entity_id: submission_id,
+      client: {
+        first_name,
+        last_name,
+        email,
+        phone,
+        state,
+        role,
+        intent,
+      },
+      payload: {
+        coverage_accident: coverage_accident === true,
+        coverage_hospital_indemnity: coverage_hospital_indemnity === true,
+      },
+    };
+
+    // Upsert submission record
+    const submissionRow = {
+      submission_id,
+      first_name,
+      last_name,
+      email,
+      phone,
+      state,
+      role,
+      intent,
+      coverage_accident: coverage_accident === true,
+      coverage_hospital_indemnity: coverage_hospital_indemnity === true,
+      n8n_status: "queued",
+      created_at: new Date().toISOString(),
+    };
+
+    const { error: subError } = await ops()
+      .from("submissions")
+      .upsert(submissionRow, { onConflict: "submission_id" });
+
+    if (subError) throw subError;
+
+    // Upsert n8n outbox row
+    const outboxRow = {
+      submission_id,
+      idempotency_key: finalIdempotencyKey,
+      payload: n8nPayload,
+      status: "queued",
+    };
+
+    const { error: outboxError } = await ops()
+      .from("n8n_outbox")
+      .upsert(outboxRow, { onConflict: "submission_id" });
+
+    if (outboxError) throw outboxError;
+
+    // Trigger dashboard refresh
+    refreshQueue.add("dashboard:all");
+
+    // Return immediately (fast UX)
+    return res.status(200).json({
+      ok: true,
+      queued: true,
+      submission_id,
+      idempotency_key: finalIdempotencyKey,
+    });
+  } catch (error) {
+    console.error("[api/submissions]", error);
+    return res.status(500).json({
+      ok: false,
+      error: error instanceof Error ? error.message : "Internal server error",
+    });
+  }
+});
+
+// GET /api/nil-outbox/claim – Claim queued rows for n8n
+app.get("/api/nil-outbox/claim", async (req, res) => {
+  try {
+    const secret = req.headers["x-nil-secret"];
+    if (!secret || secret !== BASE_WEBHOOK_SECRET) {
+      return res.status(401).json({ ok: false, error: "Unauthorized" });
+    }
+
+    const limit = Math.min(Number(req.query.limit) || 10, 100);
+
+    const { data: claimedRows, error } = await ops()
+      .from("n8n_outbox")
+      .select("outbox_id, submission_id, idempotency_key, payload, attempt_count")
+      .eq("status", "queued")
+      .order("next_attempt_at", { ascending: true })
+      .limit(limit);
+
+    if (error) throw error;
+
+    // Update claimed rows to 'sending'
+    if (claimedRows && claimedRows.length > 0) {
+      const outboxIds = claimedRows.map((r) => r.outbox_id);
+      const { error: updateError } = await ops()
+        .from("n8n_outbox")
+        .update({
+          status: "sending",
+          attempt_count: supabase.sql`attempt_count + 1`,
+        })
+        .in("outbox_id", outboxIds);
+
+      if (updateError) throw updateError;
+    }
+
+    return res.status(200).json({
+      ok: true,
+      rows: claimedRows || [],
+      count: claimedRows?.length || 0,
+    });
+  } catch (error) {
+    console.error("[api/nil-outbox/claim]", error);
+    return res.status(500).json({
+      ok: false,
+      error: error instanceof Error ? error.message : "Internal error",
+    });
+  }
+});
+
+// POST /api/nil-outbox/result – Update after n8n sends
+app.post("/api/nil-outbox/result", async (req, res) => {
+  try {
+    const secret = req.headers["x-nil-secret"];
+    if (!secret || secret !== BASE_WEBHOOK_SECRET) {
+      return res.status(401).json({ ok: false, error: "Unauthorized" });
+    }
+
+    const body = req.body || {};
+    const { submission_id, status, last_error } = body;
+
+    if (!submission_id || !["sent", "failed"].includes(status)) {
+      return res.status(400).json({
+        ok: false,
+        error: "Invalid submission_id or status",
+      });
+    }
+
+    const now = new Date().toISOString();
+    const updatePatch = {
+      status,
+      last_error: last_error || null,
+    };
+
+    if (status === "sent") {
+      updatePatch.sent_at = now;
+    }
+
+    // Update outbox
+    const { error: outboxError } = await ops()
+      .from("n8n_outbox")
+      .update(updatePatch)
+      .eq("submission_id", submission_id);
+
+    if (outboxError) throw outboxError;
+
+    // Update submissions
+    const submissionPatch = {
+      n8n_status: status,
+      n8n_last_error: last_error || null,
+    };
+
+    if (status === "sent") {
+      submissionPatch.n8n_sent_at = now;
+    }
+
+    await ops()
+      .from("submissions")
+      .update(submissionPatch)
+      .eq("submission_id", submission_id);
+
+    // Trigger refresh
+    refreshQueue.add("dashboard:all");
+
+    return res.status(200).json({
+      ok: true,
+      submission_id,
+      status,
+    });
+  } catch (error) {
+    console.error("[api/nil-outbox/result]", error);
+    return res.status(500).json({
+      ok: false,
+      error: error instanceof Error ? error.message : "Internal error",
+    });
+  }
+});
+
 // ---------- START ----------
 app.listen(PORT, "0.0.0.0", () => {
 console.log(`Webhook server listening on 0.0.0.0:${PORT}`);
