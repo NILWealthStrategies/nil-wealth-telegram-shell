@@ -5338,7 +5338,8 @@ return res.status(500).json({ ok: false, error: String(e.message || e) });
 app.post("/webhook/metric", async (req, res) => {
   try {
     const secret = req.header("x-nil-secret");
-    if (!secret || secret !== BASE_WEBHOOK_SECRET) {
+
+    if (!secret || secret !== process.env.BASE_WEBHOOK_SECRET) {
       return res.status(401).json({ ok: false, error: "unauthorized" });
     }
 
