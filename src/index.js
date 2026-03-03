@@ -5334,6 +5334,40 @@ payload: req.body || null,
 return res.status(500).json({ ok: false, error: String(e.message || e) });
 }
 });
+// ---------- METRIC/CLICK TRACKING ----------
+app.post("/webhook/metric", async (req, res) => {
+  try {
+    const secret = req.header("x-nil-secret");
+    if (!secret || secret !== process.env.NIL_WEBHOOK_SECRET) {
+      return res.status(401).json({ ok: false, error: "unauthorized" });
+    }
+
+    const { coach_id, kind, link, meta } = req.body || {};
+    if (!kind) return res.status(400).json({ ok: false, error: "missing kind" });
+
+    // Insert into schema `nil`
+    const { error } = await supabase
+      .schema("nil")
+      .from("click_events")
+      .insert([
+        {
+          coach_id: coach_id ?? null,
+          kind,
+          link: link ?? null,
+          meta: meta ?? {},
+        },
+      ]);
+
+    if (error) {
+      return res.status(500).json({ ok: false, error: error.message });
+    }
+
+    return res.status(200).json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
 // ---------- START ----------
 app.listen(PORT, "0.0.0.0", () => {
 console.log(`Webhook server listening on 0.0.0.0:${PORT}`);
