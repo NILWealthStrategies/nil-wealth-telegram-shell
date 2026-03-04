@@ -1524,6 +1524,7 @@ text,
 
 keyboard
 );
+liveCards.delete(m.message_id);
 return { mode: "edit", message_id: m.message_id, chat_id: m.chat.id };
 } catch (err) {
 const msg = String(err?.description || err?.message || "");
