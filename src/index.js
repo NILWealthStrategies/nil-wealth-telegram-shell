@@ -1515,6 +1515,92 @@ return { mode: "noop", message_id: m.message_id, chat_id: m.chat.id };
 // fallback: new message
 const msg = await ctx.reply(text, keyboard);
 return { mode: "reply", message_id: msg?.message_id, chat_id: msg?.chat?.id };
+
+// ---------- LEADS DISPLAY ----------
+async function leadsText() {
+  try {
+    const { data: analytics, error: analyticsErr } = await ops()
+      .from("v_analytics_summary")
+      .select("*")
+      .single();
+    
+    if (analyticsErr) throw new Error(analyticsErr.message);
+    
+    const { data: topLeads, error: leadsErr } = await ops()
+      .from("v_top_leads")
+      .select("*")
+      .limit(10);
+    
+    if (leadsErr) throw new Error(leadsErr.message);
+    
+    const { data: statusCounts, error: statusErr } = await ops()
+      .from("leads")
+      .select("status");
+    
+    const statuses = { ready: 0, outreach_started: 0, replied: 0, no_email: 0, bounced: 0 };
+    
+    if (!statusErr && statusCounts) {
+      for (const row of statusCounts) {
+        if (statuses.hasOwnProperty(row.status)) statuses[row.status]++;
+      }
+    }
+    
+    let text = `🎯 NIL LEADS DASHBOARD\n\n📊 Overview:\n`;
+    text += `• Total Leads: ${analytics?.total_leads || 0}\n`;
+    text += `• New Today: ${analytics?.leads_today || 0}\n`;
+    text += `• With Email: ${statuses.ready + statuses.outreach_started + statuses.replied}\n\n`;
+    text += `📈 Status: Ready ${statuses.ready} | Started ${statuses.outreach_started} | Replied ${statuses.replied}\n\n`;
+    text += `🔥 Top 10 Leads:\n`;
+    if (topLeads && topLeads.length > 0) {
+      for (let i = 0; i < Math.min(10, topLeads.length); i++) {
+        const lead = topLeads[i];
+        const score = lead.engagement_score || 0;
+        const emoji = score >= 20 ? "🔥" : score >= 10 ? "⭐" : "📌";
+        text += `${emoji} ${lead.full_name} (${lead.organization}) - Score: ${score}\n`;
+      }
+    } else {
+      text += `No leads yet.\n`;
+    }
+    return text;
+  } catch (err) {
+    return `❌ Error: ${err.message}`;
+  }
+}
+
+function leadsKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("🆕 Ready", "LEADS:filter:ready"), Markup.button.callback("📧 Started", "LEADS:filter:outreach_started")],
+    [Markup.button.callback("🔄 Refresh", "LEADS:refresh"), Markup.button.callback("⬅ Dashboard", "DASH:back")]
+  ]);
+}
+
+// ---------- ANALYTICS DISPLAY ----------
+async function analyticsText() {
+  try {
+    const { data: analytics, error } = await ops()
+      .from("v_analytics_summary")
+      .select("*")
+      .single();
+    
+    if (error) throw new Error(error.message);
+    
+    let text = `📊 EMAIL ANALYTICS\n\n📅 Today:\n`;
+    text += `• Sent: ${analytics?.emails_sent_today || 0} | Opens: ${analytics?.opens_today || 0} | Clicks: ${analytics?.clicks_today || 0} | Replies: ${analytics?.replies_today || 0}\n\n`;
+    text += `📈 All-Time:\n`;
+    text += `• Sent: ${analytics?.total_emails_sent || 0} | Opens: ${analytics?.total_opens || 0} | Clicks: ${analytics?.total_clicks || 0} | Replies: ${analytics?.total_replies || 0}\n\n`;
+    text += `💯 Rates: Open ${analytics?.open_rate_pct || 0}% | Click ${analytics?.click_rate_pct || 0}% | Reply ${analytics?.reply_rate_pct || 0}%\n`;
+    return text;
+  } catch (err) {
+    return `❌ Error: ${err.message}`;
+  }
+}
+
+function analyticsKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("🔄 Refresh", "ANALYTICS:refresh"), Markup.button.callback("⬅ Dashboard", "DASH:back")]
+  ]);
+}
+
 }
 // ---------- DASHBOARD TEXT ----------
 async function dashboardText(filterSource = "all") {
@@ -1824,6 +1910,24 @@ await ctx.reply(await dashboardText(filterSource), dashboardKeyboardV50());
 } catch (err) {
 logError(ctx, err);
 await ctx.reply(`❌ Error loading dashboard: ${err.message}`);
+}
+});
+bot.command("leads", async (ctx) => {
+try {
+if (!isAdmin(ctx)) return;
+await ctx.reply(await leadsText(), leadsKeyboard());
+} catch (err) {
+logError(ctx, err);
+await ctx.reply(`❌ Error loading leads: ${err.message}`);
+}
+});
+bot.command("analytics", async (ctx) => {
+try {
+if (!isAdmin(ctx)) return;
+await ctx.reply(await analyticsText(), analyticsKeyboard());
+} catch (err) {
+logError(ctx, err);
+await ctx.reply(`❌ Error loading analytics: ${err.message}`);
 }
 });
 bot.action("DASH:back", async (ctx) => {
@@ -3738,6 +3842,55 @@ return showMetricsCard(ctx, "month");
 
 bot.action("METRICS:year", async (ctx) => {
 return showMetricsCard(ctx, "year");
+// ==========================================================
+// LEADS & ANALYTICS
+// ==========================================================
+bot.action("LEADS:refresh", async (ctx) => {
+try {
+if (!isAdmin(ctx)) return;
+await smartRender(ctx, await leadsText(), leadsKeyboard());
+} catch (err) {
+logError(ctx, err);
+await ctx.answerCbQuery(`Error: ${err.message}`);
+}
+});
+
+bot.action(/^LEADS:filter:(.+)$/, async (ctx) => {
+try {
+if (!isAdmin(ctx)) return;
+const status = ctx.match[1];
+const { data: leads, error } = await ops()
+.from("leads")
+.select("*")
+.eq("status", status)
+.order("engagement_score", { ascending: false })
+.limit(20);
+if (error) throw new Error(error.message);
+let text = `🎯 Leads (${status})\n\n`;
+if (leads && leads.length > 0) {
+for (const lead of leads) {
+text += `• ${lead.full_name} (${lead.organization})\n  ${lead.email} | Score: ${lead.engagement_score || 0}\n\n`;
+}
+} else {
+text += `No leads with status "${status}".\n`;
+}
+await smartRender(ctx, text, leadsKeyboard());
+} catch (err) {
+logError(ctx, err);
+await ctx.answerCbQuery(`Error: ${err.message}`);
+}
+});
+
+bot.action("ANALYTICS:refresh", async (ctx) => {
+try {
+if (!isAdmin(ctx)) return;
+await smartRender(ctx, await analyticsText(), analyticsKeyboard());
+} catch (err) {
+logError(ctx, err);
+await ctx.answerCbQuery(`Error: ${err.message}`);
+}
+});
+
 });
 // ==========================================================
 // CLIENTS + CLIENT CARD (v5.3 OPS CLEAN + POOLS)

@@ -1,0 +1,415 @@
+{
+  "name": "NIL Analytics Sync (Instantly.ai Tracking)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 * * * *"
+            }
+          ]
+        }
+      },
+      "name": "Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300],
+      "id": "schedule-trigger"
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "url": "=https://api.instantly.ai/api/v1/analytics/campaign/{{ $env.INSTANTLY_OUTREACH_CAMPAIGN_ID }}/emails",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "api_key",
+              "value": "={{ $env.INSTANTLY_API_KEY }}"
+            },
+            {
+              "name": "skip",
+              "value": "0"
+            },
+            {
+              "name": "limit",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Get Campaign Analytics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [450, 300],
+      "id": "instantly-analytics"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Instantly.ai analytics\nconst analyticsData = $input.first().json.data || [];\n\n// Transform into events for each email\nconst events = [];\n\nfor (const email of analyticsData) {\n  // Track opens\n  if (email.opened && email.opened_at) {\n    events.push({\n      email: email.email,\n      event_type: 'email_open',\n      event_data: {\n        opened_at: email.opened_at,\n        open_count: email.open_count || 1,\n        campaign_id: email.campaign_id,\n        lead_email: email.email\n      }\n    });\n  }\n  \n  // Track clicks\n  if (email.clicked && email.clicked_at) {\n    events.push({\n      email: email.email,\n      event_type: 'email_click',\n      event_data: {\n        clicked_at: email.clicked_at,\n        click_count: email.click_count || 1,\n        clicked_url: email.clicked_url || 'unknown',\n        campaign_id: email.campaign_id\n      }\n    });\n  }\n  \n  // Track forwards\n  if (email.forwarded && email.forwarded_at) {\n    events.push({\n      email: email.email,\n      event_type: 'email_forward',\n      event_data: {\n        forwarded_at: email.forwarded_at,\n        forward_count: email.forward_count || 1,\n        campaign_id: email.campaign_id\n      }\n    });\n  }\n  \n  // Track replies (already handled by support workflow, but log metric)\n  if (email.replied && email.replied_at) {\n    events.push({\n      email: email.email,\n      event_type: 'email_reply',\n      event_data: {\n        replied_at: email.replied_at,\n        reply_count: email.reply_count || 1,\n        campaign_id: email.campaign_id\n      }\n    });\n  }\n  \n  // Track bounces\n  if (email.bounced && email.bounced_at) {\n    events.push({\n      email: email.email,\n      event_type: 'email_bounce',\n      event_data: {\n        bounced_at: email.bounced_at,\n        bounce_type: email.bounce_type || 'unknown',\n        campaign_id: email.campaign_id\n      }\n    });\n  }\n}\n\nreturn events.map(event => ({ json: event }));"
+      },
+      "name": "Parse Analytics Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300],
+      "id": "parse-analytics"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-1",
+              "leftValue": "={{ $json.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Check If Events Exist",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [850, 300],
+      "id": "check-events"
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "name": "Loop Over Events",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1050, 300],
+      "id": "loop-events"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "tableId": "leads",
+        "schema": "nil",
+        "returnAll": false,
+        "limit": 1,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "email",
+              "value": "={{ $json.email }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Find Lead by Email",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1250, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      },
+      "id": "find-lead"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Combine event with lead data\nconst eventData = $('Loop Over Events').item.json;\nconst leadResults = $input.first().json;\n\nif (!leadResults || leadResults.length === 0) {\n  // Lead not found, skip\n  return [];\n}\n\nconst lead = leadResults[0];\n\nreturn [{\n  json: {\n    lead_id: lead.id,\n    event_type: eventData.event_type,\n    event_data: eventData.event_data\n  }\n}];"
+      },
+      "name": "Combine Event with Lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 300],
+      "id": "combine-event"
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "tableId": "lead_metrics",
+        "schema": "nil",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lead_id": "={{ $json.lead_id }}",
+            "metric_type": "={{ $json.event_type }}",
+            "metric_value": "={{ $json.event_data.open_count || $json.event_data.click_count || $json.event_data.forward_count || $json.event_data.reply_count || 1 }}",
+            "metadata": "={{ $json.event_data }}"
+          }
+        },
+        "options": {
+          "onConflict": "ignore"
+        }
+      },
+      "name": "Log Analytics Metric",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1650, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      },
+      "id": "log-metric"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "tableId": "email_sequences",
+        "schema": "nil",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "lead_id",
+              "value": "={{ $('Combine Event with Lead').item.json.lead_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "opened_at": "={{ $json.event_type === 'email_open' ? $json.event_data.opened_at : undefined }}",
+            "clicked_at": "={{ $json.event_type === 'email_click' ? $json.event_data.clicked_at : undefined }}",
+            "replied_at": "={{ $json.event_type === 'email_reply' ? $json.event_data.replied_at : undefined }}",
+            "status": "={{ $json.event_type === 'email_reply' ? 'replied' : ($json.event_type === 'email_click' ? 'clicked' : ($json.event_type === 'email_open' ? 'opened' : $json.status)) }}"
+          }
+        },
+        "options": {}
+      },
+      "name": "Update Sequence Status",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1850, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      },
+      "id": "update-sequence"
+    },
+    {
+      "parameters": {},
+      "name": "Loop Back",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2050, 300],
+      "id": "loop-back"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Summarize analytics sync\nconst allResults = $input.all();\nconst summary = {\n  total_events: allResults.length,\n  opens: allResults.filter(i => i.json.event_type === 'email_open').length,\n  clicks: allResults.filter(i => i.json.event_type === 'email_click').length,\n  forwards: allResults.filter(i => i.json.event_type === 'email_forward').length,\n  replies: allResults.filter(i => i.json.event_type === 'email_reply').length,\n  bounces: allResults.filter(i => i.json.event_type === 'email_bounce').length,\n  timestamp: new Date().toISOString()\n};\n\nreturn [{ json: summary }];"
+      },
+      "name": "Summarize Sync",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 500],
+      "id": "summarize"
+    },
+    {
+      "parameters": {
+        "authentication": "headerAuth",
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{ $env.TELEGRAM_CHAT_ID }}"
+            },
+            {
+              "name": "text",
+              "value": "=📊 Analytics Sync Complete\n\n✅ Events Synced: {{ $json.total_events }}\n👁 Opens: {{ $json.opens }}\n🖱 Clicks: {{ $json.clicks }}\n📤 Forwards: {{ $json.forwards }}\n💬 Replies: {{ $json.replies }}\n⚠️ Bounces: {{ $json.bounces }}\n\n⏱️ {{ $now.toLocaleString() }}\n\n💡 Check /metrics for updated stats"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Notify Telegram Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1250, 500],
+      "id": "telegram-summary"
+    },
+    {
+      "parameters": {
+        "authentication": "headerAuth",
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{ $env.TELEGRAM_CHAT_ID }}"
+            },
+            {
+              "name": "text",
+              "value": "=❌ Analytics Sync Failed\n\nError: {{ $json.error?.message || 'Unknown error' }}\n⏱️ {{ $now.toLocaleString() }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Notify Telegram Error",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1050, 100],
+      "id": "telegram-error"
+    }
+  ],
+  "connections": {
+    "Every Hour": {
+      "main": [
+        [
+          {
+            "node": "Get Campaign Analytics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Campaign Analytics": {
+      "main": [
+        [
+          {
+            "node": "Parse Analytics Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Analytics Events": {
+      "main": [
+        [
+          {
+            "node": "Check If Events Exist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Events Exist": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Events": {
+      "main": [
+        [
+          {
+            "node": "Find Lead by Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Summarize Sync",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Lead by Email": {
+      "main": [
+        [
+          {
+            "node": "Combine Event with Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combine Event with Lead": {
+      "main": [
+        [
+          {
+            "node": "Log Analytics Metric",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Analytics Metric": {
+      "main": [
+        [
+          {
+            "node": "Update Sequence Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Sequence Status": {
+      "main": [
+        [
+          {
+            "node": "Loop Back",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Back": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize Sync": {
+      "main": [
+        [
+          {
+            "node": "Notify Telegram Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-03T00:00:00.000Z",
+  "versionId": "1"
+}

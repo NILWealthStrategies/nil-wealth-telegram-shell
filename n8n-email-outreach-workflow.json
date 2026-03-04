@@ -1,0 +1,557 @@
+{
+  "name": "NIL Email Outreach (Instantly.ai + ChatGPT)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 */4 * * *"
+            }
+          ]
+        }
+      },
+      "name": "Every 4 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300],
+      "id": "schedule-trigger"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "tableId": "leads",
+        "schema": "nil",
+        "returnAll": false,
+        "limit": 20,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "status",
+              "value": "ready"
+            },
+            {
+              "keyName": "email",
+              "operator": "isNotNull"
+            }
+          ]
+        },
+        "sort": {
+          "fields": [
+            {
+              "fieldName": "created_at",
+              "order": "ASC"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Get Ready Leads",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      },
+      "id": "get-leads"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-1",
+              "leftValue": "={{ $json.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Check If Leads Exist",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [650, 300],
+      "id": "check-leads"
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "name": "Loop Over Leads",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [850, 300],
+      "id": "loop-leads"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Determine role-based prompt strategy\nconst leadData = $input.first().json;\nconst title = (leadData.title || '').toLowerCase();\nconst email = String(leadData.email || '').toLowerCase().trim();\n\n// Keep support inbox out of Instantly outreach\nif (email === 'support@mynilwealthstrategies.com' || email === 'support@mynilwealthstrategis.com') {\n  return [];\n}\n\n// Detect role\nlet role = 'administrator';\nif (title.includes('athletic director') || title.includes('ad ')) {\n  role = 'athletic_director';\n} else if (title.includes('coach') || title.includes('head coach')) {\n  role = 'coach';\n} else if (title.includes('compliance') || title.includes('nil coordinator')) {\n  role = 'compliance';\n}\n\n// Role-specific prompts\nconst rolePrompts = {\n  athletic_director: `You're reaching out to an Athletic Director who oversees entire athletic programs. Focus on:\n- Program-wide NIL wealth management solutions\n- Risk mitigation for the entire department\n- Compliance and liability concerns\n- How protecting athletes protects the program's reputation`,\n  \n  coach: `You're reaching out to a Coach who cares deeply about individual athletes. Focus on:\n- Protecting their players' NIL earnings\n- Real stories of athletes losing money to bad advice\n- How this helps recruit better players (parents ask about financial protection)\n- Simple, no-hassle setup for their team`,\n  \n  compliance: `You're reaching out to a Compliance/NIL Coordinator. Focus on:\n- Regulatory compliance and documentation\n- Reducing administrative burden\n- Creating standardized financial education for athletes\n- Integration with existing NIL processes`,\n  \n  administrator: `You're reaching out to an Athletic Administrator. Focus on:\n- Comprehensive financial protection for student-athletes\n- Institutional liability reduction\n- Supporting the athletic department's mission\n- Easy implementation across multiple sports`\n};\n\nreturn [{\n  json: {\n    ...leadData,\n    role: role,\n    role_prompt: rolePrompts[role]\n  }\n}];"
+      },
+      "name": "Detect Role & Strategy",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 300],
+      "id": "detect-role"
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-4\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are an expert at writing personalized cold emails for NIL (Name, Image, Likeness) wealth management services. Write professional, concise, value-focused emails that get responses. {{ $json.role_prompt }}\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Write 3 different versions of a personalized cold email for:\\n\\nRecipient: {{ $json.full_name }}\\nTitle: {{ $json.title }}\\nOrganization: {{ $json.organization }}\\nState: {{ $json.state }}\\n\\nEmail requirements:\\n- Under 100 words\\n- Mention their specific role/organization naturally\\n- Highlight ONE key benefit (different for each version)\\n- Include Calendly link: https://calendly.com/protection-mynilwealthstrategies/questions\\n- Professional but conversational tone\\n- Strong subject line\\n\\nReturn JSON format:\\n{\\n  \\\"v1\\\": {\\\"subject\\\": \\\"...\\\", \\\"body\\\": \\\"...\\\"},\\n  \\\"v2\\\": {\\\"subject\\\": \\\"...\\\", \\\"body\\\": \\\"...\\\"},\\n  \\\"v3\\\": {\\\"subject\\\": \\\"...\\\", \\\"body\\\": \\\"...\\\"}\\n}\\n\\nVariation strategy:\\n- v1: Pain point focused (fear of loss)\\n- v2: Opportunity focused (growth/protection)\\n- v3: Social proof focused (what others are doing)\"\n    }\n  ],\n  \"temperature\": 0.8,\n  \"max_tokens\": 800,\n  \"response_format\": { \"type\": \"json_object\" }\n}",
+        "options": {}
+      },
+      "name": "Generate 3 Email Versions",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1250, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "openai-api",
+          "name": "OpenAI API Key"
+        }
+      },
+      "id": "chatgpt-generate-3"
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-4\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are an expert email copywriter. Analyze these 3 email variations and pick the ONE most likely to get a response based on: subject line strength, personalization, clarity, call-to-action, and tone.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Pick the best email version for {{ $('Detect Role & Strategy').item.json.full_name }} ({{ $('Detect Role & Strategy').item.json.title }} at {{ $('Detect Role & Strategy').item.json.organization }}):\\n\\n{{ $json.choices[0].message.content }}\\n\\nReturn JSON with ONLY the best version:\\n{\\n  \\\"best\\\": \\\"v1\\\",\\n  \\\"subject\\\": \\\"...\\\",\\n  \\\"body\\\": \\\"...\\\",\\n  \\\"reason\\\": \\\"Brief explanation why this version is best\\\"\\n}\"\n    }\n  ],\n  \"temperature\": 0.3,\n  \"response_format\": { \"type\": \"json_object\" }\n}",
+        "options": {}
+      },
+      "name": "Select Best Version",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1450, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "openai-api",
+          "name": "OpenAI API Key"
+        }
+      },
+      "id": "chatgpt-select-best"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract all 3 versions and best selection\nconst leadData = $('Detect Role & Strategy').item.json;\nconst allVersions = JSON.parse($('Generate 3 Email Versions').item.json.choices[0].message.content);\nconst bestSelection = JSON.parse($input.first().json.choices[0].message.content);\n\nreturn [{\n  json: {\n    lead_id: leadData.id,\n    email: leadData.email,\n    first_name: leadData.full_name.split(' ')[0],\n    last_name: leadData.full_name.split(' ').slice(1).join(' ') || '',\n    organization: leadData.organization,\n    title: leadData.title,\n    role: leadData.role,\n    state: leadData.state,\n    \n    // Store all 3 versions for regenerate feature\n    email_v1_subject: allVersions.v1.subject,\n    email_v1_body: allVersions.v1.body,\n    email_v2_subject: allVersions.v2.subject,\n    email_v2_body: allVersions.v2.body,\n    email_v3_subject: allVersions.v3.subject,\n    email_v3_body: allVersions.v3.body,\n    \n    // Best selected version\n    best_version: bestSelection.best,\n    selected_subject: bestSelection.subject,\n    selected_body: bestSelection.body,\n    selection_reason: bestSelection.reason\n  }\n}];"
+      },
+      "name": "Prepare Email Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 300],
+      "id": "prepare-email"
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "method": "POST",
+        "url": "https://api.instantly.ai/api/v1/lead/add",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "api_key",
+              "value": "={{ $env.INSTANTLY_API_KEY }}"
+            },
+            {
+              "name": "campaign_id",
+              "value": "={{ $env.INSTANTLY_OUTREACH_CAMPAIGN_ID }}"
+            },
+            {
+              "name": "email",
+              "value": "={{ $json.email }}"
+            },
+            {
+              "name": "first_name",
+              "value": "={{ $json.first_name }}"
+            },
+            {
+              "name": "last_name",
+              "value": "={{ $json.last_name }}"
+            },
+            {
+              "name": "company_name",
+              "value": "={{ $json.organization }}"
+            },
+            {
+              "name": "personalization",
+              "value": "={{ $json.title }}"
+            },
+            {
+              "name": "custom_intro",
+              "value": "={{ $json.selected_body }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Add to Instantly Campaign",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1850, 300],
+      "id": "instantly-add-lead"
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "tableId": "email_sequences",
+        "schema": "nil",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lead_id": "={{ $('Loop Over Leads').item.json.id }}",
+            "sequence_number": 1,
+            "email_type": "intro",
+            "subject": "={{ $('Prepare Email Data').item.json.selected_subject }}",
+            "body": "={{ $('Prepare Email Data').item.json.selected_body }}",
+            "status": "queued",
+            "scheduled_at": "={{ $now.plus({ minutes: 5 }) }}",
+            "ai_version_used": "={{ $('Prepare Email Data').item.json.best_version }}",
+            "ai_all_versions": "={{ { v1: { subject: $('Prepare Email Data').item.json.email_v1_subject, body: $('Prepare Email Data').item.json.email_v1_body }, v2: { subject: $('Prepare Email Data').item.json.email_v2_subject, body: $('Prepare Email Data').item.json.email_v2_body }, v3: { subject: $('Prepare Email Data').item.json.email_v3_subject, body: $('Prepare Email Data').item.json.email_v3_body } } }}",
+            "selection_reason": "={{ $('Prepare Email Data').item.json.selection_reason }}"
+          }
+        },
+        "options": {}
+      },
+      "name": "Track Sequence in Supabase",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2050, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      },
+      "id": "insert-sequence"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "tableId": "leads",
+        "schema": "nil",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "value": "={{ $('Loop Over Leads').item.json.id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "outreach_started",
+            "last_contacted_at": "={{ $now }}"
+          }
+        },
+        "options": {}
+      },
+      "name": "Update Lead Status",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2250, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      },
+      "id": "update-lead"
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "tableId": "lead_metrics",
+        "schema": "nil",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lead_id": "={{ $('Loop Over Leads').item.json.id }}",
+            "metric_type": "email_sent",
+            "metric_value": 1,
+            "metadata": "={{ { campaign: 'instantly_outreach', sequence: 1 } }}"
+          }
+        },
+        "options": {}
+      },
+      "name": "Log Metric",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2450, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      },
+      "id": "log-metric"
+    },
+    {
+      "parameters": {},
+      "name": "Loop Back",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2650, 300],
+      "id": "loop-back"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Summarize outreach batch\nconst allResults = $input.all();\nconst summary = {\n  total_sent: allResults.length,\n  timestamp: new Date().toISOString()\n};\n\nreturn [{ json: summary }];"
+      },
+      "name": "Summarize Batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 500],
+      "id": "summarize"
+    },
+    {
+      "parameters": {
+        "authentication": "headerAuth",
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{ $env.TELEGRAM_CHAT_ID }}"
+            },
+            {
+              "name": "text",
+              "value": "=📧 Email Outreach Batch Complete\n\n✅ Sent: {{ $json.total_sent }} emails\n🤖 Campaign: Instantly.ai\n⏱️ Time: {{ $now.toLocaleString() }}\n\n💡 Check /dashboard for updated metrics"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Notify Telegram Success",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1050, 500],
+      "id": "telegram-success"
+    },
+    {
+      "parameters": {
+        "authentication": "headerAuth",
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{ $env.TELEGRAM_CHAT_ID }}"
+            },
+            {
+              "name": "text",
+              "value": "=❌ Email Outreach Failed\n\nError: {{ $json.error?.message || 'Unknown error' }}\n⏱️ Time: {{ $now.toLocaleString() }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Notify Telegram Error",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [850, 100],
+      "id": "telegram-error"
+    }
+  ],
+  "connections": {
+    "Every 4 Hours": {
+      "main": [
+        [
+          {
+            "node": "Get Ready Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Ready Leads": {
+      "main": [
+        [
+          {
+            "node": "Check If Leads Exist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Leads Exist": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Leads": {
+      "main": [
+        [
+          {
+            "node": "Detect Role & Strategy",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Summarize Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect Role & Strategy": {
+      "main": [
+        [
+          {
+            "node": "Generate 3 Email Versions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate 3 Email Versions": {
+      "main": [
+        [
+          {
+            "node": "Select Best Version",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select Best Version": {
+      "main": [
+        [
+          {
+            "node": "Prepare Email Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Email Data": {
+      "main": [
+        [
+          {
+            "node": "Add to Instantly Campaign",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add to Instantly Campaign": {
+      "main": [
+        [
+          {
+            "node": "Track Sequence in Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Track Sequence in Supabase": {
+      "main": [
+        [
+          {
+            "node": "Update Lead Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Lead Status": {
+      "main": [
+        [
+          {
+            "node": "Log Metric",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Metric": {
+      "main": [
+        [
+          {
+            "node": "Loop Back",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Back": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize Batch": {
+      "main": [
+        [
+          {
+            "node": "Notify Telegram Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-03T00:00:00.000Z",
+  "versionId": "1"
+}

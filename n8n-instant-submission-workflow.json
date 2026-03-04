@@ -1,0 +1,257 @@
+{
+  "name": "NIL Instant Submission (Vercel → SMS + Email)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "vercel-instant-submission",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [250, 300],
+      "webhookId": "vercel-instant-webhook",
+      "id": "webhook-trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate and prepare submission data\nconst body = $input.first().json.body;\n\n// Generate submission ID\nconst submissionId = body.idempotency_key || `sub_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;\n\n// Prepare data\nconst submission = {\n  submission_id: submissionId,\n  first_name: body.first_name || '',\n  last_name: body.last_name || '',\n  email: body.email || '',\n  phone: body.phone || '',\n  state: body.state || '',\n  role: body.role || 'parent',\n  coverage_accident: body.coverage_accident || false,\n  coverage_hospital_indemnity: body.coverage_hospital_indemnity || false,\n  athlete_name: body.athlete_name || '',\n  athlete_age: body.athlete_age || null,\n  sport: body.sport || '',\n  notes: body.notes || '',\n  utm_source: body.utm_source || '',\n  utm_campaign: body.utm_campaign || '',\n  submission_payload: body\n};\n\nreturn [{ json: submission }];"
+      },
+      "name": "Validate Submission",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300],
+      "id": "validate-submission"
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "tableId": "submissions",
+        "schema": "nil",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "submission_id": "={{ $json.submission_id }}",
+            "first_name": "={{ $json.first_name }}",
+            "last_name": "={{ $json.last_name }}",
+            "email": "={{ $json.email }}",
+            "phone": "={{ $json.phone }}",
+            "state": "={{ $json.state }}",
+            "role": "={{ $json.role }}",
+            "coverage_accident": "={{ $json.coverage_accident }}",
+            "coverage_hospital_indemnity": "={{ $json.coverage_hospital_indemnity }}",
+            "athlete_name": "={{ $json.athlete_name }}",
+            "athlete_age": "={{ $json.athlete_age }}",
+            "sport": "={{ $json.sport }}",
+            "notes": "={{ $json.notes }}",
+            "utm_source": "={{ $json.utm_source }}",
+            "utm_campaign": "={{ $json.utm_campaign }}",
+            "submission_payload": "={{ $json.submission_payload }}",
+            "n8n_status": "instant_processed"
+          }
+        },
+        "options": {
+          "onConflict": "ignore"
+        }
+      },
+      "name": "Store in Supabase",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [650, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      },
+      "id": "store-supabase"
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "url": "https://api.sendgrid.com/v3/mail/send",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.SENDGRID_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"personalizations\": [\n    {\n      \"to\": [\n        {\n          \"email\": \"{{ $json.email }}\",\n          \"name\": \"{{ $json.first_name }} {{ $json.last_name }}\"\n        }\n      ],\n      \"dynamic_template_data\": {\n        \"first_name\": \"{{ $json.first_name }}\",\n        \"athlete_name\": \"{{ $json.athlete_name || 'your athlete' }}\",\n        \"sport\": \"{{ $json.sport || 'their sport' }}\",\n        \"coverage_type\": \"{{ $json.coverage_accident && $json.coverage_hospital_indemnity ? 'Comprehensive' : ($json.coverage_accident ? 'Accident' : 'Hospital Indemnity') }}\",\n        \"calendly_link\": \"https://calendly.com/protection-mynilwealthstrategies/questions\"\n      }\n    }\n  ],\n  \"from\": {\n    \"email\": \"hello@mynilwealthstrategies.com\",\n    \"name\": \"NIL Wealth Strategies\"\n  },\n  \"reply_to\": {\n    \"email\": \"support@mynilwealthstrategies.com\"\n  },\n  \"template_id\": \"{{ $env.SENDGRID_TEMPLATE_ID || 'd-default' }}\"\n}",
+        "options": {}
+      },
+      "name": "Send Email (SendGrid)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [850, 200],
+      "id": "sendgrid-email"
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "from": "={{ $env.TWILIO_PHONE_NUMBER }}",
+        "to": "={{ $json.phone }}",
+        "message": "=Hi {{ $json.first_name }}! Thanks for your interest in NIL Wealth protection for {{ $json.athlete_name || 'your athlete' }}. We'll email you shortly with next steps. Book a call: https://calendly.com/protection-mynilwealthstrategies/questions",
+        "options": {}
+      },
+      "name": "Send SMS (Twilio)",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [850, 400],
+      "credentials": {
+        "twilioApi": {
+          "id": "twilio-account",
+          "name": "Twilio NIL"
+        }
+      },
+      "id": "twilio-sms"
+    },
+    {
+      "parameters": {
+        "authentication": "headerAuth",
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{ $env.TELEGRAM_CHAT_ID }}"
+            },
+            {
+              "name": "text",
+              "value": "=🎯 NEW SUBMISSION!\n\n👤 {{ $('Validate Submission').item.json.first_name }} {{ $('Validate Submission').item.json.last_name }}\n📧 {{ $('Validate Submission').item.json.email }}\n📱 {{ $('Validate Submission').item.json.phone }}\n🏃 Athlete: {{ $('Validate Submission').item.json.athlete_name || 'Not provided' }}\n⚽️ Sport: {{ $('Validate Submission').item.json.sport || 'Not provided' }}\n📍 State: {{ $('Validate Submission').item.json.state }}\n💼 Role: {{ $('Validate Submission').item.json.role }}\n\n📋 Coverage:\n{{ $('Validate Submission').item.json.coverage_accident ? '✅ Accident' : '❌ Accident' }}\n{{ $('Validate Submission').item.json.coverage_hospital_indemnity ? '✅ Hospital Indemnity' : '❌ Hospital Indemnity' }}\n\n✉️ Email sent via SendGrid\n📲 SMS sent via Twilio\n⏱️ {{ $now.toLocaleString() }}\n\n💡 Check /submissions in bot"
+            },
+            {
+              "name": "parse_mode",
+              "value": "HTML"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Notify Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1050, 300],
+      "id": "telegram-notify"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: true, submission_id: $('Validate Submission').item.json.submission_id, message: 'Thank you! Email and SMS sent.' } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "name": "Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1250, 300],
+      "id": "success-response"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, error: $json.error?.message || 'Unknown error' } }}",
+        "options": {
+          "responseCode": 500
+        }
+      },
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [850, 100],
+      "id": "error-response"
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Submission",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Submission": {
+      "main": [
+        [
+          {
+            "node": "Store in Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store in Supabase": {
+      "main": [
+        [
+          {
+            "node": "Send Email (SendGrid)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send SMS (Twilio)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email (SendGrid)": {
+      "main": [
+        [
+          {
+            "node": "Notify Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send SMS (Twilio)": {
+      "main": [
+        [
+          {
+            "node": "Notify Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Telegram": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-03T00:00:00.000Z",
+  "versionId": "1"
+}
