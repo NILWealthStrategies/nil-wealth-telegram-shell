@@ -1,5 +1,5 @@
 {
-  "name": "NIL Email Outreach (Instantly.ai + ChatGPT)",
+  "name": "NIL Instantly Campaign Loader",
   "nodes": [
     {
       "parameters": {
@@ -101,7 +101,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Determine role-based prompt strategy\nconst leadData = $input.first().json;\nconst title = (leadData.title || '').toLowerCase();\nconst email = String(leadData.email || '').toLowerCase().trim();\n\n// Keep support inbox out of Instantly outreach\nif (email === 'support@mynilwealthstrategies.com' || email === 'support@mynilwealthstrategis.com') {\n  return [];\n}\n\n// Detect role\nlet role = 'administrator';\nif (title.includes('athletic director') || title.includes('ad ')) {\n  role = 'athletic_director';\n} else if (title.includes('coach') || title.includes('head coach')) {\n  role = 'coach';\n} else if (title.includes('compliance') || title.includes('nil coordinator')) {\n  role = 'compliance';\n}\n\n// Role-specific prompts\nconst rolePrompts = {\n  athletic_director: `You're reaching out to an Athletic Director who oversees entire athletic programs. Focus on:\n- Program-wide NIL wealth management solutions\n- Risk mitigation for the entire department\n- Compliance and liability concerns\n- How protecting athletes protects the program's reputation`,\n  \n  coach: `You're reaching out to a Coach who cares deeply about individual athletes. Focus on:\n- Protecting their players' NIL earnings\n- Real stories of athletes losing money to bad advice\n- How this helps recruit better players (parents ask about financial protection)\n- Simple, no-hassle setup for their team`,\n  \n  compliance: `You're reaching out to a Compliance/NIL Coordinator. Focus on:\n- Regulatory compliance and documentation\n- Reducing administrative burden\n- Creating standardized financial education for athletes\n- Integration with existing NIL processes`,\n  \n  administrator: `You're reaching out to an Athletic Administrator. Focus on:\n- Comprehensive financial protection for student-athletes\n- Institutional liability reduction\n- Supporting the athletic department's mission\n- Easy implementation across multiple sports`\n};\n\nreturn [{\n  json: {\n    ...leadData,\n    role: role,\n    role_prompt: rolePrompts[role]\n  }\n}];"
+        "jsCode": "// Prepare Instantly payload only (Instantly handles all outreach + follow-ups)\nconst leadData = $input.first().json;\nconst email = String(leadData.email || '').toLowerCase().trim();\n\n// Exclude support inbox from outreach campaign\nif (email === 'support@mynilwealthstrategies.com' || email === 'support@mynilwealthstrategis.com') {\n  return [];\n}\n\nconst fullName = String(leadData.full_name || '').trim();\nconst parts = fullName.split(' ').filter(Boolean);\n\nreturn [{\n  json: {\n    lead_id: leadData.id || leadData.lead_id,\n    email: leadData.email,\n    first_name: parts[0] || 'Team',\n    last_name: parts.slice(1).join(' ') || '',\n    organization: leadData.organization || '',\n    title: leadData.title || ''\n  }\n}];"
       },
       "name": "Detect Role & Strategy",
       "type": "n8n-nodes-base.code",
@@ -204,7 +204,7 @@
             },
             {
               "name": "custom_intro",
-              "value": "={{ $json.selected_body }}"
+              "value": ""
             }
           ]
         },
@@ -227,13 +227,13 @@
             "lead_id": "={{ $('Loop Over Leads').item.json.id }}",
             "sequence_number": 1,
             "email_type": "intro",
-            "subject": "={{ $('Prepare Email Data').item.json.selected_subject }}",
-            "body": "={{ $('Prepare Email Data').item.json.selected_body }}",
+            "subject": "Instantly campaign-managed",
+            "body": "Outreach handled inside Instantly.ai campaign",
             "status": "queued",
             "scheduled_at": "={{ $now.plus({ minutes: 5 }) }}",
-            "ai_version_used": "={{ $('Prepare Email Data').item.json.best_version }}",
-            "ai_all_versions": "={{ { v1: { subject: $('Prepare Email Data').item.json.email_v1_subject, body: $('Prepare Email Data').item.json.email_v1_body }, v2: { subject: $('Prepare Email Data').item.json.email_v2_subject, body: $('Prepare Email Data').item.json.email_v2_body }, v3: { subject: $('Prepare Email Data').item.json.email_v3_subject, body: $('Prepare Email Data').item.json.email_v3_body } } }}",
-            "selection_reason": "={{ $('Prepare Email Data').item.json.selection_reason }}"
+            "ai_version_used": null,
+            "ai_all_versions": null,
+            "selection_reason": "Managed by Instantly"
           }
         },
         "options": {}
@@ -439,7 +439,7 @@
       "main": [
         [
           {
-            "node": "Generate 3 Email Versions",
+            "node": "Add to Instantly Campaign",
             "type": "main",
             "index": 0
           }

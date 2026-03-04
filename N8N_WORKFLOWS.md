@@ -560,15 +560,15 @@ After workflow runs, your Telegram bot will display leads in:
 
 **Import File**: `n8n-email-outreach-workflow.json`  
 **Trigger**: Every 4 hours  
-**Action**: Get ready leads → Generate personalized emails with ChatGPT → Send via Instantly.ai → Track sequences  
+**Action**: Get ready leads → Add to Instantly campaign → Instantly handles all sending/follow-ups → Track sequences  
 **Frequency**: 6 times per day (every 4 hours)
 
 ### How It Works
 
 1. **Queries Ready Leads**: Gets up to 20 leads with `status='ready'` and valid emails
 2. **Loops Through Leads**: Processes one at a time
-3. **ChatGPT Personalization**: Generates custom email based on lead's role, organization, state
-4. **Adds to Instantly Campaign**: Sends lead to Instantly.ai with personalized intro
+3. **Adds to Instantly Campaign**: Sends lead to Instantly.ai outreach campaign
+4. **Instantly Sends Sequence**: All copy, cadence, and follow-ups are managed inside Instantly.ai
 5. **Tracks Sequence**: Inserts email sequence record in `nil.email_sequences`
 6. **Updates Lead Status**: Changes status to `outreach_started`
 7. **Logs Metrics**: Records email sent in `nil.lead_metrics`

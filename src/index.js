@@ -38,6 +38,7 @@ const COMPLETE_AFTER_HOURS = Number(process.env.COMPLETE_AFTER_HOURS ||
 48);
 const SUPPORT_FROM_EMAIL =
 process.env.SUPPORT_FROM_EMAIL || "support@mynilwealthstrategies.com";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY || "";
 const SENDGRID_FROM_EMAIL = process.env.SENDGRID_FROM_EMAIL || SUPPORT_FROM_EMAIL;
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID || "";
@@ -67,6 +68,7 @@ const ops = () => supabase.schema("nil");
 // ---------- IN-MEMORY FILTER STORAGE ----------
 const userFilters = new Map(); // userId -> filter value ("all" | "programs" | "support")
 const userRoleFilters = new Map(); // userId -> role filter ("all" | "parent" | "athlete" | "coach" | "trainer" | "other")
+const draftEditState = new Map(); // userId -> { convId, version }
 // ---------- AUTH ----------
 function isAdmin(ctx) {
 if (!ADMIN_IDS.length) return true;
@@ -1845,6 +1847,8 @@ Markup.button.callback("🗑 Delete", `DELETECONFIRM:conversation:${id}`),
 ],
 // row 4 - role management
 [Markup.button.callback("🔧 Set Role", `SETROLE:${id}`)],
+// row 5 - v1/v2/v3 reply drafting
+[Markup.button.callback("✍️ Drafts V1/V2/V3", `DRAFTS:open:${id}`)],
 // BIG action bottom
 [Markup.button.callback("📤 Send Drafts", `SEND:${id}:1`)],
 [Markup.button.callback("⬅ Dashboard", "DASH:back")],
@@ -3457,6 +3461,30 @@ try {
 const chatId = ctx.chat?.id;
 if (!chatId) return next();
 
+const userId = String(ctx.from?.id || "");
+const editState = draftEditState.get(userId);
+if (editState) {
+const raw = String(ctx.message?.text || "").trim();
+if (!raw) return next();
+const selected = await sbGetSelectedDraftBody(editState.convId, "conversation");
+if (!selected) {
+draftEditState.delete(userId);
+await ctx.reply("❌ No selected draft found. Open Drafts and pick V1/V2/V3 again.");
+return;
+}
+let subject = selected.subject || "Re:";
+let body = raw;
+const split = raw.split(/\n\s*\n/);
+if (split.length > 1) {
+subject = split[0].trim() || subject;
+body = split.slice(1).join("\n\n").trim();
+}
+await sbSaveConversationDraftVersion(editState.convId, Number(editState.version || selected.version || 1), subject, body, true);
+draftEditState.delete(userId);
+await renderDraftsCard(ctx, editState.convId, "Saved edited draft");
+return;
+}
+
 const searchState = getSearchMode(chatId);
 if (!searchState?.awaiting) return next();
 
@@ -4884,6 +4912,198 @@ async function sbEnsureCcPackageDrafts(convId) {
 // - if missing, insert a default V1 selected for each kind.
 return true;
 }
+
+async function sbListConversationDrafts(conversationId) {
+const { data, error } = await ops()
+.from("message_drafts")
+.select("version, subject, body, selected, created_at")
+.eq("conversation_id", conversationId)
+.eq("kind", "conversation")
+.order("version", { ascending: true })
+.order("created_at", { ascending: false });
+if (error) throw new Error(error.message);
+const byVersion = new Map();
+for (const row of (data || [])) {
+if (!byVersion.has(row.version)) byVersion.set(row.version, row);
+}
+return [1,2,3].map((v) => byVersion.get(v)).filter(Boolean);
+}
+
+async function sbSaveConversationDraftVersion(conversationId, version, subject, body, selected = false) {
+if (selected) {
+await ops()
+.from("message_drafts")
+.update({ selected: false })
+.eq("conversation_id", conversationId)
+.eq("kind", "conversation");
+}
+const { error } = await ops()
+.from("message_drafts")
+.insert({
+conversation_id: conversationId,
+kind: "conversation",
+version: Number(version),
+subject: subject || "",
+body: body || "",
+selected: !!selected,
+created_at: new Date().toISOString(),
+});
+if (error) throw new Error(error.message);
+}
+
+async function sbSelectConversationDraft(conversationId, version) {
+await ops()
+.from("message_drafts")
+.update({ selected: false })
+.eq("conversation_id", conversationId)
+.eq("kind", "conversation");
+const { error } = await ops()
+.from("message_drafts")
+.update({ selected: true })
+.eq("conversation_id", conversationId)
+.eq("kind", "conversation")
+.eq("version", Number(version));
+if (error) throw new Error(error.message);
+}
+
+async function sbLatestInboundMessage(conversationId) {
+const { data, error } = await ops()
+.from("messages")
+.select("body, preview, subject, created_at")
+.eq("conversation_id", conversationId)
+.eq("direction", "inbound")
+.order("created_at", { ascending: false })
+.limit(1);
+if (error) return null;
+return Array.isArray(data) ? data[0] : null;
+}
+
+async function generateConversationDrafts(conv) {
+if (!OPENAI_API_KEY) {
+throw new Error("Missing OPENAI_API_KEY");
+}
+const inbound = await sbLatestInboundMessage(conv.id);
+const prompt = {
+contact_email: conv.contact_email || "",
+subject: conv.subject || "",
+preview: conv.preview || "",
+latest_inbound: inbound?.body || inbound?.preview || "",
+coach_name: conv.coach_name || "",
+source: conv.source || "support",
+};
+const res = await fetch("https://api.openai.com/v1/chat/completions", {
+method: "POST",
+headers: {
+"Content-Type": "application/json",
+Authorization: `Bearer ${OPENAI_API_KEY}`,
+},
+body: JSON.stringify({
+model: "gpt-4o-mini",
+temperature: 0.7,
+response_format: { type: "json_object" },
+messages: [
+{ role: "system", content: "You write concise professional support replies. Return JSON with v1,v2,v3 each containing subject and body." },
+{ role: "user", content: `Create 3 reply drafts for this inbound conversation:\n${JSON.stringify(prompt)}\n\nRules:\n- V1 direct/helpful\n- V2 warm/relationship-focused\n- V3 concise/executive\n- Keep under 130 words\n- Include clear next step\n- Do not mention AI\nReturn: {\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}}` }
+]
+})
+});
+if (!res.ok) throw new Error(`OpenAI error ${res.status}`);
+const json = await res.json();
+const content = json?.choices?.[0]?.message?.content;
+if (!content) throw new Error("No draft content from OpenAI");
+const parsed = JSON.parse(content);
+return parsed;
+}
+
+function draftsKeyboard(convId, selectedVersion = null) {
+const tag = (v) => selectedVersion === v ? " ✅" : "";
+return Markup.inlineKeyboard([
+[Markup.button.callback(`Use V1${tag(1)}`, `DRAFTS:use:${convId}:1`), Markup.button.callback(`Use V2${tag(2)}`, `DRAFTS:use:${convId}:2`), Markup.button.callback(`Use V3${tag(3)}`, `DRAFTS:use:${convId}:3`)],
+[Markup.button.callback("✏️ Edit Selected", `DRAFTS:edit:${convId}`), Markup.button.callback("♻️ Regenerate", `DRAFTS:regen:${convId}`)],
+[Markup.button.callback("📤 Send (Support)", `CONFIRMSEND:${convId}:1:support`), Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]
+]);
+}
+
+async function renderDraftsCard(ctx, convId, note = "") {
+const drafts = await sbListConversationDrafts(convId);
+const selected = drafts.find((d) => d.selected) || drafts[0] || null;
+let text = `✍️ Reply Drafts (V1/V2/V3)\nConversation: ${idShort(convId)}\n`;
+if (note) text += `\n${note}\n`;
+if (!drafts.length) {
+text += "\nNo drafts yet. Tap Regenerate.";
+return smartRender(ctx, text, draftsKeyboard(convId, null));
+}
+for (const d of drafts) {
+const marker = d.selected ? "✅" : "▫️";
+text += `\n${marker} V${d.version}\nSubject: ${d.subject || "—"}\n${shorten(d.body || "", 220)}\n`;
+}
+return smartRender(ctx, text, draftsKeyboard(convId, selected?.version || null));
+}
+
+bot.action(/^DRAFTS:open:(.+)$/, async (ctx) => {
+if (!isAdmin(ctx)) return;
+const convId = ctx.match[1];
+try {
+const drafts = await sbListConversationDrafts(convId);
+if (!drafts.length) {
+const conv = await sbGetConversationById(convId);
+if (!conv) return ctx.reply("Conversation not found.");
+const generated = await generateConversationDrafts(conv);
+await sbSaveConversationDraftVersion(convId, 1, generated?.v1?.subject || conv.subject || "Re:", generated?.v1?.body || "", true);
+await sbSaveConversationDraftVersion(convId, 2, generated?.v2?.subject || conv.subject || "Re:", generated?.v2?.body || "", false);
+await sbSaveConversationDraftVersion(convId, 3, generated?.v3?.subject || conv.subject || "Re:", generated?.v3?.body || "", false);
+}
+await renderDraftsCard(ctx, convId);
+} catch (err) {
+logError(ctx, err);
+await ctx.reply(`❌ Draft error: ${err.message}`);
+}
+});
+
+bot.action(/^DRAFTS:use:(.+):(1|2|3)$/, async (ctx) => {
+if (!isAdmin(ctx)) return;
+const convId = ctx.match[1];
+const version = Number(ctx.match[2]);
+try {
+await sbSelectConversationDraft(convId, version);
+await renderDraftsCard(ctx, convId, `Selected V${version}`);
+} catch (err) {
+logError(ctx, err);
+await ctx.reply(`❌ Select draft failed: ${err.message}`);
+}
+});
+
+bot.action(/^DRAFTS:regen:(.+)$/, async (ctx) => {
+if (!isAdmin(ctx)) return;
+const convId = ctx.match[1];
+try {
+const conv = await sbGetConversationById(convId);
+if (!conv) return ctx.reply("Conversation not found.");
+const generated = await generateConversationDrafts(conv);
+await sbSaveConversationDraftVersion(convId, 1, generated?.v1?.subject || conv.subject || "Re:", generated?.v1?.body || "", true);
+await sbSaveConversationDraftVersion(convId, 2, generated?.v2?.subject || conv.subject || "Re:", generated?.v2?.body || "", false);
+await sbSaveConversationDraftVersion(convId, 3, generated?.v3?.subject || conv.subject || "Re:", generated?.v3?.body || "", false);
+await renderDraftsCard(ctx, convId, "Regenerated drafts");
+} catch (err) {
+logError(ctx, err);
+await ctx.reply(`❌ Regenerate failed: ${err.message}`);
+}
+});
+
+bot.action(/^DRAFTS:edit:(.+)$/, async (ctx) => {
+if (!isAdmin(ctx)) return;
+const convId = ctx.match[1];
+try {
+const selected = await sbGetSelectedDraftBody(convId, "conversation");
+if (!selected) return ctx.reply("No selected draft. Choose V1/V2/V3 first.");
+const userId = String(ctx.from?.id || "");
+draftEditState.set(userId, { convId, version: Number(selected.version || 1) });
+await ctx.reply(`✏️ Send your edited reply now.\n\nFormat:\nLine 1 = Subject\nBlank line\nThen body\n\nIf you send only text, it will replace body and keep subject.`);
+} catch (err) {
+logError(ctx, err);
+await ctx.reply(`❌ Edit setup failed: ${err.message}`);
+}
+});
 // -------------------------------
 // send request → webhook (n8n / make)
 // -------------------------------
