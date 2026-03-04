@@ -584,7 +584,16 @@ throw new Error(`/ops/ingest ${resp.status}: ${txt || "unknown"}`);
 }
 }
 let outboxWorkerRunning = false;
+let warnedMissingSendGrid = false;
+let warnedMissingTwilio = false;
 async function processEmailOutboxQueued(limit = 10) {
+if (!SENDGRID_API_KEY) {
+if (!warnedMissingSendGrid) {
+console.log("[WARN] SENDGRID_API_KEY missing; skipping email outbox sender.");
+warnedMissingSendGrid = true;
+}
+return;
+}
 const { data, error } = await ops()
 .from("email_outbox")
 .select("id,to,subject,html,cc,bcc,status")
@@ -622,6 +631,13 @@ logError("processEmailOutboxQueued", err);
 }
 }
 async function processSmsOutboxQueued(limit = 10) {
+if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_FROM_NUMBER) {
+if (!warnedMissingTwilio) {
+console.log("[WARN] Twilio credentials missing; skipping sms outbox sender.");
+warnedMissingTwilio = true;
+}
+return;
+}
 const { data, error } = await ops()
 .from("sms_outbox")
 .select("id,to,text,status")
@@ -1552,7 +1568,7 @@ async function leadsText() {
     }
     
     let text = `🎯 NIL LEADS DASHBOARD
-══════════════════════════════
+═════
 📊 Overview
 
 • Total Leads: ${analytics?.total_leads || 0}
@@ -1564,7 +1580,7 @@ Ready: ${statuses.ready}
 Started: ${statuses.outreach_started}
 Replied: ${statuses.replied}
 
-══════════════════════════════
+═════
 🔥 Top 10 Leads
 
 `;
@@ -1578,7 +1594,7 @@ Replied: ${statuses.replied}
     } else {
       text += `No leads yet.\n`;
     }
-    text += "══════════════════════════════";
+    text += "═════";
     return text;
   } catch (err) {
     return `❌ Error: ${err.message}`;
@@ -1603,7 +1619,7 @@ async function analyticsText() {
     if (error) throw new Error(error.message);
     
     let text = `📊 EMAIL ANALYTICS
-══════════════════════════════
+═════
 📅 Today
 
 Sent: ${analytics?.emails_sent_today || 0}
@@ -1611,7 +1627,7 @@ Opens: ${analytics?.opens_today || 0}
 Clicks: ${analytics?.clicks_today || 0}
 Replies: ${analytics?.replies_today || 0}
 
-══════════════════════════════
+═════
 📈 All-Time
 
 Sent: ${analytics?.total_emails_sent || 0}
@@ -1619,13 +1635,13 @@ Opens: ${analytics?.total_opens || 0}
 Clicks: ${analytics?.total_clicks || 0}
 Replies: ${analytics?.total_replies || 0}
 
-══════════════════════════════
+═════
 💯 Rates
 
 Open: ${analytics?.open_rate_pct || 0}%
 Click: ${analytics?.click_rate_pct || 0}%
 Reply: ${analytics?.reply_rate_pct || 0}%
-══════════════════════════════`;
+═════`;
     return text;
   } catch (err) {
     return `❌ Error: ${err.message}`;
@@ -1660,15 +1676,12 @@ callsCount: await sbCountCalls(),
 };
 const m = await sbMetricSummary({ source: filterSource, window: "all" });
 return `🏠 NIL WEALTH OPS DASHBOARD
-══════════════════════════════
 ${CODE_VERSION} • Build: ${String(BUILD_VERSION).slice(0, 8)}
 
 📅 Today: ${new Intl.DateTimeFormat("en-US",{ timeZone: "America/New_York" }).format(new Date())}
 ⏰ NY Time: ${time}
 
 🧮 Filter: ${filterLabel}
-
-══════════════════════════════
 🗂 ALL QUEUES
 
 ‼️ Urgent: ${counts.urgentCount}
@@ -1680,8 +1693,6 @@ ${CODE_VERSION} • Build: ${String(BUILD_VERSION).slice(0, 8)}
 📚 Follow-Ups: ${counts.followCount}
 📱 Calls: ${counts.callsCount}
 ✅ Completed: ${counts.completedCount}
-
-══════════════════════════════
 📊 METRICS
 
 Total Parent Guide Opens: ${m.programLinkOpens}
@@ -1690,8 +1701,6 @@ Total Enroll Portal Visits: ${m.enrollClicks}
 Total eApp Visits: ${m.eappVisits}
 Total Threads: ${m.threadsCreated}
 Total Calls Answered: ${m.callsAnswered}
-
-══════════════════════════════
 Use buttons below.`;
 }
 // ✅ EXACT v5.1 dashboard keyboard: filters row + nav row + metrics row (ONLY 3 rows)
@@ -1782,7 +1791,7 @@ const identity = conversationIdentityText(conv);
 const contact = conv.contact_email || conv.coach_email || "—";
 const pipeline = conv.pipeline || "—";
 
-return `──────────────────────
+return `─────
 • ${identity} • ${lane} • ID: ${idShort(conv.id)}
   📧 ${subj}
   ${prev}
@@ -1801,7 +1810,7 @@ const header = `${headerLine(viewKey, filterLabel)} · ${roleFilterLabel(roleFil
 
 const body =
 rows.length
-? rows.map(convoSummaryLine).join("\n") + "\n──────────────────────"
+? rows.map(convoSummaryLine).join("\n") + "\n─────"
 : "No items.";
 // buttons - just back navigation, no individual open buttons
 const kb = [[Markup.button.callback("⬅ Back", "ALLQ:open")]];
@@ -2815,7 +2824,7 @@ normalized_phone: conv.normalized_phone || null,
 limit: 12,
 });
 const header = `👥 PEOPLE
-══════════════════════════════
+═════
 Conversation: ${idShort(convId)}\n${people.length} record(s)`;
 const body = people.length
 ? people
@@ -2829,9 +2838,9 @@ const conf =
 p.identity_confidence_score != null
 ? ` • Conf ${Number(p.identity_confidence_score).toFixed(2)}`
 : "";
-return `──────────────────────\n• ${name}\n  ${email} • ${phone}\n  Role: ${role}${conf}`;
+return `─────\n• ${name}\n  ${email} • ${phone}\n  Role: ${role}${conf}`;
 })
-.join("\n") + "\n──────────────────────"
+.join("\n") + "\n─────"
 : "No people records.";
 // Just back button, no individual open buttons
 const kb = [[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]];
@@ -2982,7 +2991,7 @@ const emailSent = sub.email_sent === true || sub.enrollment_email_sent === true;
 const smsSent = sub.sms_sent === true || sub.enrollment_sms_sent === true;
 
 const text = `🧾 SUBMISSION
-══════════════════════════════
+═════
 ID: ${idShort(submissionId)}
 
 Submitter
@@ -2998,13 +3007,13 @@ Coverage: ${cov}
 ${coach}
 ${pool}
 
-══════════════════════════════
+═════
 Status
 Sent Email: ${emailStatusIcon(emailSent)}
 Sent SMS: ${smsStatusIcon(smsSent)}
 
 Created: ${sub.created_at || "—"}
-══════════════════════════════`;
+═════`;
 
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("⬅ Back", "ALLQ:open")],
@@ -3030,16 +3039,16 @@ const filterSource = getAdminFilter(ctx);
 const convs = await sbListConversationsByCoach({ coach_id: coachId, source: filterSource, limit: 10 });
 
 const text = `🧑‍🏫 COACH
-══════════════════════════════
+═════
 Name: ${name}
 
 Program: ${program}
 
 Active Conversations: ${convs.length}
 
-══════════════════════════════
+═════
 Created: ${coach.created_at || "—"}
-══════════════════════════════`;
+═════`;
 
 const kb = [
 [Markup.button.callback("📬 Conversations", `COACH:convs:${coachId}`)],
@@ -3368,36 +3377,36 @@ return at - bt;
 const lines = [];
 const title = (typeof viewTitle === "function") ? viewTitle("triage") : "⚡ TRIAGE";
 lines.push(`${title} • ${filterSource} • ${roleFilterLabel(roleFilter)}`);
-lines.push("══════════════════════════════");
+lines.push("═════");
 let hasAny = false;
 if (urgent.length) {
 hasAny = true;
 lines.push(`\n‼ URGENT`);
 urgent.slice(0, 4).forEach((c, i) => lines.push(tConvoLine(c, i + 1)));
-lines.push("──────────────────────");
+lines.push("─────");
 }
 if (calls.length) {
 hasAny = true;
 lines.push(`\n📱 CALLS (DUE)`);
 calls.slice(0, 6).forEach((call, i) => lines.push(tCallLine(call, i + 1)));
-lines.push("──────────────────────");
+lines.push("─────");
 }
 if (needs.length) {
 hasAny = true;
 lines.push(`\n⏳ NEEDS REPLY`);
 needs.slice(0, 6).forEach((c, i) => lines.push(tConvoLine(c, i + 1)));
-lines.push("──────────────────────");
+lines.push("─────");
 }
 if (followups.length) {
 hasAny = true;
 lines.push(`\n📚 COACH FOLLOW-UPS (DUE)`);
 followups.slice(0, 6).forEach((f, i) => lines.push(tFollowupLine(f, i + 1)));
-lines.push("──────────────────────");
+lines.push("─────");
 }
 if (!hasAny) {
 lines.push(`\nNo due-now items.`);
 }
-lines.push("══════════════════════════════");
+lines.push("═════");
 // ---- Buttons (labeled; urgent first, then calls, then needs, then follow-ups) ----
 
 const kb = [];
@@ -3594,7 +3603,7 @@ if (chatId) setSearchMode(chatId, true);
 
 const text =
 `🔎 SEARCH
-══════════════════════════════
+═════
 Type your search query now:
 
 • Coach name
@@ -3603,11 +3612,11 @@ Type your search query now:
 • Phone number
 • Any keyword
 
-══════════════════════════════
+═════
 💡 Tip: Keep it simple - fewer words work better.
 
 Or use /search <text> anytime.
-══════════════════════════════`;
+═════`;
 
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("🕘 Recent", "SEARCH:recent")],
@@ -3620,11 +3629,11 @@ bot.action("SEARCH:recent", async (ctx) => {
 if (!isAdmin(ctx)) return;
 
 const text = `🕘 RECENT ITEMS
-══════════════════════════════
+═════
 Recent feature shows your last accessed conversations.
 
 💡 To access: Open any conversation from a queue view.
-══════════════════════════════`;
+═════`;
 
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("📱 Calls", "CALLS:hub")],
@@ -3761,14 +3770,14 @@ sbCountCoachFollowupsDueNow({ source: filterSource }).catch(() => 0),
 ]);
 const text =
 `📅 TODAY
-══════════════════════════════
+═════
 ${dayKey} • ${time}
 
 ⚡️ Triage Due: ${triageDue}
 📱 Calls Today: ${callsToday}
 ⏳ Needs Reply: ${needsReply}
 📚 Follow-Ups Due: ${followupsDue}
-══════════════════════════════`;
+═════`;
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("⚡️ Triage", "TRIAGE:open")],
 [Markup.button.callback("📱 Calls", "CALLS:hub"), Markup.button.callback("🗂 All Queues",
@@ -3840,14 +3849,14 @@ return new Date(b.last_activity_at||0)
 // ---------- BUILD TEXT ----------
 const lines = [];
 lines.push(`🌊 POOLS • ${filterSource}`);
-lines.push("══════════════════════════════");
+lines.push("═════");
 const section = (title, list, builder) => {
 if (!list.length) return;
 lines.push(`\n${title}`);
 list.slice(0,6).forEach((r,i)=>{
 lines.push(builder(r,i));
 });
-lines.push("──────────────────────");
+lines.push("─────");
 };
 section("📝 Needs Reply", needsReply,
 (r,i)=>`${i+1}) Coach ${r.coach_full_name}
@@ -3925,7 +3934,7 @@ const avgDivisor = window === "year" ? 12 : divisor; // year shows per month ave
 
 const avg = (val) => Math.round((val || 0) / avgDivisor);
 
-let body = `══════════════════════════════
+let body = `═════
 Parent Guide Link Opens: ${metrics.programLinkOpens || 0}
   (Avg ${avg(metrics.programLinkOpens)}${perLabel})
 
@@ -3943,7 +3952,7 @@ Threads Created (replies): ${metrics.threadsCreated || 0}
 
 Calls Answered: ${metrics.callsAnswered || 0}
   (Avg ${avg(metrics.callsAnswered)}${perLabel})
-══════════════════════════════`.trim();
+═════`.trim();
 
 // Add best week/month for year view
 if (window === "year" && metrics.bestWeek && metrics.bestMonth) {
@@ -4222,7 +4231,7 @@ return c.coverage_type ? `• ${c.coverage_type}` : "—";
 })();
 const text =
 `👥 CLIENT
-══════════════════════════════
+═════
 Name: ${name}
 ClientID: ${c.client_id}
 Status: ${status}
@@ -4231,26 +4240,26 @@ Primary: ${primaryRole}
 Last Activity: ${c.last_activity_at || "—"}
 Last Inbound: ${c.last_inbound_at || "—"}
 
-──────────────────────
+─────
 
 📬 CONTACT
 Email: ${email}
 Phone: ${phone}
 State: ${state}
-${poolsBlock ? `\n──────────────────────\n\n${poolsBlock}` : ""}
-──────────────────────
+${poolsBlock ? `\n─────\n\n${poolsBlock}` : ""}
+─────
 
 📊 ACTIVITY
 Threads: ${c.threads_total || 0}  📝 Needs Reply: ${c.threads_needs_reply || 0}
 Submissions: ${c.submissions_total || 0}
 Calls Open: ${c.calls_open || 0}
 
-──────────────────────
+─────
 
 🧾 COVERAGE
 ${covLine}
 
-──────────────────────
+─────
 `;
 `🧠 Identity\nPeople Linked: ${c.people_count || 0}`;
 const hasPools = poolsArr.length > 0;
@@ -4399,7 +4408,7 @@ if (!isAdmin(ctx)) return;
 const clientId = ctx.match[1];
 const calls = await sbListClientCalls(clientId, 10);
 const title = `📱 CALLS
-══════════════════════════════
+═════
 Client: ${idShort(clientId)}`;
 const body = calls?.length
 ? calls.slice(0, 10).map((c) => {
@@ -4408,8 +4417,8 @@ const outcome = c.outcome || "—";
 const reason = c.reason || "—";
 const email = c.client_email || "—";
 const phone = c.best_phone || c.client_phone_e164 || "—";
-return `──────────────────────\n• ${when}\n  Reason: ${reason}\n  Email: ${email}\n  Phone: ${phone}\n  Outcome: ${outcome}`;
-}).join("\n") + "\n──────────────────────"
+return `─────\n• ${when}\n  Reason: ${reason}\n  Email: ${email}\n  Phone: ${phone}\n  Outcome: ${outcome}`;
+}).join("\n") + "\n─────"
 : "No calls found.";
 // Just back button, no individual open buttons
 const kb = [[Markup.button.callback("⬅ Client", `CLIENT:${clientId}`)]];
@@ -4428,7 +4437,7 @@ if (!isAdmin(ctx)) return;
 const clientId = ctx.match[1];
 const people = await sbListPeopleForClient(clientId, 12);
 const title = `👥 PEOPLE
-══════════════════════════════
+═════
 Client: ${idShort(clientId)}\n${people?.length || 0} record(s)`;
 const body = people?.length
 ? people.slice(0, 12).map((p) => {
@@ -4437,8 +4446,8 @@ const em = p.email || "—";
 
 const ph = p.phone_e164 || "—";
 const role = p.role || "—";
-return `──────────────────────\n• ${nm}\n  ${em} • ${ph}\n  Role: ${role}`;
-}).join("\n") + "\n──────────────────────"
+return `─────\n• ${nm}\n  ${em} • ${ph}\n  Role: ${role}`;
+}).join("\n") + "\n─────"
 : "No people found.";
 // Just back button, no individual open buttons
 const kb = [[Markup.button.callback("⬅ Client", `CLIENT:${clientId}`)]];
@@ -4459,15 +4468,15 @@ const c = await sbGetClientCard(clientId);
 if (!c) return ctx.reply("Client not found.");
 const poolsArr = Array.isArray(c.pools) ? c.pools : [];
 const title = `🌊 POOLS
-══════════════════════════════
+═════
 Client: ${c.primary_name || idShort(clientId)}`;
 const body = poolsArr.length
 ? poolsArr.slice(0, 10).map((p) => {
 const label = p.pool_label || "—";
 const coachName = p.coach_name || "—";
 const coachId = p.coach_id || "—";
-return `──────────────────────\n• ${label}\n  Coach: ${coachName}\n  CoachID: ${coachId}`;
-}).join("\n") + "\n──────────────────────"
+return `─────\n• ${label}\n  Coach: ${coachName}\n  CoachID: ${coachId}`;
+}).join("\n") + "\n─────"
 : "No pools linked.";
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("⬅ Client", `CLIENT:${clientId}`)],
@@ -4568,20 +4577,20 @@ ref_id: clientId,
 // `Primary: ${primaryRole}\n` +
 // `Last Activity: ${c.last_activity_at || "—"}\n` +
 // `Last Inbound: ${c.last_inbound_at || "—"}\n\n` +
-// `────────────────\n\n` +
+// `─────\n\n` +
 // `📬 Contact\n` +
 // `Email: ${email}\n` +
 // `Phone: ${phone}\n` +
 // `State: ${state}\n` +
-// `${poolsBlock ? `\n────────────────\n\n${poolsBlock}` : ""}\n` +
-// `────────────────\n\n` +
+// `${poolsBlock ? `\n─────\n\n${poolsBlock}` : ""}\n` +
+// `─────\n\n` +
 // `📊 Activity\n` +
 // `Threads: ${c.threads_total || 0} ⏳ Needs Reply: ${c.threads_needs_reply || 0}\n` +
 // `Submissions: ${c.submissions_total || 0}\n` +
 // `Calls Open: ${c.calls_open || 0}\n\n` +
-// `────────────────\n\n` +
+// `─────\n\n` +
 // `🧾 Coverage\n${covLine}\n\n` +
-// `────────────────\n\n` +
+// `─────\n\n` +
 // `🧠 Identity\nPeople Linked: ${c.people_count || 0}`;
 // const hasPools = poolsArr.length > 0;
 // const kbRows = [
@@ -4661,7 +4670,7 @@ c.phone_e164 ||
 const role = c.role || c.client_role || "—";
 const when = fmtWhen(c.scheduled_for);
 const name = c.client_name || "—";
-return `──────────────────────
+return `─────
 📱 ${name} • ID: ${idShort(c.id)}
   Status: ${status} • Role: ${role}
   📧 ${email}
@@ -4773,7 +4782,7 @@ const currentPage = Math.min(page, totalPages);
 const calls = await sbListCalls({ limit: pageSize, offset });
 const endItem = Math.min(offset + calls.length, totalCount);
 const pageInfo = `Page ${currentPage}/${totalPages} • Items ${endItem}/${totalCount}`;
-const body = calls.length ? calls.map(callSummaryLine).join("\n") + "\n──────────────────────" : "No calls found.";
+const body = calls.length ? calls.map(callSummaryLine).join("\n") + "\n─────" : "No calls found.";
 // Just navigation buttons, no individual open buttons
 const kb = [];
   
@@ -4935,7 +4944,7 @@ const bestMonthEver = y.bestMonthEver
 const t = y.trend || {};
 return (
 `🎉 YEAR SUMMARY • ${filterSource}
-══════════════════════════════
+═════
 TOTALS
 
 ` +
@@ -4945,15 +4954,15 @@ TOTALS
 `• eApp Visits: ${n(y.eappVisits)} (Avg ${avg(y.eappVisits)}/mo)\n` +
 `• Threads (Replies): ${n(y.threadsCreated)} (Avg ${avg(y.threadsCreated)}/mo)\n` +
 `• Calls Answered: ${n(y.callsAnswered)} (Avg ${avg(y.callsAnswered)}/mo)\n\n` +
-`══════════════════════════════
+`═════
 MONTHLY BREAKDOWN (Total Clicks)\n\n` +
 `${monthLine}\n\n` +
-`══════════════════════════════
+`═════
 HIGHLIGHTS\n\n` +
 `${bestWeek}\n` +
 `${bestMonth}\n` +
 `${bestMonthEver}\n\n` +
-`══════════════════════════════
+`═════
 TRENDS (vs last month)\n\n` +
 `• Parent Guides: ${trendEmoji(t.opens)}\n` +
 `• Exploration: ${trendEmoji(t.exploration)}\n` +
@@ -4961,7 +4970,7 @@ TRENDS (vs last month)\n\n` +
 `• eApp Visits: ${trendEmoji(t.eappVisits)}\n` +
 `• Threads (Replies): ${trendEmoji(t.threads)}\n` +
 `• Calls Answered: ${trendEmoji(t.callsAnswered)}\n` +
-`══════════════════════════════`
+`═════`
 );
 }
 function yearSummaryKeyboard() {
