@@ -718,8 +718,8 @@ const m = minsUntilUrgent(updatedAtIso);
 const mmAbs = Math.abs(m);
 const h = Math.floor(mmAbs / 60);
 const mm = mmAbs % 60;
-if (m <= 0) return `⏳ Urgent now`;
-return `⏳ ${h}h ${mm}m left`;
+if (m <= 0) return `⏳ 0h 0m until Urgent`;
+return `⏳ ${h}h ${mm}m until Urgent`;
 }
 // ---------- SMART SORTING (v5.4) ----------
 // Sorts items by: 1) Due-now first, 2) Priority tier, 3) Most recent
@@ -1551,23 +1551,12 @@ async function leadsText() {
       }
     }
     
-    let text = `🎯 NIL LEADS DASHBOARD
-══════════════════════════════
-📊 Overview
-
-• Total Leads: ${analytics?.total_leads || 0}
-• New Today: ${analytics?.leads_today || 0}
-• With Email: ${statuses.ready + statuses.outreach_started + statuses.replied}
-
-📈 Status
-Ready: ${statuses.ready}
-Started: ${statuses.outreach_started}
-Replied: ${statuses.replied}
-
-══════════════════════════════
-🔥 Top 10 Leads
-
-`;
+    let text = `🎯 NIL LEADS DASHBOARD\n\n📊 Overview:\n`;
+    text += `• Total Leads: ${analytics?.total_leads || 0}\n`;
+    text += `• New Today: ${analytics?.leads_today || 0}\n`;
+    text += `• With Email: ${statuses.ready + statuses.outreach_started + statuses.replied}\n\n`;
+    text += `📈 Status: Ready ${statuses.ready} | Started ${statuses.outreach_started} | Replied ${statuses.replied}\n\n`;
+    text += `🔥 Top 10 Leads:\n`;
     if (topLeads && topLeads.length > 0) {
       for (let i = 0; i < Math.min(10, topLeads.length); i++) {
         const lead = topLeads[i];
@@ -1578,7 +1567,6 @@ Replied: ${statuses.replied}
     } else {
       text += `No leads yet.\n`;
     }
-    text += "══════════════════════════════";
     return text;
   } catch (err) {
     return `❌ Error: ${err.message}`;
@@ -1602,30 +1590,11 @@ async function analyticsText() {
     
     if (error) throw new Error(error.message);
     
-    let text = `📊 EMAIL ANALYTICS
-══════════════════════════════
-📅 Today
-
-Sent: ${analytics?.emails_sent_today || 0}
-Opens: ${analytics?.opens_today || 0}
-Clicks: ${analytics?.clicks_today || 0}
-Replies: ${analytics?.replies_today || 0}
-
-══════════════════════════════
-📈 All-Time
-
-Sent: ${analytics?.total_emails_sent || 0}
-Opens: ${analytics?.total_opens || 0}
-Clicks: ${analytics?.total_clicks || 0}
-Replies: ${analytics?.total_replies || 0}
-
-══════════════════════════════
-💯 Rates
-
-Open: ${analytics?.open_rate_pct || 0}%
-Click: ${analytics?.click_rate_pct || 0}%
-Reply: ${analytics?.reply_rate_pct || 0}%
-══════════════════════════════`;
+    let text = `📊 EMAIL ANALYTICS\n\n📅 Today:\n`;
+    text += `• Sent: ${analytics?.emails_sent_today || 0} | Opens: ${analytics?.opens_today || 0} | Clicks: ${analytics?.clicks_today || 0} | Replies: ${analytics?.replies_today || 0}\n\n`;
+    text += `📈 All-Time:\n`;
+    text += `• Sent: ${analytics?.total_emails_sent || 0} | Opens: ${analytics?.total_opens || 0} | Clicks: ${analytics?.total_clicks || 0} | Replies: ${analytics?.total_replies || 0}\n\n`;
+    text += `💯 Rates: Open ${analytics?.open_rate_pct || 0}% | Click ${analytics?.click_rate_pct || 0}% | Reply ${analytics?.reply_rate_pct || 0}%\n`;
     return text;
   } catch (err) {
     return `❌ Error: ${err.message}`;
@@ -1659,18 +1628,16 @@ submissionsCount: await sbCountSubmissions(),
 callsCount: await sbCountCalls(),
 };
 const m = await sbMetricSummary({ source: filterSource, window: "all" });
-return `🏠 NIL WEALTH OPS DASHBOARD
-══════════════════════════════
-${CODE_VERSION} • Build: ${String(BUILD_VERSION).slice(0, 8)}
+return `🏠 NIL Wealth Ops Dashboard
+
+${CODE_VERSION} · Build: ${String(BUILD_VERSION).slice(0, 8)}
 
 📅 Today: ${new Intl.DateTimeFormat("en-US",{ timeZone: "America/New_York" }).format(new Date())}
 ⏰ NY Time: ${time}
 
 🧮 Filter: ${filterLabel}
 
-══════════════════════════════
-🗂 ALL QUEUES
-
+🗂 All Queues:
 ‼️ Urgent: ${counts.urgentCount}
 📝 Needs Reply: ${counts.needsReplyCount}
 ⏳ Waiting: ${counts.waitingCount}
@@ -1681,9 +1648,7 @@ ${CODE_VERSION} • Build: ${String(BUILD_VERSION).slice(0, 8)}
 📱 Calls: ${counts.callsCount}
 ✅ Completed: ${counts.completedCount}
 
-══════════════════════════════
-📊 METRICS
-
+📊 Metrics:
 Total Parent Guide Opens: ${m.programLinkOpens}
 Total Coverage Exploration: ${m.coverageExploration}
 Total Enroll Portal Visits: ${m.enrollClicks}
@@ -1691,7 +1656,6 @@ Total eApp Visits: ${m.eappVisits}
 Total Threads: ${m.threadsCreated}
 Total Calls Answered: ${m.callsAnswered}
 
-══════════════════════════════
 Use buttons below.`;
 }
 // ✅ EXACT v5.1 dashboard keyboard: filters row + nav row + metrics row (ONLY 3 rows)
@@ -1776,18 +1740,13 @@ function convoSummaryLine(conv) {
 const lane = laneLabel(sourceSafe(conv.source));
 const sla = slaBadge(conv.updated_at);
 const until = urgentCountdown(conv.updated_at);
-const subj = shorten(conv.subject || "(no subject)", 50);
-const prev = shorten(conv.preview || "", 70);
+const subj = shorten(conv.subject || "(no subject)", 60);
+const prev = shorten(conv.preview || "", 80);
 const identity = conversationIdentityText(conv);
-const contact = conv.contact_email || conv.coach_email || "—";
-const pipeline = conv.pipeline || "—";
-
-return `──────────────────────
-• ${identity} • ${lane} • ID: ${idShort(conv.id)}
-  📧 ${subj}
-  ${prev}
-  👤 ${contact} • Pipeline: ${pipeline}
-  ${sla} • ${until}`;
+return `• ${identity} · ${lane}
+${subj}
+${prev}
+${sla} · ${until}`;
 }
 // ---------- SHOW LIST ----------
 async function showConversationList(ctx, viewKey, rows, filterSource, roleFilter = "all") {
@@ -1801,10 +1760,15 @@ const header = `${headerLine(viewKey, filterLabel)} · ${roleFilterLabel(roleFil
 
 const body =
 rows.length
-? rows.map(convoSummaryLine).join("\n") + "\n──────────────────────"
+? rows.map(convoSummaryLine).join("\n\n")
 : "No items.";
-// buttons - just back navigation, no individual open buttons
-const kb = [[Markup.button.callback("⬅ Back", "ALLQ:open")]];
+// buttons
+const kb = rows.slice(0, 8).map((c) => [
+Markup.button.callback("Open", `OPENCARD:${c.id}`),
+// ✅ MUST match universal delete entity map
+Markup.button.callback("🗑", `DELETECONFIRM:conversation:${c.id}`),
+]);
+kb.push([Markup.button.callback("⬅ Back", "ALLQ:open")]);
 const msg = await smartRender(ctx,
 `${header}\n\n${body}`,
 Markup.inlineKeyboard(kb)
@@ -1829,40 +1793,33 @@ const lane = laneLabel(sourceSafe(conv.source));
 const sla = slaBadge(conv.updated_at);
 const until = urgentCountdown(conv.updated_at);
 const ccOn = conv.cc_support_suggested === true;
-const gmail = conv.gmail_url ? `\n  Gmail: ${conv.gmail_url}` : "";
+const gmail = conv.gmail_url ? `\nGmail: ${conv.gmail_url}` : "";
 const pipeline = conv.pipeline || "—";
 const coach = conv.coach_name || "—";
 const contact = conv.contact_email || "—";
 const subj = conv.subject || "—";
-const prev = shorten(conv.preview || "", 400);
+const prev = shorten(conv.preview || "", 420);
 const identity = conversationIdentityText(conv);
 const roleInfo = (() => {
 const r = normalizeRole(conv?.role) || "parent";
 let info = `Role: ${roleLabel(r)}`;
 const conflictBadge = roleConflictBadge(conv);
 if (conflictBadge) {
-info += `\n  ${conflictBadge}`;
+info += `\n${conflictBadge}`;
 }
 return info;
 })();
-return `💬 CONVERSATION
-━━━━━━━━━━━━━━━━━━━━━━
-ID: ${idShort(conv.id)} • ${lane}
+return `💬 Conversation · ${idShort(conv.id)} · ${lane}
 Identity: ${identity}
 ${roleInfo}
-
 Pipeline: ${pipeline}
 Coach: ${coach}
 Contact: ${contact}
-
-📧 Subject: ${subj}
-
+Subject: ${subj}
 Preview: ${prev}
-
-━━━━━━━━━━━━━━━━━━━━━━
 Updated: ${tFmtDateTimeShort(conv.updated_at)}
 💬 Messages: ${msgCount}
-${sla} • ${until}
+${sla} · ${until}
 CC: ${ccOn ? "📇 Enabled" : "Off"}${gmail}`;
 }
 function conversationCardKeyboard(conv) {
@@ -1924,23 +1881,18 @@ const intent = sub.intent_answer || p.intent_answer || "—";
 const heard = sub.how_heard_about || p.how_heard_about || "—";
 const emailSent = sub.email_sent === true || sub.enrollment_email_sent === true;
 const smsSent = sub.sms_sent === true || sub.enrollment_sms_sent === true;
-return `🧾 SUBMISSION
-━━━━━━━━━━━━━━━━━━━━━━
-ID: ${idShort(sub.submission_id)}
-
+return `🧾 Submission · ${idShort(sub.submission_id)}
 Name: ${name}
 Email: ${p.email || "—"}
 Phone: ${p.phone_e164 || p.phone || "—"}
 Athlete: ${p.athlete_name || "—"}
 State: ${p.state || "—"}
 Role: ${roleLabel(role)}
-
 Intent: ${intent}
 How Heard: ${heard}
 Coverage: ${coverageLabel(p)}
 Referral: ${p.referral_source || p.referral || "—"}
 
-━━━━━━━━━━━━━━━━━━━━━━
 Sent Email: ${emailStatusIcon(emailSent)}
 Sent SMS: ${smsStatusIcon(smsSent)}
 
@@ -2094,8 +2046,14 @@ return `${offset + idx + 1}. ${name} • ${state}\n   ${athlete} • ${cov}\n   
 
 const pageInfo = `Page ${currentPage}/${totalPages} (${totalCount} total)`;
 const lines = subs.length ? subs.map(lineForSub).join("\n\n") : "No submissions.";
-// Just navigation buttons, no individual open buttons
-const kb = [];
+const kb = subs.map((s, idx) => {
+const p = s.submission_payload || {};
+const name = [p.first_name, p.last_name].filter(Boolean).join(" ") || "—";
+return [
+Markup.button.callback(`Open • ${name} • ${idShort(s.submission_id)}`, `OPENCARD:sub:${s.submission_id}`),
+Markup.button.callback("🗑", `DELETECONFIRM:submission:${s.submission_id}`),
+];
+});
 // Pagination buttons
 const navRow = [];
 if (currentPage > 1) {
@@ -2814,9 +2772,7 @@ normalized_email: conv.normalized_email || conv.contact_email || null,
 normalized_phone: conv.normalized_phone || null,
 limit: 12,
 });
-const header = `👥 PEOPLE
-══════════════════════════════
-Conversation: ${idShort(convId)}\n${people.length} record(s)`;
+const header = `👥 People · ${idShort(convId)}\n${people.length} record(s)`;
 const body = people.length
 ? people
 .slice(0, 12)
@@ -2827,14 +2783,17 @@ const phone = p.phone_e164 || "—";
 const role = p.role || "—";
 const conf =
 p.identity_confidence_score != null
-? ` • Conf ${Number(p.identity_confidence_score).toFixed(2)}`
+? ` · Conf ${Number(p.identity_confidence_score).toFixed(2)}`
 : "";
-return `──────────────────────\n• ${name}\n  ${email} • ${phone}\n  Role: ${role}${conf}`;
+return `• ${name}\n ${email} · ${phone}\n Role: ${role}${conf}`;
 })
-.join("\n") + "\n──────────────────────"
+.join("\n\n")
 : "No people records.";
-// Just back button, no individual open buttons
-const kb = [[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]];
+const kb = people.slice(0, 10).map((p) => [
+Markup.button.callback(`Open ${p.name || "Person"}`, `PERSON:${p.id}`),
+
+]);
+kb.push([Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]);
 const msg = await ctx.reply(`${header}\n\n${body}`, Markup.inlineKeyboard(kb));
 // Live refresh registration for this list
 registerLiveCard(msg, {
@@ -2981,30 +2940,7 @@ const pool = sub.pool_label ? `Pool: ${sub.pool_label}` : "—";
 const emailSent = sub.email_sent === true || sub.enrollment_email_sent === true;
 const smsSent = sub.sms_sent === true || sub.enrollment_sms_sent === true;
 
-const text = `🧾 SUBMISSION
-══════════════════════════════
-ID: ${idShort(submissionId)}
-
-Submitter
-${name}
-${email}
-
-Athlete
-${athlete}
-
-Details
-State: ${state}
-Coverage: ${cov}
-${coach}
-${pool}
-
-══════════════════════════════
-Status
-Sent Email: ${emailStatusIcon(emailSent)}
-Sent SMS: ${smsStatusIcon(smsSent)}
-
-Created: ${sub.created_at || "—"}
-══════════════════════════════`;
+const text = `🧾 Submission · ${idShort(submissionId)}\n\nSubmitter\n${name}\n${email}\n\nAthlete\n${athlete}\n\nDetails\nState: ${state}\nCoverage: ${cov}\n${coach}\n${pool}\n\nStatus\nSent Email: ${emailStatusIcon(emailSent)}\nSent SMS: ${smsStatusIcon(smsSent)}\n\nCreated: ${sub.created_at || "—"}`;
 
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("⬅ Back", "ALLQ:open")],
@@ -3029,17 +2965,7 @@ const program = coach.program || coach.school || "—";
 const filterSource = getAdminFilter(ctx);
 const convs = await sbListConversationsByCoach({ coach_id: coachId, source: filterSource, limit: 10 });
 
-const text = `🧑‍🏫 COACH
-══════════════════════════════
-Name: ${name}
-
-Program: ${program}
-
-Active Conversations: ${convs.length}
-
-══════════════════════════════
-Created: ${coach.created_at || "—"}
-══════════════════════════════`;
+const text = `🧑‍🏫 Coach · ${name}\n\nProgram\n${program}\n\nActive Conversations\n${convs.length}\n\nCreated: ${coach.created_at || "—"}`;
 
 const kb = [
 [Markup.button.callback("📬 Conversations", `COACH:convs:${coachId}`)],
@@ -3066,8 +2992,8 @@ const convs = await sbListConversationsByCoach({ coach_id: coachId, source: filt
 const title = `🧵 ${coach.coach_name || "Coach"}'s Conversations`;
 const body = convs.length ? convs.map((c, i) => `${i+1}. ${c.subject || "(no subject)"}\n${c.preview || ""}`).join("\n\n") : "No conversations.";
 
-// Just navigation, no individual open buttons
-const kb = [[Markup.button.callback("⬅ Back", `COACH:${coachId}`)]];
+const kb = convs.map((c) => [Markup.button.callback(`Open • ${idShort(c.id)}`, `OPENCARD:${c.id}`)]);
+kb.push([Markup.button.callback("⬅ Back", `COACH:${coachId}`)]);
 
 const msg = await smartRender(ctx, `${title}\n\n${body}`, Markup.inlineKeyboard(kb));
 registerLiveCard(msg, {
@@ -3366,38 +3292,35 @@ return at - bt;
 });
 // ---- Build message text ----
 const lines = [];
-const title = (typeof viewTitle === "function") ? viewTitle("triage") : "⚡ TRIAGE";
-lines.push(`${title} • ${filterSource} • ${roleFilterLabel(roleFilter)}`);
-lines.push("══════════════════════════════");
+const title = (typeof viewTitle === "function") ? viewTitle("triage") : "⚡ Triage";
+lines.push(`${title} · ${filterSource} · ${roleFilterLabel(roleFilter)}`);
 let hasAny = false;
 if (urgent.length) {
 hasAny = true;
-lines.push(`\n‼ URGENT`);
+lines.push(`\n‼ Urgent`);
 urgent.slice(0, 4).forEach((c, i) => lines.push(tConvoLine(c, i + 1)));
-lines.push("──────────────────────");
+lines.push("──────────────");
 }
 if (calls.length) {
 hasAny = true;
-lines.push(`\n📱 CALLS (DUE)`);
+lines.push(`\n📱 Calls (Due)`);
 calls.slice(0, 6).forEach((call, i) => lines.push(tCallLine(call, i + 1)));
-lines.push("──────────────────────");
+lines.push("──────────────");
 }
 if (needs.length) {
 hasAny = true;
-lines.push(`\n⏳ NEEDS REPLY`);
+lines.push(`\n⏳ Needs Reply`);
 needs.slice(0, 6).forEach((c, i) => lines.push(tConvoLine(c, i + 1)));
-lines.push("──────────────────────");
+lines.push("──────────────");
 }
 if (followups.length) {
 hasAny = true;
-lines.push(`\n📚 COACH FOLLOW-UPS (DUE)`);
+lines.push(`\n📚 Coach Follow-Ups (Due)`);
 followups.slice(0, 6).forEach((f, i) => lines.push(tFollowupLine(f, i + 1)));
-lines.push("──────────────────────");
 }
 if (!hasAny) {
 lines.push(`\nNo due-now items.`);
 }
-lines.push("══════════════════════════════");
 // ---- Buttons (labeled; urgent first, then calls, then needs, then follow-ups) ----
 
 const kb = [];
@@ -3593,21 +3516,7 @@ const chatId = ctx.chat?.id;
 if (chatId) setSearchMode(chatId, true);
 
 const text =
-`🔎 SEARCH
-══════════════════════════════
-Type your search query now:
-
-• Coach name
-• Client name or email
-• Submission ID
-• Phone number
-• Any keyword
-
-══════════════════════════════
-💡 Tip: Keep it simple - fewer words work better.
-
-Or use /search <text> anytime.
-══════════════════════════════`;
+`🔎 Search\n\nType your search query now:\n• Coach name\n• Client name or email\n• Submission ID\n• Phone number\n• Any keyword\n\nTip: Keep it simple - fewer words work better.\n\nOr use /search <text> anytime.`;
 
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("🕘 Recent", "SEARCH:recent")],
@@ -3619,12 +3528,7 @@ await smartRender(ctx, text, kb);
 bot.action("SEARCH:recent", async (ctx) => {
 if (!isAdmin(ctx)) return;
 
-const text = `🕘 RECENT ITEMS
-══════════════════════════════
-Recent feature shows your last accessed conversations.
-
-💡 To access: Open any conversation from a queue view.
-══════════════════════════════`;
+const text = `🕘 Recent Items\n\nRecent feature shows your last accessed conversations.\n\nTo access: Open any conversation from a queue view.`;
 
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("📱 Calls", "CALLS:hub")],
@@ -3760,15 +3664,12 @@ sbCountNeedsReply({ source: filterSource }).catch(() => 0),
 sbCountCoachFollowupsDueNow({ source: filterSource }).catch(() => 0),
 ]);
 const text =
-`📅 TODAY
-══════════════════════════════
-${dayKey} • ${time}
-
+`📅 Today
+${dayKey} · ${time}
 ⚡️ Triage Due: ${triageDue}
 📱 Calls Today: ${callsToday}
 ⏳ Needs Reply: ${needsReply}
-📚 Follow-Ups Due: ${followupsDue}
-══════════════════════════════`;
+📚 Follow-Ups Due: ${followupsDue}`;
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("⚡️ Triage", "TRIAGE:open")],
 [Markup.button.callback("📱 Calls", "CALLS:hub"), Markup.button.callback("🗂 All Queues",
@@ -3839,15 +3740,14 @@ return new Date(b.last_activity_at||0)
 });
 // ---------- BUILD TEXT ----------
 const lines = [];
-lines.push(`🌊 POOLS • ${filterSource}`);
-lines.push("══════════════════════════════");
+lines.push(`🌊 Pools · ${filterSource}`);
 const section = (title, list, builder) => {
 if (!list.length) return;
 lines.push(`\n${title}`);
 list.slice(0,6).forEach((r,i)=>{
 lines.push(builder(r,i));
 });
-lines.push("──────────────────────");
+lines.push("──────────────");
 };
 section("📝 Needs Reply", needsReply,
 (r,i)=>`${i+1}) Coach ${r.coach_full_name}
@@ -3912,9 +3812,9 @@ const filterSource = getAdminFilter(ctx) || "all";
 const metrics = await sbMetricSummary({ source: filterSource, window });
 
 const titleMap = {
-week: "📊 METRICS · LAST 7 DAYS",
-month: "📊 METRICS · LAST 30 DAYS",
-year: "📊 METRICS · THIS YEAR"
+week: "📊 Metrics · Last 7 Days",
+month: "📊 Metrics · Last 30 Days",
+year: "📊 Metrics · This Year"
 };
 const title = titleMap[window] || titleMap.month;
 
@@ -3925,25 +3825,14 @@ const avgDivisor = window === "year" ? 12 : divisor; // year shows per month ave
 
 const avg = (val) => Math.round((val || 0) / avgDivisor);
 
-let body = `══════════════════════════════
-Parent Guide Link Opens: ${metrics.programLinkOpens || 0}
-  (Avg ${avg(metrics.programLinkOpens)}${perLabel})
-
-Coverage Exploration: ${metrics.coverageExploration || 0}
-  (Avg ${avg(metrics.coverageExploration)}${perLabel})
-
-Enroll Portal Visits: ${metrics.enrollClicks || 0}
-  (Avg ${avg(metrics.enrollClicks)}${perLabel})
-
-eApp Visits: ${metrics.eappVisits || 0}
-  (Avg ${avg(metrics.eappVisits)}${perLabel})
-
-Threads Created (replies): ${metrics.threadsCreated || 0}
-  (Avg ${avg(metrics.threadsCreated)}${perLabel})
-
-Calls Answered: ${metrics.callsAnswered || 0}
-  (Avg ${avg(metrics.callsAnswered)}${perLabel})
-══════════════════════════════`.trim();
+let body = `
+Parent Guide Link Opens: ${metrics.programLinkOpens || 0} (Avg ${avg(metrics.programLinkOpens)}${perLabel})
+Coverage Exploration: ${metrics.coverageExploration || 0} (Avg ${avg(metrics.coverageExploration)}${perLabel})
+Enroll Portal Visits: ${metrics.enrollClicks || 0} (Avg ${avg(metrics.enrollClicks)}${perLabel})
+eApp Visits: ${metrics.eappVisits || 0} (Avg ${avg(metrics.eappVisits)}${perLabel})
+Threads Created (replies): ${metrics.threadsCreated || 0} (Avg ${avg(metrics.threadsCreated)}${perLabel})
+Calls Answered: ${metrics.callsAnswered || 0} (Avg ${avg(metrics.callsAnswered)}${perLabel})
+`.trim();
 
 // Add best week/month for year view
 if (window === "year" && metrics.bestWeek && metrics.bestMonth) {
@@ -4162,8 +4051,10 @@ const pool = c.pool_label ? `\n 🌊 ${c.pool_label}` : "";
 return `${offset + idx + 1}. ${nm} (${st})${pool}\n ${em} · ${ph}\n Threads: ${threads} · 📝 ${nr}`;
 }).join("\n\n")
 : "No clients found.";
-// Just navigation, no individual open buttons
-const kb = [];
+const kb = (rows || []).map((c) => {
+const nm = c.primary_name || c.name || "—";
+return [Markup.button.callback(`Open • ${nm} • ${idShort(c.client_id)}`, `CLIENT:${c.client_id}`)];
+});
 
 // Pagination buttons
 const navRow = [];
@@ -4221,37 +4112,27 @@ if (h) return "✓ Hospital Indemnity";
 return c.coverage_type ? `• ${c.coverage_type}` : "—";
 })();
 const text =
-`👥 CLIENT
-══════════════════════════════
-Name: ${name}
-ClientID: ${c.client_id}
-Status: ${status}
+`👥 Client · ${name}\n` +
+`ClientID: ${c.client_id}\n` +
+`Status: ${status}\n\n` +
+`Primary: ${primaryRole}\n` +
+`Last Activity: ${c.last_activity_at || "—"}\n` +
+`Last Inbound: ${c.last_inbound_at || "—"}\n\n` +
+`────────────────\n\n` +
 
-Primary: ${primaryRole}
-Last Activity: ${c.last_activity_at || "—"}
-Last Inbound: ${c.last_inbound_at || "—"}
-
-──────────────────────
-
-📬 CONTACT
-Email: ${email}
-Phone: ${phone}
-State: ${state}
-${poolsBlock ? `\n──────────────────────\n\n${poolsBlock}` : ""}
-──────────────────────
-
-📊 ACTIVITY
-Threads: ${c.threads_total || 0}  📝 Needs Reply: ${c.threads_needs_reply || 0}
-Submissions: ${c.submissions_total || 0}
-Calls Open: ${c.calls_open || 0}
-
-──────────────────────
-
-🧾 COVERAGE
-${covLine}
-
-──────────────────────
-`;
+`📬 Contact\n` +
+`Email: ${email}\n` +
+`Phone: ${phone}\n` +
+`State: ${state}\n` +
+`${poolsBlock ? `\n────────────────\n\n${poolsBlock}` : ""}\n` +
+`────────────────\n\n` +
+`📊 Activity\n` +
+`Threads: ${c.threads_total || 0}  📝 Needs Reply: ${c.threads_needs_reply || 0}\n` +
+`Submissions: ${c.submissions_total || 0}\n` +
+`Calls Open: ${c.calls_open || 0}\n\n` +
+`────────────────\n\n` +
+`🧾 Coverage\n${covLine}\n\n` +
+`────────────────\n\n` +
 `🧠 Identity\nPeople Linked: ${c.people_count || 0}`;
 const hasPools = poolsArr.length > 0;
 const kbRows = [
@@ -4310,8 +4191,8 @@ const prev = t.preview || "—";
 return `${offset + idx + 1}. ${label}${lane}\n${subj}\n${prev}\nLast inbound: ${last}`;
 }).join("\n\n")
 : "No threads yet.\n\n(If they only submitted the website form, threads will appear when a reply comes in.)";
-// Just navigation, no individual open buttons
-const kb = [];
+const kb = (threads || []).map((t) => [Markup.button.callback(`Open • ${idShort(t.id)}`,
+`OPENCARD:${t.id}`)]);
 
 // Pagination buttons
 const navRow = [];
@@ -4369,8 +4250,8 @@ const coach = s.coach_name ? `\nCoach: ${s.coach_name}` : "";
 return `${offset + idx + 1}. ${sid}\nCoverage: ${cov}\nAthlete: ${athlete}\nState: ${st}\nCreated: ${s.created_at || "—"}${pool}${coach}`;
 }).join("\n\n")
 : "No submissions found.";
-// Just navigation, no individual open buttons
-const kb = [];
+const kb = (subs || []).map((s) => [Markup.button.callback(`Open • ${idShort(s.submission_id)}`,
+`SUB:${s.submission_id}`)]);
 
 // Pagination buttons
 const navRow = [];
@@ -4398,9 +4279,7 @@ if (!isAdmin(ctx)) return;
 
 const clientId = ctx.match[1];
 const calls = await sbListClientCalls(clientId, 10);
-const title = `📱 CALLS
-══════════════════════════════
-Client: ${idShort(clientId)}`;
+const title = `📱 Calls · ${idShort(clientId)}`;
 const body = calls?.length
 ? calls.slice(0, 10).map((c) => {
 const when = c.scheduled_for || "—";
@@ -4408,11 +4287,12 @@ const outcome = c.outcome || "—";
 const reason = c.reason || "—";
 const email = c.client_email || "—";
 const phone = c.best_phone || c.client_phone_e164 || "—";
-return `──────────────────────\n• ${when}\n  Reason: ${reason}\n  Email: ${email}\n  Phone: ${phone}\n  Outcome: ${outcome}`;
-}).join("\n") + "\n──────────────────────"
+return `• ${when}\nReason: ${reason}\nEmail: ${email}\nPhone: ${phone}\nOutcome:
+${outcome}`;
+}).join("\n\n")
 : "No calls found.";
-// Just back button, no individual open buttons
-const kb = [[Markup.button.callback("⬅ Client", `CLIENT:${clientId}`)]];
+const kb = (calls || []).slice(0, 10).map((c) => [Markup.button.callback("Open", `CALL:${c.id}`)]);
+kb.push([Markup.button.callback("⬅ Client", `CLIENT:${clientId}`)]);
 const msg = await ctx.reply(`${title}\n\n${body}`, Markup.inlineKeyboard(kb));
 registerLiveCard(msg, {
 type: "client_calls",
@@ -4427,9 +4307,7 @@ bot.action(/^CLIENT:people:(.+)$/, async (ctx) => {
 if (!isAdmin(ctx)) return;
 const clientId = ctx.match[1];
 const people = await sbListPeopleForClient(clientId, 12);
-const title = `👥 PEOPLE
-══════════════════════════════
-Client: ${idShort(clientId)}\n${people?.length || 0} record(s)`;
+const title = `👥 People · ${idShort(clientId)}\n${people?.length || 0} record(s)`;
 const body = people?.length
 ? people.slice(0, 12).map((p) => {
 const nm = p.name || "—";
@@ -4437,11 +4315,12 @@ const em = p.email || "—";
 
 const ph = p.phone_e164 || "—";
 const role = p.role || "—";
-return `──────────────────────\n• ${nm}\n  ${em} • ${ph}\n  Role: ${role}`;
-}).join("\n") + "\n──────────────────────"
+return `• ${nm}\n${em} · ${ph}\nRole: ${role}`;
+}).join("\n\n")
 : "No people found.";
-// Just back button, no individual open buttons
-const kb = [[Markup.button.callback("⬅ Client", `CLIENT:${clientId}`)]];
+const kb = (people || []).slice(0, 10).map((p) => [Markup.button.callback("Open",
+`PERSON:${p.id}`)]);
+kb.push([Markup.button.callback("⬅ Client", `CLIENT:${clientId}`)]);
 const msg = await ctx.reply(`${title}\n\n${body}`, Markup.inlineKeyboard(kb));
 registerLiveCard(msg, {
 type: "client_people",
@@ -4458,16 +4337,14 @@ const clientId = ctx.match[1];
 const c = await sbGetClientCard(clientId);
 if (!c) return ctx.reply("Client not found.");
 const poolsArr = Array.isArray(c.pools) ? c.pools : [];
-const title = `🌊 POOLS
-══════════════════════════════
-Client: ${c.primary_name || idShort(clientId)}`;
+const title = `🌊 Pools · ${c.primary_name || idShort(clientId)}`;
 const body = poolsArr.length
 ? poolsArr.slice(0, 10).map((p) => {
 const label = p.pool_label || "—";
 const coachName = p.coach_name || "—";
 const coachId = p.coach_id || "—";
-return `──────────────────────\n• ${label}\n  Coach: ${coachName}\n  CoachID: ${coachId}`;
-}).join("\n") + "\n──────────────────────"
+return `• ${label}\nCoach: ${coachName}\nCoachID: ${coachId}`;
+}).join("\n\n")
 : "No pools linked.";
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("⬅ Client", `CLIENT:${clientId}`)],
@@ -4660,13 +4537,7 @@ c.phone_e164 ||
 "—";
 const role = c.role || c.client_role || "—";
 const when = fmtWhen(c.scheduled_for);
-const name = c.client_name || "—";
-return `──────────────────────
-📱 ${name} • ID: ${idShort(c.id)}
-  Status: ${status} • Role: ${role}
-  📧 ${email}
-  📞 ${phone}
-  🕐 Scheduled: ${when}`;
+return `${status}\n${email} · ${phone}\nWhen: ${when} · Role: ${role}`;
 }
 // Call detail card uses HTML for tel:/mailto:
 function buildCallCardTextHTML(c) {
@@ -4713,26 +4584,20 @@ c.calendly_payload?.reason ||
 const notes = esc(c.notes || c.calendly_payload?.notes || "—");
 const convId = c.conversation_id ? esc(idShort(c.conversation_id)) : "—";
 return (
-`📱 <b>CALL</b>
-━━━━━━━━━━━━━━━━━━━━━━
-ID: ${esc(idShort(c.id))}
-
+`📱 <b>Call</b> · ${esc(idShort(c.id))}
 <b>Client</b>
 Email: ${emailLine}
 Phone: ${phoneLine}
 Role: ${role}
-
 <b>When</b>
 Scheduled: ${when}
 Status: <b>${esc(status)}</b>
 Updated: ${updatedAt}
-
 <b>Reason (Calendly)</b>
+
 Sport/Level: ${sportLevel}
 Help: ${help}
 Notes: ${notes}
-
-━━━━━━━━━━━━━━━━━━━━━━
 <b>Linked</b>
 Conversation: ${convId}`
 );
@@ -4773,9 +4638,11 @@ const currentPage = Math.min(page, totalPages);
 const calls = await sbListCalls({ limit: pageSize, offset });
 const endItem = Math.min(offset + calls.length, totalCount);
 const pageInfo = `Page ${currentPage}/${totalPages} • Items ${endItem}/${totalCount}`;
-const body = calls.length ? calls.map(callSummaryLine).join("\n") + "\n──────────────────────" : "No calls found.";
-// Just navigation buttons, no individual open buttons
-const kb = [];
+const body = calls.length ? calls.map(callSummaryLine).join("\n\n") : "No calls found.";
+const kb = calls.map((c, idx) => {
+const name = c.client_name || "—";
+return [Markup.button.callback(`Open • ${name} • ${idShort(c.id)}`, `CALL:${c.id}`)];
+});
   
 // Pagination buttons
 const navRow = [];
@@ -4934,34 +4801,27 @@ const bestMonthEver = y.bestMonthEver
 : "👑 Best Month Ever: —";
 const t = y.trend || {};
 return (
-`🎉 YEAR SUMMARY • ${filterSource}
-══════════════════════════════
-TOTALS
-
-` +
+`🎉 Year Summary · ${filterSource}\n\n` +
+`Totals\n` +
 `• Total Parent Guides Opened: ${n(y.programLinkOpens)} (Avg ${avg(y.programLinkOpens)}/mo)\n` +
 `• Coverage Exploration: ${n(y.coverageExploration)} (Avg ${avg(y.coverageExploration)}/mo)\n` +
 `• Enroll Clicks: ${n(y.enrollClicks)} (Avg ${avg(y.enrollClicks)}/mo)\n` +
 `• eApp Visits: ${n(y.eappVisits)} (Avg ${avg(y.eappVisits)}/mo)\n` +
 `• Threads (Replies): ${n(y.threadsCreated)} (Avg ${avg(y.threadsCreated)}/mo)\n` +
 `• Calls Answered: ${n(y.callsAnswered)} (Avg ${avg(y.callsAnswered)}/mo)\n\n` +
-`══════════════════════════════
-MONTHLY BREAKDOWN (Total Clicks)\n\n` +
+`Monthly Breakdown (Total Clicks)\n` +
 `${monthLine}\n\n` +
-`══════════════════════════════
-HIGHLIGHTS\n\n` +
+`Highlights\n` +
 `${bestWeek}\n` +
 `${bestMonth}\n` +
 `${bestMonthEver}\n\n` +
-`══════════════════════════════
-TRENDS (vs last month)\n\n` +
+`Trends (vs last month)\n` +
 `• Parent Guides: ${trendEmoji(t.opens)}\n` +
 `• Exploration: ${trendEmoji(t.exploration)}\n` +
 `• Enroll Clicks: ${trendEmoji(t.enrollClicks)}\n` +
 `• eApp Visits: ${trendEmoji(t.eappVisits)}\n` +
 `• Threads (Replies): ${trendEmoji(t.threads)}\n` +
-`• Calls Answered: ${trendEmoji(t.callsAnswered)}\n` +
-`══════════════════════════════`
+`• Calls Answered: ${trendEmoji(t.callsAnswered)}`
 );
 }
 function yearSummaryKeyboard() {

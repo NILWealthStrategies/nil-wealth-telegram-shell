@@ -1,0 +1,304 @@
+# Twin.so Integration Checklist (Quick Reference)
+
+## Pre-Integration Setup
+
+- [ ] Get `BASE_WEBHOOK_SECRET` from bot `.env` file
+- [ ] Get `BOT_WEBHOOK_URL` (where bot is deployed)
+- [ ] Have Supabase credentials: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
+- [ ] Database is `nil` schema in PostgreSQL (not `public`)
+
+---
+
+## API Endpoints (All require `x-nil-secret` header)
+
+### 1️⃣ Submit Lead
+```
+POST /api/submissions
+Body: { idempotency_key, first_name, last_name, email, phone, state, role, coverage_* }
+Response: { ok, submission_id, queued }
+Note: Use UUID v4 for idempotency_key; prevents duplicates
+```
+
+### 2️⃣ Claim Work from Queue
+```
+GET /api/nil-outbox/claim?limit=10
+Response: { items: [...], batch_id, count }
+Note: Poll every 30 seconds; items locked for 5 min
+```
+
+### 3️⃣ Report Results Back
+```
+POST /api/nil-outbox/result/{batch_id}
+Body: { results: [{ claim_id, submission_id, status: completed|failed, result: {...} }] }
+Response: { ok, updated, batch_id }
+Note: status=failed auto-retries after 5 min
+```
+
+### 4️⃣ Send Events (Real-time updates)
+```
+POST /ops/ingest
+Body: { event_type, submission_id, timestamp, metadata }
+Event types: outbox.email.*, call.*, submission.*, metric.*
+Response: { ok, event_id, processed_at }
+```
+
+### 5️⃣ Send Metrics
+```
+POST /webhook/metric
+Body: { event_type: metric.enroll_click, submission_id, timestamp, metric_type }
+Response: { ok, metric_id, submission_id }
+```
+
+---
+
+## Database Tables (Read/Write)
+
+| Table | When to Write | Key Fields |
+|-------|---------------|-----------|
+| `nil.submissions` | After /api/submissions | first_name, last_name, email, phone, state, role, n8n_status |
+| `nil.n8n_outbox` | Claim work; Report results | status (queued→processing→completed), result_json, next_retry_at |
+| `nil.conversations` | On email/SMS sent/received | submission_id, direction, message_type, body, created_at |
+| `nil.messages` | On email/SMS sent/received | conversation_id, body, direction, created_at |
+| `nil.calls` | After call completes | submission_id, outcome, duration_seconds, called_at |
+| `nil.lead_metrics` | On metric events | submission_id, enroll_clicks, calls_made, calls_answered |
+
+**Read From**:
+- `nil.submissions_view` (denormalized; all submission fields + pipeline state)
+- `nil.active_submissions_view` (only non-completed)
+- `nil.urgent_submissions_view` (only pipeline='urgent')
+
+---
+
+## Pipeline State Flow
+
+```
+New submission → queued
+                  ↓
+Twin.so claims → active
+                  ↓ (depends on your actions)
+                  ├→ (180 min no reply) → urgent
+                  │   ├→ (manual escalation) → needs_reply
+                  │   └→ (forwarded to sales) → forwarded → completed
+                  ├→ (scheduled callback) → followups → completed
+                  └→ (explicit) → completed
+```
+
+---
+
+## Features Twin.so Must Implement
+
+### ✅ CC Support Mirroring
+- Add `support@mynilwealthstrategies.com` to BCC on all outreach emails
+- Send event: `{ event_type: "outbox.email.sent", metadata: { ..., cc_support: true } }`
+
+### ✅ Reply Tracking
+- Detect when lead replies to email/SMS
+- Send event: `{ event_type: "submission.replied", metadata: { reply_from, body } }`
+- Bot auto-updates pipeline `urgent → active` (resets SLA timer)
+
+### ✅ Click Tracking
+- Add click link to emails: `https://{domain}/enroll?submission_id=...`
+- On click, send metric webhook: `{ event_type: "metric.enroll_click", submission_id }`
+
+### ✅ Forwarded Queue
+- When qualified, send event: `{ event_type: "submission.forwarded", metadata: { forwarded_to, reason } }`
+- Bot updates pipeline to `forwarded`; removes from active queue
+
+### ✅ Urgent/Needs-Reply
+- Bot auto-escalates after 180 min no reply → pipeline = `urgent`
+- Config: `URGENT_AFTER_MINUTES=180`, `URGENT_COOLDOWN_HOURS=24` (in bot .env)
+
+### ✅ Call Tracking
+- After call (inbound/outbound), send event:
+  ```json
+  {
+    "event_type": "call.attempted",
+    "metadata": {
+      "phone": "+1...",
+      "outcome": "answered|no_answer|did_not_connect|rescheduled",
+      "duration_seconds": 300
+    }
+  }
+  ```
+- Outcomes:
+  - `answered` → pipeline=`active` (reset timer)
+  - `no_answer` (2nd time) → pipeline=`urgent` (escalate)
+  - `rescheduled` → pipeline=`followups` (callback scheduled)
+
+### ✅ Calendly/Callback Scheduling
+- When lead books time, send event:
+  ```json
+  {
+    "event_type": "call.scheduled",
+    "metadata": {
+      "scheduled_time": "2026-03-05T14:00:00Z",
+      "type": "callback|calendly",
+      "calendly_link": "..."
+    }
+  }
+  ```
+- Bot updates pipeline to `followups`; sends reminders
+
+### ✅ Dashboard Live Refresh
+- Every state change triggers Telegram dashboard update
+- Optional: POST `/ops/ingest` with `event_type: "dashboard.refresh"` for immediate update
+- Config: `ENABLE_TELEGRAM_LIVE_REFRESH=true|false` (default: true)
+
+---
+
+## Authentication Header (ALL Requests)
+
+```http
+x-nil-secret: {BASE_WEBHOOK_SECRET}
+```
+
+**DO NOT INCLUDE** in URL or body. **MUST BE** in HTTP header.
+
+Example:
+```bash
+curl -X GET https://bot-domain.com/api/nil-outbox/claim \
+  -H "x-nil-secret: your-secret-here"
+```
+
+---
+
+## Error Responses
+
+| Code | Meaning | Twin.so Action |
+|------|---------|----------------|
+| 200 | Success | Continue; use returned batch_id/event_id |
+| 400 | Bad request (invalid field, missing required) | Fix payload; retry with corrected data |
+| 401 | Unauthorized (wrong/missing secret) | Check BASE_WEBHOOK_SECRET matches |
+| 409 | Conflict (duplicate idempotency_key) | Use existing submission_id; don't resubmit |
+| 500 | Server error | Retry after 5-10 seconds |
+
+---
+
+## Testing Checklist (Before Going Live)
+
+Run the verification script:
+```bash
+export BOT_URL="https://your-bot-domain.com"
+export BOT_SECRET="your-secret"
+bash TWIN_SO_INTEGRATION_VERIFY.sh
+```
+
+All 12 tests must pass:
+1. ✓ Auth rejection (no secret)
+2. ✓ Auth acceptance (correct secret)
+3. ✓ Submit lead → gets submission_id
+4. ✓ Duplicate idempotency_key → HTTP 409
+5. ✓ Missing required field → HTTP 400
+6. ✓ Claim work → gets batch_id + items
+7. ✓ Report results → HTTP 200
+8. ✓ Email event → HTTP 200
+9. ✓ Call event → HTTP 200
+10. ✓ Reply event → HTTP 200
+11. ✓ Metric event → HTTP 200
+12. ✓ Invalid event type → HTTP 400
+
+---
+
+## Configuration (In Twin.so .env)
+
+```bash
+# Bot connection
+BOT_WEBHOOK_URL=https://your-telegram-bot-domain.com
+BOT_SECRET={BASE_WEBHOOK_SECRET}
+
+# Staging/production
+ENVIRONMENT=staging|production
+
+# Retry policy
+MAX_RETRIES=3
+RETRY_DELAY_MS=5000
+CLAIM_TIMEOUT_MIN=5
+
+# Features
+ENABLE_CC_SUPPORT_BCC=true
+ENABLE_URGENT_ESCALATION=true
+ENABLE_CALLBACK_SCHEDULING=true
+ENABLE_DASHBOARD_WEBHOOK=true
+```
+
+---
+
+## Workflow Loop (Reference)
+
+```javascript
+while (true) {
+  // 1. Poll for work
+  const { items, batch_id } = await GET /api/nil-outbox/claim
+
+  if (!items.length) {
+    wait(30 seconds)
+    continue
+  }
+
+  // 2. Process each submission
+  const results = []
+  for (const item of items) {
+    // Your workflow logic here:
+    // - Send email via Instantly.ai
+    // - Schedule callback
+    // - Run through qualification flow
+    // - Send events on state changes
+    
+    results.push({
+      claim_id: item.claim_id,
+      submission_id: item.submission_id,
+      status: "completed",
+      result: { workflow_executed: "...", ... }
+    })
+  }
+
+  // 3. Report results back
+  await POST /api/nil-outbox/result/{batch_id}
+    with { results }
+
+  // 4. Optional: Send event webhooks for each major action
+  await POST /ops/ingest (email sent, call attempted, etc.)
+
+  // 5. Repeat
+}
+```
+
+---
+
+## Support & Troubleshooting
+
+**Submission not appearing?**
+- Check HTTP 200 response from POST /api/submissions
+- Verify email/phone format is valid
+- Check bot logs for errors
+
+**Claim returns empty?**
+- Verify submissions exist in DB: `SELECT count(*) FROM nil.n8n_outbox WHERE status='queued'`
+- Check if other workers already claimed them
+
+**Event not updating dashboard?**
+- Verify x-nil-secret header correct
+- Check event_type is valid (from Section 3.4 in full guide)
+- Check bot is running: `ENABLE_TELEGRAM_BOT=true` in .env
+
+**Auth failures?**
+- Print actual secret: `echo $BASE_WEBHOOK_SECRET`
+- No quotes or spaces around secret value
+- Use exact string in x-nil-secret header
+
+**Database queries hanging?**
+- Check Supabase network access (firewall rules)
+- Verify credentials correct
+- Test connection: `psql postgresql://user:pass@host/db`
+
+---
+
+## Next Steps
+
+1. **Review**: Read full `TWIN_SO_INTEGRATION_GUIDE.md` (Sections 1-8)
+2. **Code**: Implement the 5 API clients (submit, claim, result, events, metrics)
+3. **Test**: Run `TWIN_SO_INTEGRATION_VERIFY.sh` ✓ all 12 tests passing
+4. **Deploy**: Launch twin.so; point website submissions to bot
+5. **Monitor**: Watch dashboard for 1-2 hours; verify alert Telegram messages
+
+**Questions?** Reference the full guide Sections 3 (API contracts) and 6 (features).
