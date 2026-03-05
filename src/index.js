@@ -68,6 +68,86 @@ const ops = () => supabase.schema("nil");
 const userFilters = new Map(); // userId -> filter value ("all" | "programs" | "support")
 const userRoleFilters = new Map(); // userId -> role filter ("all" | "parent" | "athlete" | "coach" | "trainer" | "other")
 const draftEditState = new Map(); // userId -> { convId, version }
+// ==========================================================
+// CRITICAL: TELEGRAM BOT RELIABILITY WRAPPERS
+// ==========================================================
+
+// Operation timeout wrapper - prevents hanging on long operations
+function withTimeout(promise, timeoutMs = 25000, errorMsg = "Operation timed out") {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(errorMsg)), timeoutMs)
+    ),
+  ]);
+}
+
+// Safe callback query answerer - ALWAYS answers, even on errors
+async function safeAnswerCbQuery(ctx, text = undefined) {
+  if (!ctx.update?.callback_query?.id) return;
+  try {
+    await ctx.answerCbQuery(text).catch((err) => {
+      const msg = String(err?.description || err?.message || "");
+      // Ignore expected errors (already answered, too old, etc.)
+      if (
+        !msg.includes("query is too old") &&
+        !msg.includes("QUERY_ID_INVALID") &&
+        !msg.includes("already answered")
+      ) {
+        console.log(`[WARN] answerCbQuery failed: ${msg}`);
+      }
+    });
+  } catch (_) {}
+}
+
+// Action handler wrapper - ensures callbacks are answered and errors handled
+function safeAction(handler) {
+  return async (ctx) => {
+    try {
+      // Answer callback query FIRST to stop loading spinner
+      await safeAnswerCbQuery(ctx);
+      
+      // Run handler with timeout
+      await withTimeout(
+        handler(ctx),
+        30000,
+        "Action took too long - please try again"
+      );
+    } catch (err) {
+      logError("bot.action", err);
+      try {
+        // Attempt to show user-friendly error
+        const errMsg = String(err?.message || "Unknown error");
+        if (errMsg.includes("timed out") || errMsg.includes("timeout")) {
+          await ctx.reply("⏱ Request timed out. Please try again.").catch(() => {});
+        } else if (errMsg.includes("not found")) {
+          await ctx.reply("❌ Item not found. It may have been deleted.").catch(() => {});
+        } else {
+          await ctx.reply("❌ An error occurred. Please try /dashboard to refresh.").catch(() => {});
+        }
+      } catch (_) {}
+    }
+  };
+}
+
+// Command handler wrapper - similar protection for commands
+function safeCommand(handler) {
+  return async (ctx) => {
+    try {
+      await withTimeout(
+        handler(ctx),
+        30000,
+        "Command took too long - please try again"
+      );
+    } catch (err) {
+      logError("bot.command", err);
+      try {
+        await ctx.reply("❌ An error occurred. Please try again.").catch(() => {});
+      } catch (_) {}
+    }
+  };
+}
+
 // ---------- AUTH ----------
 function isAdmin(ctx) {
 if (!ADMIN_IDS.length) return true;
@@ -1312,7 +1392,7 @@ if (ctx.update?.callback_query?.id) {
 await ctx.answerCbQuery().catch((err) => {
 // Only log if it's not "query is too old" or "already answered"
 const msg = String(err?.description || err?.message || "");
-if (!msg.includes("query is too old") && !msg.includes("QUERY_ID_INVALID")) {
+if (!msg.includes("query is too old") && !msg.includes("QUERY_ID_INVALID") && !msg.includes("already answered")) {
 console.log(`[WARN] answerCbQuery failed: ${msg}`);
 }
 });
@@ -1322,13 +1402,16 @@ console.log(`[WARN] answerCbQuery failed: ${msg}`);
 if (ctx.update?.callback_query?.message) {
 const m = ctx.update.callback_query.message;
 try {
-await bot.telegram.editMessageText(
+await withTimeout(
+bot.telegram.editMessageText(
 m.chat.id,
 m.message_id,
 undefined,
 safeText,
-
 keyboard
+),
+8000,
+"Edit message timed out"
 );
 // ✅ CRITICAL: Unregister this card from live refresh to prevent auto-revert
 // When navigating to a new view (thread, drafts, etc), the card should NOT be auto-refreshed
@@ -1340,12 +1423,23 @@ const msg = String(err?.description || err?.message || "");
 if (msg.includes("message is not modified")) {
 return { mode: "noop", message_id: m.message_id, chat_id: m.chat.id };
 }
-// fall through to reply
+// If edit fails for any other reason, fall through to reply
+console.log(`[INFO] Edit failed, sending new message: ${msg.substring(0, 60)}`);
 }
 }
 // fallback: new message
-const msg = await ctx.reply(safeText, keyboard);
+try {
+const msg = await withTimeout(
+ctx.reply(safeText, keyboard),
+8000,
+"Send message timed out"
+);
 return { mode: "reply", message_id: msg?.message_id, chat_id: msg?.chat?.id };
+} catch (err) {
+console.log(`[ERROR] Failed to send message: ${err.message}`);
+throw err;
+}
+}
 
 // ---------- LEADS DISPLAY ----------
 async function leadsText() {
@@ -1456,7 +1550,6 @@ function analyticsKeyboard() {
   ]);
 }
 
-}
 // ---------- DASHBOARD TEXT ----------
 async function dashboardText(filterSource = "all") {
 const { dayKey, time } = nyParts(new Date());
@@ -1765,86 +1858,58 @@ return Markup.inlineKeyboard([
 ]);
 }
 // ---------- START / DASH ----------
-bot.start(async (ctx) => {
+bot.start(safeCommand(async (ctx) => {
 if (!isAdmin(ctx)) return;
 await ctx.reply("✅ NIL Wealth Ops Bot running.\nType /dashboard");
-});
-bot.command("dashboard", async (ctx) => {
-try {
+}));
+
+bot.command("dashboard", safeCommand(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const filterSource = getAdminFilter(ctx);
 await ctx.reply(await dashboardText(filterSource), dashboardKeyboardV50());
-} catch (err) {
-logError(ctx, err);
-await ctx.reply(`❌ Error loading dashboard: ${err.message}`);
-}
-});
-bot.command("leads", async (ctx) => {
-try {
+}));
+
+bot.command("leads", safeCommand(async (ctx) => {
 if (!isAdmin(ctx)) return;
 await ctx.reply(await leadsText(), leadsKeyboard());
-} catch (err) {
-logError(ctx, err);
-await ctx.reply(`❌ Error loading leads: ${err.message}`);
-}
-});
-bot.command("analytics", async (ctx) => {
-try {
+}));
+
+bot.command("analytics", safeCommand(async (ctx) => {
 if (!isAdmin(ctx)) return;
 await ctx.reply(await analyticsText(), analyticsKeyboard());
-} catch (err) {
-logError(ctx, err);
-await ctx.reply(`❌ Error loading analytics: ${err.message}`);
-}
-});
-bot.action("DASH:back", async (ctx) => {
-try {
+}));
+
+bot.action("DASH:back", safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const filterSource = getAdminFilter(ctx);
 await smartRender(ctx, await dashboardText(filterSource), dashboardKeyboardV50());
-} catch (err) {
-logError(ctx, err);
-await ctx.reply(`❌ Error loading dashboard: ${err.message}`);
-}
-});
-bot.action("DASH:refresh", async (ctx) => {
-try {
+}));
+
+bot.action("DASH:refresh", safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const filterSource = getAdminFilter(ctx);
 await smartRender(ctx, await dashboardText(filterSource), dashboardKeyboardV50());
-} catch (err) {
-logError(ctx, err);
-await ctx.reply(`❌ Error refreshing dashboard: ${err.message}`);
-}
-});
+}));
+
 // ---------- FILTER ----------
-bot.action(/^FILTER:(all|programs|support)$/, async (ctx) => {
-try {
+bot.action(/^FILTER:(all|programs|support)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const v = ctx.match[1];
 setAdminFilter(ctx, v);
 await smartRender(ctx, await dashboardText(v), dashboardKeyboardV50());
-} catch (err) {
-logError(ctx, err);
-await ctx.reply(`❌ Error applying filter: ${err.message}`);
-}
-});
+}));
+
 // ---------- ROLE FILTER ----------
-bot.action(/^ROLEFILTER:(all|parent|athlete|coach|trainer|other)$/, async (ctx) => {
-try {
+bot.action(/^ROLEFILTER:(all|parent|athlete|coach|trainer|other)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const v = ctx.match[1];
 setAdminRoleFilter(ctx, v);
 const filterSource = getAdminFilter(ctx);
 await smartRender(ctx, await allQueuesText(filterSource, v), allQueuesKeyboard());
-} catch (err) {
-logError(ctx, err);
-await ctx.reply(`❌ Error applying role filter: ${err.message}`);
-}
-});
+}));
+
 // ---------- ALL QUEUES ----------
-bot.action("ALLQ:open", async (ctx) => {
-try {
+bot.action("ALLQ:open", safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 
 const filterSource = getAdminFilter(ctx);
@@ -1863,16 +1928,11 @@ ref_id: `allq:${filterSource}:${roleFilter}`,
 filterSource,
 });
 }
-} catch (err) {
-logError(ctx, err);
-await ctx.reply(`❌ Error loading queues: ${err.message}`);
-}
-});
+}));
 // ---------- QUEUE VIEW ----------
 bot.action(
   /^VIEW:(urgent|needs_reply|actions_waiting|active|followups|forwarded|website_submissions|completed):?(\d*)$/,
-async (ctx) => {
-try {
+safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const viewKey = ctx.match[1];
 const page = parseInt(ctx.match[2]) || 1;
@@ -1936,22 +1996,19 @@ const rows = await sbListConversations({ pipeline: viewKey, source: filterSource
 await showConversationList(ctx, viewKey, rows, filterSource, roleFilter);
 // If you want queue lists to live-refresh too, update showConversationList
 // to return the sent message and register it there.
-} catch (err) {
-logError(ctx, err);
-await ctx.reply(`❌ Error loading queue: ${err.message}`);
-}
-});
+})
+);
+
 // ---------- OPENCARD (conversation + submission) ----------
-bot.action(/^OPENCARD:(.+)$/, async (ctx) => {
+bot.action(/^OPENCARD:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const raw = ctx.match[1];
-try {
 // allow "sub:<id>" for submissions
 if (raw.startsWith("sub:")) {
 const sid = raw.slice(4);
 const sub = await sbGetSubmission(sid);
 if (!sub) {
-await ctx.answerCbQuery("Submission not found.");
+await ctx.reply("❌ Submission not found.");
 return;
 }
 const text = buildSubmissionCard(sub);
@@ -1962,22 +2019,18 @@ return;
 }
 const conv = await sbGetConversationById(raw);
 if (!conv) {
-await ctx.answerCbQuery("Conversation not found.");
+await ctx.reply("❌ Conversation not found.");
 return;
 }
 const text = await buildConversationCard(conv);
 const kb = conversationCardKeyboard(conv);
 // Edit dashboard in place (single card flow)
 await smartRender(ctx, text, kb);
-} catch (err) {
-logError(ctx, err);
-await ctx.answerCbQuery("❌ Error opening card");
-}
-});
+}));
+
 // ---------- CONFIRM ROLE (CONFLICT RESOLUTION) ----------
-bot.action(/^CONFIRMROLE:([^:]+):(.+)$/, async (ctx) => {
+bot.action(/^CONFIRMROLE:([^:]+):(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
-try {
 const convId = ctx.match[1];
 const confirmedRole = normalizeRole(ctx.match[2]);
 if (!confirmedRole) return ctx.reply("❌ Invalid role.");
@@ -2026,11 +2079,7 @@ const updated = await sbGetConversationById(convId);
 const text = await buildConversationCard(updated);
 const kb = conversationCardKeyboard(updated);
 await smartRender(ctx, `✅ Role confirmed.\n\n${text}`, kb);
-} catch (err) {
-logError(ctx, err);
-await ctx.reply(`❌ Error confirming role: ${err.message}`);
-}
-});
+}));
 
 // ---------- SET ROLE (ADMIN) ----------
 bot.action(/^SETROLE:(.+)$/, async (ctx) => {
@@ -5436,31 +5485,63 @@ added_at: Date.now(),
 });
 }
 // ----------------------------------------------------------
-// QUEUE REFRESH (USE EVERYWHERE)
+// QUEUE REFRESH (USE EVERYWHERE) - with overflow protection
 // ----------------------------------------------------------
+const MAX_REFRESH_QUEUE_SIZE = 1000;
+
 function queueCardRefresh(card_key) {
 if (!card_key) return;
+
+// Prevent queue overflow
+if (refreshQueue.size >= MAX_REFRESH_QUEUE_SIZE) {
+console.log(`[WARN] Refresh queue full (${refreshQueue.size}), clearing`);
+refreshQueue.clear();
+}
+
 refreshQueue.add(card_key);
 }
 // ----------------------------------------------------------
-// CLEANUP OLD CARDS
+// CLEANUP OLD CARDS (improved)
 // ----------------------------------------------------------
 function cleanupLiveCards() {
 const ttl = (LIVE_CARD_TTL_MINUTES || 60) * 60 * 1000;
 const now = Date.now();
+let cleaned = 0;
 
 for (const [msgId, m] of liveCards.entries()) {
 if (!m?.added_at || (now - m.added_at) > ttl) {
 liveCards.delete(msgId);
+cleaned++;
 }
+}
+
+// Also limit total card count to prevent memory issues
+const MAX_LIVE_CARDS = 500;
+if (liveCards.size > MAX_LIVE_CARDS) {
+// Sort by age and remove oldest
+const sorted = Array.from(liveCards.entries())
+.sort((a, b) => (a[1].added_at || 0) - (b[1].added_at || 0));
+const toRemove = sorted.slice(0, liveCards.size - MAX_LIVE_CARDS);
+for (const [msgId] of toRemove) {
+liveCards.delete(msgId);
+cleaned++;
+}
+}
+
+if (cleaned > 0) {
+console.log(`[INFO] Cleaned up ${cleaned} old live cards`);
 }
 }
 // ----------------------------------------------------------
-// SAFE EDIT
+// SAFE EDIT (with timeout)
 // ----------------------------------------------------------
 async function safeEditMessageText(chat_id, message_id, text, extra) {
 try {
-await bot.telegram.editMessageText(chat_id, message_id, undefined, text, extra);
+await withTimeout(
+bot.telegram.editMessageText(chat_id, message_id, undefined, text, extra),
+7000,
+"Edit timed out"
+);
 return true;
 } catch (err) {
 const msg = String(err?.description || err?.message || "");
@@ -5470,26 +5551,57 @@ msg.includes("message to edit not found") ||
 msg.includes("MESSAGE_ID_INVALID") ||
 msg.includes("chat not found") ||
 msg.includes("Forbidden") ||
-msg.includes("bot was blocked")
+msg.includes("bot was blocked") ||
+msg.includes("timed out")
 ) {
 liveCards.delete(message_id);
 return false;
 }
+console.log(`[WARN] Edit failed: ${msg.substring(0, 60)}`);
 return false;
 }
 }
 // ----------------------------------------------------------
-// MAIN REFRESH LOOP
+// MAIN REFRESH LOOP (with rate limiting)
 // ----------------------------------------------------------
+let refreshInProgress = false;
+const editCountPerSecond = new Map(); // track edits per second for rate limiting
+
 async function refreshLiveCards(force = false) {
 if (!ENABLE_TELEGRAM_LIVE_REFRESH) return;
+if (refreshInProgress) {
+console.log("[INFO] Refresh already in progress, skipping");
+return;
+}
+
 cleanupLiveCards();
 const now = Date.now();
 if (!force && now - lastRefreshMs < (REFRESH_MIN_INTERVAL_MS || 1500)) return;
 lastRefreshMs = now;
 
+refreshInProgress = true;
+try {
 const hasQueue = refreshQueue.size > 0;
+let editCount = 0;
+const currentSecond = Math.floor(now / 1000);
+
+// Rate limit: max 20 edits per second to avoid Telegram API throttling
+const MAX_EDITS_PER_SECOND = 20;
+const secondKey = currentSecond;
+const currentCount = editCountPerSecond.get(secondKey) || 0;
+
+if (currentCount >= MAX_EDITS_PER_SECOND) {
+console.log("[INFO] Rate limit reached, deferring refresh");
+return;
+}
+
 for (const [msgId, meta] of liveCards.entries()) {
+// Check rate limit
+if (editCount >= MAX_EDITS_PER_SECOND - currentCount) {
+console.log("[INFO] Approaching rate limit, stopping refresh batch");
+break;
+}
+
 try {
 const key = meta.card_key;
 // targeted refresh logic
@@ -5505,42 +5617,56 @@ if (
 // CONVERSATION CARD
 // ======================
 if (meta.type === "conversation") {
-const conv = await sbGetConversationById(meta.ref_id);
+const conv = await withTimeout(
+sbGetConversationById(meta.ref_id),
+5000,
+"DB query timed out"
+);
 if (!conv) continue;
-await safeEditMessageText(
+const edited = await safeEditMessageText(
 meta.chat_id,
 msgId,
 await buildConversationCard(conv),
 conversationCardKeyboard(conv)
 );
+if (edited) editCount++;
 }
 // ======================
 // SUBMISSION
 // ======================
 else if (meta.type === "submission") {
-const sub = await sbGetSubmission(meta.ref_id);
+const sub = await withTimeout(
+sbGetSubmission(meta.ref_id),
+5000,
+"DB query timed out"
+);
 if (!sub) continue;
-await safeEditMessageText(
+const edited = await safeEditMessageText(
 meta.chat_id,
 msgId,
 buildSubmissionCard(sub),
-
 submissionKeyboard(sub)
 );
+if (edited) editCount++;
 }
 // ======================
 // CALL CARD (NEW v5.3)
 // ======================
 else if (meta.type === "call") {
-const call = await sbGetCall(meta.ref_id);
+const call = await withTimeout(
+sbGetCall(meta.ref_id),
+5000,
+"DB query timed out"
+);
 if (!call) continue;
 const textHtml = buildCallCardTextHTML(call);
-await safeEditMessageText(
+const edited = await safeEditMessageText(
 meta.chat_id,
 msgId,
 textHtml,
 { parse_mode: "HTML", ...callKeyboard(call) }
 );
+if (edited) editCount++;
 }
 // ======================
 // THREAD VIEW
@@ -5551,59 +5677,71 @@ if (!convId) continue;
 const parsedOffset = Number(String(meta.ref_id || "").split(":")[1] || 0);
 const offset = Number(meta.offset ?? parsedOffset ?? 0);
 const limit = Number(meta.limit ?? 6);
-const page = await buildThreadPage(convId, offset, limit);
+const page = await withTimeout(
+buildThreadPage(convId, offset, limit),
+5000,
+"Thread load timed out"
+);
 if (page?.ok) {
-await safeEditMessageText(meta.chat_id, msgId, page.text, page.keyboard);
+const edited = await safeEditMessageText(meta.chat_id, msgId, page.text, page.keyboard);
+if (edited) editCount++;
 }
 }
 // ======================
 // POOLS / COACH CARD
 // ======================
 else if (meta.type === "coach") {
-const coach = await sbGetCoach(meta.ref_id);
+const coach = await withTimeout(
+sbGetCoach(meta.ref_id),
+5000,
+"DB query timed out"
+);
 if (!coach) continue;
-await safeEditMessageText(
+const edited = await safeEditMessageText(
 meta.chat_id,
 msgId,
 await buildCoachCard(coach),
 coachKeyboard(coach)
 );
+if (edited) editCount++;
 }
 // ======================
 // TRIAGE VIEW
 // ======================
 else if (meta.type === "triage") {
 const filterSource = meta.filterSource || "all";
-await safeEditMessageText(
+const edited = await safeEditMessageText(
 meta.chat_id,
 msgId,
 await triageText(filterSource),
-
 triageKeyboard(filterSource)
 );
+if (edited) editCount++;
 }
 // ======================
 // TODAY VIEW
 // ======================
 else if (meta.type === "today") {
-await safeEditMessageText(
+const edited = await safeEditMessageText(
 meta.chat_id,
 msgId,
 await todayText(),
 todayKeyboard()
 );
+if (edited) editCount++;
 }
 // ======================
 // METRICS / SUMMARY
 // ======================
 else if (meta.type === "metrics") {
 const filterSource = meta.filterSource || "all";
-await safeEditMessageText(
+const edited = await safeEditMessageText(
 meta.chat_id,
 msgId,
 await metricsText(filterSource),
 metricsKeyboard()
 );
+if (edited) editCount++;
 }
 // ======================
 // METRICS YEAR SUMMARY
@@ -5624,19 +5762,37 @@ yearSummaryKeyboard()
 // ======================
 else if (meta.type === "dashboard") {
 const filterSource = meta.filterSource || "all";
-await safeEditMessageText(
+const edited = await safeEditMessageText(
 meta.chat_id,
 msgId,
 await dashboardText(filterSource),
 dashboardKeyboardV50()
 );
+if (edited) editCount++;
 }
 
-} catch (_) {
+} catch (err) {
 // never crash loop
+console.log(`[WARN] Refresh error for card ${msgId}: ${err.message?.substring(0, 40)}`);
 }
 }
+
+// Update edit counter
+editCountPerSecond.set(secondKey, currentCount + editCount);
+
+// Cleanup old counters (keep only last 5 seconds)
+for (const [key] of editCountPerSecond.entries()) {
+if (key < currentSecond - 5) {
+editCountPerSecond.delete(key);
+}
+}
+
 refreshQueue.clear();
+} catch (err) {
+console.log(`[ERROR] Refresh loop error: ${err.message}`);
+} finally {
+refreshInProgress = false;
+}
 }
 // ----------------------------------------------------------
 // AUTO LOOP
@@ -6129,18 +6285,68 @@ console.log(`Webhook server listening on 0.0.0.0:${PORT}`);
 console.log(`${CODE_VERSION} · Build ${BUILD_VERSION}`);
 });
 if (ENABLE_TELEGRAM_BOT) {
+// ==========================================================
+// CRITICAL: GLOBAL TELEGRAM BOT PROTECTION MIDDLEWARE
+// ==========================================================
+// This middleware AUTOMATICALLY handles callback queries and adds timeout protection
+// for ALL bot actions and commands, preventing timeouts and freezes
+
+bot.use(async (ctx, next) => {
+// Auto-answer callback query to prevent loading spinner timeout
+if (ctx.update?.callback_query?.id) {
+ctx.answerCbQuery().catch((err) => {
+const msg = String(err?.description || err?.message || "");
+if (
+!msg.includes("query is too old") &&
+!msg.includes("QUERY_ID_INVALID") &&
+!msg.includes("already answered")
+) {
+console.log(`[WARN] Auto answerCbQuery failed: ${msg.substring(0, 50)}`);
+}
+});
+}
+
+// Add timeout protection to all handler executions
+const timeoutPromise = new Promise((_, reject) =>
+setTimeout(() => reject(new Error("Handler execution timeout")), 35000)
+);
+
+try {
+await Promise.race([next(), timeoutPromise]);
+} catch (err) {
+const errMsg = String(err?.message || "Unknown error");
+console.log(`[ERROR] Handler error: ${errMsg.substring(0, 60)}`);
+// Re-throw so bot.catch() can handle it
+throw err;
+}
+});
+
 // Global error handler for bot actions/commands
 bot.catch((err, ctx) => {
 console.error(`[BOT ERROR] Update ${ctx.update.update_id}:`, err);
 logError("bot.middleware", err);
 try {
-ctx.reply("❌ An error occurred. Please try again.").catch(() => {});
+// Try to answer callback query if not already answered
+if (ctx.update?.callback_query?.id) {
+ctx.answerCbQuery("Error occurred").catch(() => {});
+}
+// Send user-friendly error message
+const errMsg = String(err?.message || "");
+if (errMsg.includes("timeout") || errMsg.includes("timed out")) {
+ctx.reply("⏱ Request timed out. Try /dashboard to refresh.").catch(() => {});
+} else if (errMsg.includes("not found")) {
+ctx.reply("❌ Item not found. Try /dashboard to refresh.").catch(() => {});
+} else {
+ctx.reply("❌ An error occurred. Try /dashboard to refresh.").catch(() => {});
+}
 } catch (_) {}
 });
+
 bot.launch().catch((err) => {
 logError("bot.launch", err);
 });
 console.log(`Bot running: ${CODE_VERSION}`);
+console.log(`✅ Global protection middleware active`);
 } else {
 console.log("Telegram bot launch disabled (ENABLE_TELEGRAM_BOT=false)");
 }
