@@ -3245,7 +3245,7 @@ followups.forEach(f => allItems.push({ type: "followup", tier: "followups", item
 
 // Pagination
 const totalPages = Math.max(1, Math.ceil(allItems.length / pageSize));
-const safePage = activePage > totalPages ? 1 : activePage;
+const safePage = Math.min(totalPages, Math.max(1, Number(activePage) || 1));
 const start = (safePage - 1) * pageSize;
 const pageItems = allItems.slice(start, start + pageSize);
 
@@ -3253,6 +3253,7 @@ const pageItems = allItems.slice(start, start + pageSize);
 const lines = [];
 const title = (typeof viewTitle === "function") ? viewTitle("triage") : "⚡ Triage";
 lines.push(`${title} · ${roleFilterLabel(roleFilter)}`);
+lines.push(`‼ ${urgent.length} · ⏳ ${needs.length} · 📱 ${calls.length} · 📚 ${followups.length}`);
 lines.push("");
 
 if (pageItems.length === 0) {
@@ -3276,7 +3277,7 @@ if (pageItems.length === 0) {
     }
     
     // Add item line
-    if (entry.type === "calls") {
+    if (entry.type === "call") {
       lines.push(tCallLine(entry.item, itemNum));
     } else if (entry.type === "followup") {
       lines.push(tFollowupLine(entry.item, itemNum));
@@ -3291,23 +3292,13 @@ lines.push("");
 // Build buttons
 const kb = [];
 
-// Section counts
-kb.push([
-  Markup.button.text(urgent.length ? `‼ Urgent (${urgent.length})` : "‼ Urgent"),
-  Markup.button.text(needs.length ? `⏳ Needs (${needs.length})` : "⏳ Needs"),
-]);
-kb.push([
-  Markup.button.text(calls.length ? `📱 Calls (${calls.length})` : "📱 Calls"),
-  Markup.button.text(followups.length ? `📚 Follow (${followups.length})` : "📚 Follow"),
-]);
-
 // Pagination
 if (totalPages > 1) {
   const navRow = [];
   if (safePage > 1) {
     navRow.push(Markup.button.callback("◀️ Prev", `TRIAGE:all:${safePage - 1}`));
   }
-  navRow.push(Markup.button.text(`${safePage}/${totalPages}`));
+  navRow.push(Markup.button.callback(`· ${safePage}/${totalPages} ·`, `TRIAGE:all:${safePage}`));
   if (safePage < totalPages) {
     navRow.push(Markup.button.callback("Next ▶️", `TRIAGE:all:${safePage + 1}`));
   }
@@ -3316,7 +3307,7 @@ if (totalPages > 1) {
 
 // Open buttons for displayed items
 pageItems.forEach((entry) => {
-  if (entry.type === "calls") {
+  if (entry.type === "call") {
     const action = tCallOpenAction(entry.item);
     if (action) kb.push([Markup.button.callback(tCallBtnLabel(entry.item), action)]);
   } else if (entry.type === "followup") {
@@ -3676,32 +3667,22 @@ const { dayKey, time, dayStartISO, dayEndISO } = nyParts(now);
 // - dayStartISO: ISO string at NY 00:00
 // - dayEndISO: ISO string at next day NY 00:00
 // Pull counts (parallel)
-const [
-triageDue,
-callsToday,
-
-needsReply,
-followupsDue
-] = await Promise.all([
-sbCountTriageDueNow({ source: filterSource }).catch(() => 0),
-sbCountCallsToday({ source: filterSource, dayStartISO, dayEndISO }).catch(() => 0),
-sbCountNeedsReply({ source: filterSource }).catch(() => 0),
-sbCountCoachFollowupsDueNow({ source: filterSource }).catch(() => 0),
+const [triageDue, callsToday] = await Promise.all([
+  sbCountTriageDueNow({ source: filterSource }).catch(() => 0),
+  sbCountCallsToday({ source: filterSource, dayStartISO, dayEndISO }).catch(() => 0),
 ]);
+
 const text =
 `📅 TODAY
 --
 ${dayKey} • ${time}
 
 ⚡️ Triage Due: ${triageDue}
-📱 Calls Today: ${callsToday}
-⏳ Needs Reply: ${needsReply}
-📚 Follow-Ups Due: ${followupsDue}
+📱 Calls Scheduled: ${callsToday}
 --`;
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("⚡️ Triage", "TRIAGE:open")],
-[Markup.button.callback("📱 Calls", "CALLS:hub"), Markup.button.callback("🗂 All Queues",
-"ALLQ:open")],
+[Markup.button.callback("📱 Calls", "CALLS:hub"), Markup.button.callback("🗂 All Queues", "ALLQ:open")],
 [Markup.button.callback("🔎 Search", "SEARCH:help"), Markup.button.callback("🕘 Recent", "SEARCH:recent")],
 [Markup.button.callback("⬅ Dashboard", "DASH:back")],
 ]);
@@ -6366,7 +6347,7 @@ app.post("/api/nil-outbox/result", async (req, res) => {
 });
 
 // ---------- START ----------
-app.listen(PORT, "0.0.0.0", () => {
+const server = app.listen(PORT, "0.0.0.0", () => {
 console.log(`Webhook server listening on 0.0.0.0:${PORT}`);
 console.log(`${CODE_VERSION} · Build ${BUILD_VERSION}`);
 });
@@ -6436,4 +6417,50 @@ console.log(`✅ Global protection middleware active`);
 } else {
 console.log("Telegram bot launch disabled (ENABLE_TELEGRAM_BOT=false)");
 }
+
+let isShuttingDown = false;
+async function gracefulShutdown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log(`[INFO] Received ${signal}. Starting graceful shutdown...`);
+
+  try {
+    if (ENABLE_TELEGRAM_BOT) {
+      await bot.stop(signal).catch(() => {});
+    }
+  } catch (_) {}
+
+  server.close((err) => {
+    if (err) {
+      console.error("[ERROR] HTTP server close error:", err);
+      process.exit(1);
+      return;
+    }
+    console.log("[INFO] Graceful shutdown complete.");
+    process.exit(0);
+  });
+
+  // Force-exit if close hangs (e.g., stuck sockets)
+  setTimeout(() => {
+    console.error("[WARN] Forced shutdown after timeout.");
+    process.exit(1);
+  }, 10000).unref();
+}
+
+process.on("SIGTERM", () => {
+  gracefulShutdown("SIGTERM");
+});
+
+process.on("SIGINT", () => {
+  gracefulShutdown("SIGINT");
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[ERROR] Unhandled Promise Rejection:", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("[ERROR] Uncaught Exception:", err);
+  gracefulShutdown("uncaughtException");
+});
 
