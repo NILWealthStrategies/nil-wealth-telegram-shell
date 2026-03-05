@@ -693,10 +693,10 @@ const buildQuery = (withRole) => {
     .order("updated_at", { ascending: false })
     .limit(limit * 2); // Fetch 2x limit for sorting
   if (pipeline) q = q.eq("pipeline", pipeline);
-  // Source filtering: include specific source OR null (for unmigrated test data)
+  // Source filtering: include specific source OR null OR empty (for unmigrated test data)
   if (source !== "all") {
     const safeSrc = sourceSafe(source);
-    q = q.or(`source.eq.${safeSrc},source.is.null`);
+    q = q.or(`source.eq.${safeSrc},source.is.null,source.eq.`);
   }
   if (withRole && role && role !== "all") q = q.eq("role", role);
   return q;
@@ -1738,7 +1738,17 @@ const sla = slaBadge(conv.updated_at);
 const until = urgentCountdown(conv.updated_at);
 const ccOn = conv.cc_support_suggested === true;
 const gmail = conv.gmail_url ? `\n  Gmail: ${conv.gmail_url}` : "";
-const pipeline = conv.pipeline || "—";
+const pipelineRaw = conv.pipeline || "—";
+const pipelineLabel = (() => {
+  switch(pipelineRaw) {
+    case "urgent": return "‼️ Urgent";
+    case "needs_reply": return "⏳ Needs Reply";
+    case "active": return "💬 Active";
+    case "completed": return "✅ Completed";
+    case "forwarded": return "➡️ Forwarded";
+    default: return pipelineRaw;
+  }
+})();
 const coach = conv.coach_name || "—";
 const contact = conv.contact_email || "—";
 const subj = conv.subject || "—";
@@ -1754,12 +1764,12 @@ info += `\n  ${conflictBadge}`;
 return info;
 })();
 return `💬 CONVERSATION
-━━━━━━━━━━━━━━━━━━━━━━
+--
 ID: ${idShort(conv.id)} • ${lane}
 Identity: ${identity}
 ${roleInfo}
 
-Pipeline: ${pipeline}
+Status: ${pipelineLabel}
 Coach: ${coach}
 Contact: ${contact}
 
@@ -1767,7 +1777,7 @@ Contact: ${contact}
 
 Preview: ${prev}
 
-━━━━━━━━━━━━━━━━━━━━━━
+--
 Updated: ${tFmtDateTimeShort(conv.updated_at)}
 💬 Messages: ${msgCount}
 ${sla} • ${until}
@@ -1833,7 +1843,7 @@ const heard = sub.how_heard_about || p.how_heard_about || "—";
 const emailSent = sub.email_sent === true || sub.enrollment_email_sent === true;
 const smsSent = sub.sms_sent === true || sub.enrollment_sms_sent === true;
 return `🧾 SUBMISSION
-━━━━━━━━━━━━━━━━━━━━━━
+--
 ID: ${idShort(sub.submission_id)}
 
 Name: ${name}
@@ -1848,7 +1858,7 @@ How Heard: ${heard}
 Coverage: ${coverageLabel(p)}
 Referral: ${p.referral_source || p.referral || "—"}
 
-━━━━━━━━━━━━━━━━━━━━━━
+--
 Sent Email: ${emailStatusIcon(emailSent)}
 Sent SMS: ${smsStatusIcon(smsSent)}
 
@@ -2681,7 +2691,7 @@ normalized_phone: conv.normalized_phone || null,
 limit: 12,
 });
 const header = `👥 PEOPLE
-══════════════════════════════
+--
 Conversation: ${idShort(convId)}\n${people.length} record(s)`;
 const body = people.length
 ? people
@@ -2829,7 +2839,7 @@ const emailSent = sub.email_sent === true || sub.enrollment_email_sent === true;
 const smsSent = sub.sms_sent === true || sub.enrollment_sms_sent === true;
 
 const text = `🧾 SUBMISSION
-══════════════════════════════
+--
 ID: ${idShort(submissionId)}
 
 Submitter
@@ -2845,13 +2855,13 @@ Coverage: ${cov}
 ${coach}
 ${pool}
 
-══════════════════════════════
+--
 Status
 Sent Email: ${emailStatusIcon(emailSent)}
 Sent SMS: ${smsStatusIcon(smsSent)}
 
 Created: ${sub.created_at || "—"}
-══════════════════════════════`;
+--`;
 
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("⬅ Back", "ALLQ:open")],
@@ -2877,16 +2887,16 @@ const filterSource = getAdminFilter(ctx);
 const convs = await sbListConversationsByCoach({ coach_id: coachId, source: filterSource, limit: 10 });
 
 const text = `🧑‍🏫 COACH
-══════════════════════════════
+--
 Name: ${name}
 
 Program: ${program}
 
 Active Conversations: ${convs.length}
 
-══════════════════════════════
+--
 Created: ${coach.created_at || "—"}
-══════════════════════════════`;
+--`;
 
 const kb = [
 [Markup.button.callback("📬 Conversations", `COACH:convs:${coachId}`)],
@@ -3040,9 +3050,28 @@ return `Open · ${tSafe(name, 22)}${progShort}`;
 }
 // Shorter format for triage buttons to prevent cutoff
 function tConvoBtnLabelTriage(c) {
-const name = tDisplayName(c);
-const roleEmoji = (c.role || c.source) === "coach" || c.source === "programs" ? "🏈" : "👤";
-return `${roleEmoji} ${tSafe(name, 28)}`;
+// Get just the raw name without tags
+const coach = c.coach_full_name || c.coach_name || null;
+const client = c.client_full_name || c.contact_name || 
+  ((c.first_name || c.last_name) ? `${c.first_name || ""} ${c.last_name || ""}`.trim() : null);
+
+const role = conversationRoleForDisplay(c);
+const roleEmoji = role === "coach" ? "🏈" : "👤";
+
+let displayName;
+if (tIsCoachThread(c) && coach) {
+  // Coach thread: show first name only
+  displayName = coach.split(' ')[0];
+} else if (client) {
+  // Parent/client thread: show first name only
+  displayName = client.split(' ')[0];
+} else if (coach) {
+  displayName = coach.split(' ')[0];
+} else {
+  displayName = "—";
+}
+
+return `${roleEmoji} ${tSafe(displayName, 16)}`;
 }
 // ---------- follow-up helpers ----------
 function tFollowupLine(f, idx) {
@@ -3159,30 +3188,33 @@ return `OPENCALL:${id}`;
 // ===============================
 // TRIAGE HANDLER
 // ===============================
-async function triageOpen(ctx, activeSection = "urgent", activePage = 1) {
+async function triageOpen(ctx, activeSection = "all", activePage = 1) {
 const filterSource = getAdminFilter(ctx) || "all";
 const roleFilter = getAdminRoleFilter(ctx) || "all";
-const pageSize = 5;
+const pageSize = 10;
+const OVERDUE_THRESHOLD_HOURS = 24; // Items waiting > 24h are urgent
 
 // Fetch all items for all sections
-const urgentRaw = await sbListConversations({ pipeline: "urgent", source: filterSource, role: roleFilter, limit: 24 });
 const needsRaw = await sbListConversations({ pipeline: "needs_reply", source: filterSource, role: roleFilter, limit: 48 });
 const callsRaw = await sbListCallsTriage({ source: filterSource, limit: 24, windowHours: TRIAGE_CALL_WINDOW_HOURS });
 const followupsRaw = await sbListCoachFollowupsDueNow({ source: filterSource, limit: 24 });
 
-// Deduplicate conversations
+// Separate overdue needs_reply from regular needs_reply
 const seen = new Set();
 const urgent = [];
-for (const c of urgentRaw || []) {
-  if (!c?.id || seen.has(c.id)) continue;
-  seen.add(c.id);
-  urgent.push(c);
-}
 const needs = [];
+const OVERDUE_MINUTES = OVERDUE_THRESHOLD_HOURS * 60;
 for (const c of needsRaw || []) {
   if (!c?.id || seen.has(c.id)) continue;
   seen.add(c.id);
-  needs.push(c);
+  
+  // Check if overdue (waiting > 24 hours)
+  const waitingMin = tComputeWaitingMinutes(c);
+  if (waitingMin != null && waitingMin > OVERDUE_MINUTES) {
+    urgent.push(c); // Elevate overdue to urgent
+  } else {
+    needs.push(c); // Keep non-overdue in needs
+  }
 }
 
 // Sort
@@ -3204,85 +3236,94 @@ const followups = (followupsRaw || []).slice().sort((a, b) => {
   return (ad ? new Date(ad).getTime() : Infinity) - (bd ? new Date(bd).getTime() : Infinity);
 });
 
-// Build text
+// Build unified item list with tier info
+const allItems = [];
+urgent.forEach(c => allItems.push({ type: "convo", tier: "urgent", item: c }));
+needs.forEach(c => allItems.push({ type: "convo", tier: "needs", item: c }));
+calls.forEach(c => allItems.push({ type: "call", tier: "calls", item: c }));
+followups.forEach(f => allItems.push({ type: "followup", tier: "followups", item: f }));
+
+// Pagination
+const totalPages = Math.max(1, Math.ceil(allItems.length / pageSize));
+const safePage = activePage > totalPages ? 1 : activePage;
+const start = (safePage - 1) * pageSize;
+const pageItems = allItems.slice(start, start + pageSize);
+
+// Build text with tier headers
 const lines = [];
 const title = (typeof viewTitle === "function") ? viewTitle("triage") : "⚡ Triage";
 lines.push(`${title} · ${roleFilterLabel(roleFilter)}`);
 lines.push("");
 
-// Show only the active section
-const getSectionTitle = (section) => {
-  switch(section) {
-    case "needs": return "⏳ NEEDS REPLY";
-    case "calls": return "📱 CALLS (DUE)";
-    case "followups": return "📚 COACH FOLLOW-UPS (DUE)";
-    default: return "‼ URGENT";
-  }
-};
-
-const getActiveData = () => {
-  switch(activeSection) {
-    case "needs": return needs;
-    case "calls": return calls;
-    case "followups": return followups;
-    default: return urgent;
-  }
-};
-
-const activeData = getActiveData();
-const start = (activePage - 1) * pageSize;
-const activeSlice = activeData.slice(start, start + pageSize);
-
-if (activeSlice.length) {
-  lines.push(`\n${getSectionTitle(activeSection)}`);
-  activeSlice.forEach((item, i) => {
-    if (activeSection === "calls") lines.push(tCallLine(item, start + i + 1));
-    else if (activeSection === "followups") lines.push(tFollowupLine(item, start + i + 1));
-    else lines.push(tConvoLine(item, start + i + 1));
-  });
+if (pageItems.length === 0) {
+  lines.push("No items.");
 } else {
-  lines.push(`\nNo items in this section.`);
+  let currentTier = null;
+  let itemNum = start + 1;
+  
+  pageItems.forEach((entry) => {
+    // Add tier header if switching tiers
+    if (entry.tier !== currentTier) {
+      if (currentTier !== null) lines.push(""); // Blank line between tiers
+      const tierHeaders = {
+        urgent: "‼ URGENT (Overdue > 24h)",
+        needs: "⏳ NEEDS REPLY",
+        calls: "📱 CALLS (DUE)",
+        followups: "📚 COACH FOLLOW-UPS (DUE)"
+      };
+      lines.push(tierHeaders[entry.tier]);
+      currentTier = entry.tier;
+    }
+    
+    // Add item line
+    if (entry.type === "calls") {
+      lines.push(tCallLine(entry.item, itemNum));
+    } else if (entry.type === "followup") {
+      lines.push(tFollowupLine(entry.item, itemNum));
+    } else {
+      lines.push(tConvoLine(entry.item, itemNum));
+    }
+    itemNum++;
+  });
 }
 lines.push("");
 
 // Build buttons
 const kb = [];
 
-// Section tabs
+// Section counts
 kb.push([
-  Markup.button.callback(urgent.length ? `‼ Urgent (${urgent.length})` : "‼ Urgent", "TRIAGE:urgent:1"),
-  Markup.button.callback(needs.length ? `⏳ Needs Reply (${needs.length})` : "⏳ Needs Reply", "TRIAGE:needs:1"),
+  Markup.button.text(urgent.length ? `‼ Urgent (${urgent.length})` : "‼ Urgent"),
+  Markup.button.text(needs.length ? `⏳ Needs (${needs.length})` : "⏳ Needs"),
 ]);
 kb.push([
-  Markup.button.callback(calls.length ? `📱 Calls (${calls.length})` : "📱 Calls", "TRIAGE:calls:1"),
-  Markup.button.callback(followups.length ? `📚 Follow-up (${followups.length})` : "📚 Follow-up", "TRIAGE:followups:1"),
+  Markup.button.text(calls.length ? `📱 Calls (${calls.length})` : "📱 Calls"),
+  Markup.button.text(followups.length ? `📚 Follow (${followups.length})` : "📚 Follow"),
 ]);
 
-// Pagination for active section
-const totalPages = Math.max(1, Math.ceil(activeData.length / pageSize));
-
+// Pagination
 if (totalPages > 1) {
   const navRow = [];
-  if (activePage > 1) {
-    navRow.push(Markup.button.callback("◀️ Prev", `TRIAGE:${activeSection}:${activePage - 1}`));
+  if (safePage > 1) {
+    navRow.push(Markup.button.callback("◀️ Prev", `TRIAGE:all:${safePage - 1}`));
   }
-  navRow.push(Markup.button.text(`${activePage}/${totalPages}`));
-  if (activePage < totalPages) {
-    navRow.push(Markup.button.callback("Next ▶️", `TRIAGE:${activeSection}:${activePage + 1}`));
+  navRow.push(Markup.button.text(`${safePage}/${totalPages}`));
+  if (safePage < totalPages) {
+    navRow.push(Markup.button.callback("Next ▶️", `TRIAGE:all:${safePage + 1}`));
   }
   kb.push(navRow);
 }
 
 // Open buttons for displayed items
-activeSlice.forEach((item) => {
-  if (activeSection === "calls") {
-    const action = tCallOpenAction(item);
-    if (action) kb.push([Markup.button.callback(tCallBtnLabel(item), action)]);
-  } else if (activeSection === "followups") {
-    const action = tFollowupTargetAction(item);
-    if (action) kb.push([Markup.button.callback(tFollowupBtnLabel(item), action)]);
+pageItems.forEach((entry) => {
+  if (entry.type === "calls") {
+    const action = tCallOpenAction(entry.item);
+    if (action) kb.push([Markup.button.callback(tCallBtnLabel(entry.item), action)]);
+  } else if (entry.type === "followup") {
+    const action = tFollowupTargetAction(entry.item);
+    if (action) kb.push([Markup.button.callback(tFollowupBtnLabel(entry.item), action)]);
   } else {
-    kb.push([Markup.button.callback(tConvoBtnLabelTriage(item), `OPENCARD:${item.id}`)]);
+    kb.push([Markup.button.callback(tConvoBtnLabelTriage(entry.item), `OPENCARD:${entry.item.id}`)]);
   }
 });
 
@@ -3291,7 +3332,7 @@ kb.push([Markup.button.callback("⬅ Dashboard", "DASH:back")]);
 const msg = await smartRender(ctx, lines.join("\n\n"), Markup.inlineKeyboard(kb));
 registerLiveCard(msg, {
   type: "triage",
-  card_key: `triage:${filterSource}:${activeSection}:${activePage}`,
+  card_key: `triage:${filterSource}:${safePage}`,
   ref_id: filterSource,
 });
 }
@@ -3299,19 +3340,18 @@ registerLiveCard(msg, {
 bot.action("TRIAGE:open", async (ctx) => {
 try {
 if (!isAdmin(ctx)) return;
-await triageOpen(ctx, "urgent", 1);
+await triageOpen(ctx, "all", 1);
 } catch (err) {
 logError(ctx, err);
 await ctx.reply(`❌ Error loading triage: ${err.message}`);
 }
 });
 
-bot.action(/^TRIAGE:(urgent|needs|calls|followups):?(\d*)$/, async (ctx) => {
+bot.action(/^TRIAGE:all:(\d+)$/, async (ctx) => {
 try {
 if (!isAdmin(ctx)) return;
-const section = ctx.match[1];
-const page = parseInt(ctx.match[2]) || 1;
-await triageOpen(ctx, section, page);
+const page = parseInt(ctx.match[1]) || 1;
+await triageOpen(ctx, "all", page);
 } catch (err) {
 logError(ctx, err);
 await ctx.reply(`❌ Error loading triage: ${err.message}`);
@@ -3483,7 +3523,7 @@ if (chatId) setSearchMode(chatId, true);
 
 const text =
 `🔎 SEARCH
-══════════════════════════════
+--
 Type your search query now:
 
 • Coach name
@@ -3492,11 +3532,11 @@ Type your search query now:
 • Phone number
 • Any keyword
 
-══════════════════════════════
+--
 💡 Tip: Keep it simple - fewer words work better.
 
 Or use /search <text> anytime.
-══════════════════════════════`;
+--`;
 
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("🕘 Recent", "SEARCH:recent")],
@@ -3509,11 +3549,11 @@ bot.action("SEARCH:recent", async (ctx) => {
 if (!isAdmin(ctx)) return;
 
 const text = `🕘 RECENT ITEMS
-══════════════════════════════
+--
 Recent feature shows your last accessed conversations.
 
 💡 To access: Open any conversation from a queue view.
-══════════════════════════════`;
+--`;
 
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("📱 Calls", "CALLS:hub")],
@@ -3650,14 +3690,14 @@ sbCountCoachFollowupsDueNow({ source: filterSource }).catch(() => 0),
 ]);
 const text =
 `📅 TODAY
-══════════════════════════════
+--
 ${dayKey} • ${time}
 
 ⚡️ Triage Due: ${triageDue}
 📱 Calls Today: ${callsToday}
 ⏳ Needs Reply: ${needsReply}
 📚 Follow-Ups Due: ${followupsDue}
-══════════════════════════════`;
+--`;
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("⚡️ Triage", "TRIAGE:open")],
 [Markup.button.callback("📱 Calls", "CALLS:hub"), Markup.button.callback("🗂 All Queues",
@@ -3729,7 +3769,7 @@ return new Date(b.last_activity_at||0)
 // ---------- BUILD TEXT ----------
 const lines = [];
 lines.push(`🌊 POOLS • ${filterSource}`);
-lines.push("══════════════════════════════");
+lines.push("--");
 const section = (title, list, builder) => {
 if (!list.length) return;
 lines.push(`\n${title}`);
@@ -3814,7 +3854,7 @@ const avgDivisor = window === "year" ? 12 : divisor; // year shows per month ave
 
 const avg = (val) => Math.round((val || 0) / avgDivisor);
 
-let body = `══════════════════════════════
+let body = `--
 Parent Guide Link Opens: ${metrics.programLinkOpens || 0}
   (Avg ${avg(metrics.programLinkOpens)}${perLabel})
 
@@ -3832,7 +3872,7 @@ Threads Created (replies): ${metrics.threadsCreated || 0}
 
 Calls Answered: ${metrics.callsAnswered || 0}
   (Avg ${avg(metrics.callsAnswered)}${perLabel})
-══════════════════════════════`.trim();
+--`.trim();
 
 // Add best week/month for year view
 if (window === "year" && metrics.bestWeek && metrics.bestMonth) {
@@ -4111,7 +4151,7 @@ return c.coverage_type ? `• ${c.coverage_type}` : "—";
 })();
 const text =
 `👥 CLIENT
-══════════════════════════════
+--
 Name: ${name}
 ClientID: ${c.client_id}
 Status: ${status}
@@ -4288,7 +4328,7 @@ if (!isAdmin(ctx)) return;
 const clientId = ctx.match[1];
 const calls = await sbListClientCalls(clientId, 10);
 const title = `📱 CALLS
-══════════════════════════════
+--
 Client: ${idShort(clientId)}`;
 const body = calls?.length
 ? calls.slice(0, 10).map((c) => {
@@ -4317,7 +4357,7 @@ if (!isAdmin(ctx)) return;
 const clientId = ctx.match[1];
 const people = await sbListPeopleForClient(clientId, 12);
 const title = `👥 PEOPLE
-══════════════════════════════
+--
 Client: ${idShort(clientId)}\n${people?.length || 0} record(s)`;
 const body = people?.length
 ? people.slice(0, 12).map((p) => {
@@ -4348,7 +4388,7 @@ const c = await sbGetClientCard(clientId);
 if (!c) return ctx.reply("Client not found.");
 const poolsArr = Array.isArray(c.pools) ? c.pools : [];
 const title = `🌊 POOLS
-══════════════════════════════
+--
 Client: ${c.primary_name || idShort(clientId)}`;
 const body = poolsArr.length
 ? poolsArr.slice(0, 10).map((p) => {
@@ -4603,7 +4643,7 @@ const notes = esc(c.notes || c.calendly_payload?.notes || "—");
 const convId = c.conversation_id ? esc(idShort(c.conversation_id)) : "—";
 return (
 `📱 <b>CALL</b>
-━━━━━━━━━━━━━━━━━━━━━━
+--
 ID: ${esc(idShort(c.id))}
 
 <b>Client</b>
@@ -4621,7 +4661,7 @@ Sport/Level: ${sportLevel}
 Help: ${help}
 Notes: ${notes}
 
-━━━━━━━━━━━━━━━━━━━━━━
+--
 <b>Linked</b>
 Conversation: ${convId}`
 );
@@ -4824,7 +4864,7 @@ const bestMonthEver = y.bestMonthEver
 const t = y.trend || {};
 return (
 `🎉 YEAR SUMMARY • ${filterSource}
-══════════════════════════════
+--
 TOTALS
 
 ` +
@@ -4834,15 +4874,15 @@ TOTALS
 `• eApp Visits: ${n(y.eappVisits)} (Avg ${avg(y.eappVisits)}/mo)\n` +
 `• Threads (Replies): ${n(y.threadsCreated)} (Avg ${avg(y.threadsCreated)}/mo)\n` +
 `• Calls Answered: ${n(y.callsAnswered)} (Avg ${avg(y.callsAnswered)}/mo)\n\n` +
-`══════════════════════════════
+`--
 MONTHLY BREAKDOWN (Total Clicks)\n\n` +
 `${monthLine}\n\n` +
-`══════════════════════════════
+`--
 HIGHLIGHTS\n\n` +
 `${bestWeek}\n` +
 `${bestMonth}\n` +
 `${bestMonthEver}\n\n` +
-`══════════════════════════════
+`--
 TRENDS (vs last month)\n\n` +
 `• Parent Guides: ${trendEmoji(t.opens)}\n` +
 `• Exploration: ${trendEmoji(t.exploration)}\n` +
@@ -4850,7 +4890,7 @@ TRENDS (vs last month)\n\n` +
 `• eApp Visits: ${trendEmoji(t.eappVisits)}\n` +
 `• Threads (Replies): ${trendEmoji(t.threads)}\n` +
 `• Calls Answered: ${trendEmoji(t.callsAnswered)}\n` +
-`══════════════════════════════`
+`--`
 );
 }
 function yearSummaryKeyboard() {
