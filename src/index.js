@@ -693,7 +693,11 @@ const buildQuery = (withRole) => {
     .order("updated_at", { ascending: false })
     .limit(limit * 2); // Fetch 2x limit for sorting
   if (pipeline) q = q.eq("pipeline", pipeline);
-  if (source !== "all") q = q.eq("source", sourceSafe(source));
+  // Source filtering: include specific source OR null (for unmigrated test data)
+  if (source !== "all") {
+    const safeSrc = sourceSafe(source);
+    q = q.or(`source.eq.${safeSrc},source.is.null`);
+  }
   if (withRole && role && role !== "all") q = q.eq("role", role);
   return q;
 };
@@ -3034,6 +3038,12 @@ const program = c.program_name || c.program || c.school || "";
 const progShort = program ? ` (${tSafe(program, 18)})` : "";
 return `Open · ${tSafe(name, 22)}${progShort}`;
 }
+// Shorter format for triage buttons to prevent cutoff
+function tConvoBtnLabelTriage(c) {
+const name = tDisplayName(c);
+const roleEmoji = (c.role || c.source) === "coach" || c.source === "programs" ? "🏈" : "👤";
+return `${roleEmoji} ${tSafe(name, 28)}`;
+}
 // ---------- follow-up helpers ----------
 function tFollowupLine(f, idx) {
 const coach = tSafe(f.coach_full_name || f.coach_name || "—", 40);
@@ -3149,123 +3159,159 @@ return `OPENCALL:${id}`;
 // ===============================
 // TRIAGE HANDLER
 // ===============================
-bot.action("TRIAGE:open", async (ctx) => {
-try {
-if (!isAdmin(ctx)) return;
+async function triageOpen(ctx, activeSection = "urgent", activePage = 1) {
 const filterSource = getAdminFilter(ctx) || "all";
 const roleFilter = getAdminRoleFilter(ctx) || "all";
-// Conversations
-const urgentRaw = await sbListConversations({ pipeline: "urgent", source: filterSource, role: roleFilter, limit: 24
-});
-const needsRaw = await sbListConversations({ pipeline: "needs_reply", source: filterSource, role: roleFilter,
-limit: 48 });
-// Calls (triage-focused list; your function should return ONLY relevant items)
-// Expected to include:
-// - outcome missing (scheduled_at <= now)
+const pageSize = 5;
 
-// - missed/no_answer follow-up due (next_action_at <= now)
-// - rescheduled calls within next TRIAGE_CALL_WINDOW_HOURS
-const callsRaw = await sbListCallsTriage({ source: filterSource, limit: 24, windowHours:
-TRIAGE_CALL_WINDOW_HOURS });
-// Coach follow-ups (due only)
+// Fetch all items for all sections
+const urgentRaw = await sbListConversations({ pipeline: "urgent", source: filterSource, role: roleFilter, limit: 24 });
+const needsRaw = await sbListConversations({ pipeline: "needs_reply", source: filterSource, role: roleFilter, limit: 48 });
+const callsRaw = await sbListCallsTriage({ source: filterSource, limit: 24, windowHours: TRIAGE_CALL_WINDOW_HOURS });
 const followupsRaw = await sbListCoachFollowupsDueNow({ source: filterSource, limit: 24 });
-// ---- Deduplicate conversations by id (urgent wins) ----
+
+// Deduplicate conversations
 const seen = new Set();
 const urgent = [];
 for (const c of urgentRaw || []) {
-if (!c?.id) continue;
-if (seen.has(c.id)) continue;
-seen.add(c.id);
-urgent.push(c);
+  if (!c?.id || seen.has(c.id)) continue;
+  seen.add(c.id);
+  urgent.push(c);
 }
 const needs = [];
 for (const c of needsRaw || []) {
-if (!c?.id) continue;
-if (seen.has(c.id)) continue;
-seen.add(c.id);
-needs.push(c);
+  if (!c?.id || seen.has(c.id)) continue;
+  seen.add(c.id);
+  needs.push(c);
 }
-// ---- Smart sorting ----
-// urgent + needs: longest waiting first
+
+// Sort
 const waitSort = (a, b) => (tComputeWaitingMinutes(b) || 0) - (tComputeWaitingMinutes(a) || 0);
 urgent.sort(waitSort);
 needs.sort(waitSort);
-// calls: due-now first, then earliest due, then earliest scheduled
+
 const calls = (callsRaw || []).slice().sort((a, b) => {
-const ak = tCallSortKey(a);
-const bk = tCallSortKey(b);
-if (ak.dueNow !== bk.dueNow) return ak.dueNow - bk.dueNow;
-if (ak.dueMs !== bk.dueMs) return ak.dueMs - bk.dueMs;
-return ak.schedMs - bk.schedMs;
+  const ak = tCallSortKey(a);
+  const bk = tCallSortKey(b);
+  if (ak.dueNow !== bk.dueNow) return ak.dueNow - bk.dueNow;
+  if (ak.dueMs !== bk.dueMs) return ak.dueMs - bk.dueMs;
+  return ak.schedMs - bk.schedMs;
 });
-// follow-ups: soonest due first
+
 const followups = (followupsRaw || []).slice().sort((a, b) => {
-const ad = a.due_at || a.followup_next_action_at || a.next_action_at;
-const bd = b.due_at || b.followup_next_action_at || b.next_action_at;
-
-const at = ad ? new Date(ad).getTime() : Infinity;
-const bt = bd ? new Date(bd).getTime() : Infinity;
-return at - bt;
+  const ad = a.due_at || a.followup_next_action_at || a.next_action_at;
+  const bd = b.due_at || b.followup_next_action_at || b.next_action_at;
+  return (ad ? new Date(ad).getTime() : Infinity) - (bd ? new Date(bd).getTime() : Infinity);
 });
-// ---- Build message text ----
+
+// Build text
 const lines = [];
-const title = (typeof viewTitle === "function") ? viewTitle("triage") : "⚡ TRIAGE";
-lines.push(`${title} • ${filterSource} • ${roleFilterLabel(roleFilter)}`);
-lines.push("══════════════════════════════");
-let hasAny = false;
-if (urgent.length) {
-hasAny = true;
-lines.push(`\n‼ URGENT`);
-urgent.slice(0, 4).forEach((c, i) => lines.push(tConvoLine(c, i + 1)));
-lines.push("──────────────────────");
-}
-if (calls.length) {
-hasAny = true;
-lines.push(`\n📱 CALLS (DUE)`);
-calls.slice(0, 6).forEach((call, i) => lines.push(tCallLine(call, i + 1)));
-lines.push("──────────────────────");
-}
-if (needs.length) {
-hasAny = true;
-lines.push(`\n⏳ NEEDS REPLY`);
-needs.slice(0, 6).forEach((c, i) => lines.push(tConvoLine(c, i + 1)));
-lines.push("──────────────────────");
-}
-if (followups.length) {
-hasAny = true;
-lines.push(`\n📚 COACH FOLLOW-UPS (DUE)`);
-followups.slice(0, 6).forEach((f, i) => lines.push(tFollowupLine(f, i + 1)));
-lines.push("──────────────────────");
-}
-if (!hasAny) {
-lines.push(`\nNo due-now items.`);
-}
-lines.push("══════════════════════════════");
-// ---- Buttons (labeled; urgent first, then calls, then needs, then follow-ups) ----
+const title = (typeof viewTitle === "function") ? viewTitle("triage") : "⚡ Triage";
+lines.push(`${title} · ${roleFilterLabel(roleFilter)}`);
+lines.push("");
 
+// Show only the active section
+const getSectionTitle = (section) => {
+  switch(section) {
+    case "needs": return "⏳ NEEDS REPLY";
+    case "calls": return "📱 CALLS (DUE)";
+    case "followups": return "📚 COACH FOLLOW-UPS (DUE)";
+    default: return "‼ URGENT";
+  }
+};
+
+const getActiveData = () => {
+  switch(activeSection) {
+    case "needs": return needs;
+    case "calls": return calls;
+    case "followups": return followups;
+    default: return urgent;
+  }
+};
+
+const activeData = getActiveData();
+const start = (activePage - 1) * pageSize;
+const activeSlice = activeData.slice(start, start + pageSize);
+
+if (activeSlice.length) {
+  lines.push(`\n${getSectionTitle(activeSection)}`);
+  activeSlice.forEach((item, i) => {
+    if (activeSection === "calls") lines.push(tCallLine(item, start + i + 1));
+    else if (activeSection === "followups") lines.push(tFollowupLine(item, start + i + 1));
+    else lines.push(tConvoLine(item, start + i + 1));
+  });
+} else {
+  lines.push(`\nNo items in this section.`);
+}
+lines.push("");
+
+// Build buttons
 const kb = [];
-urgent.slice(0, 4).forEach((c) => {
-kb.push([Markup.button.callback(tConvoBtnLabel(c), `OPENCARD:${c.id}`)]);
+
+// Section tabs
+kb.push([
+  Markup.button.callback(urgent.length ? `‼ Urgent (${urgent.length})` : "‼ Urgent", "TRIAGE:urgent:1"),
+  Markup.button.callback(needs.length ? `⏳ Needs Reply (${needs.length})` : "⏳ Needs Reply", "TRIAGE:needs:1"),
+]);
+kb.push([
+  Markup.button.callback(calls.length ? `📱 Calls (${calls.length})` : "📱 Calls", "TRIAGE:calls:1"),
+  Markup.button.callback(followups.length ? `📚 Follow-up (${followups.length})` : "📚 Follow-up", "TRIAGE:followups:1"),
+]);
+
+// Pagination for active section
+const totalPages = Math.max(1, Math.ceil(activeData.length / pageSize));
+
+if (totalPages > 1) {
+  const navRow = [];
+  if (activePage > 1) {
+    navRow.push(Markup.button.callback("◀️ Prev", `TRIAGE:${activeSection}:${activePage - 1}`));
+  }
+  navRow.push(Markup.button.text(`${activePage}/${totalPages}`));
+  if (activePage < totalPages) {
+    navRow.push(Markup.button.callback("Next ▶️", `TRIAGE:${activeSection}:${activePage + 1}`));
+  }
+  kb.push(navRow);
+}
+
+// Open buttons for displayed items
+activeSlice.forEach((item) => {
+  if (activeSection === "calls") {
+    const action = tCallOpenAction(item);
+    if (action) kb.push([Markup.button.callback(tCallBtnLabel(item), action)]);
+  } else if (activeSection === "followups") {
+    const action = tFollowupTargetAction(item);
+    if (action) kb.push([Markup.button.callback(tFollowupBtnLabel(item), action)]);
+  } else {
+    kb.push([Markup.button.callback(tConvoBtnLabelTriage(item), `OPENCARD:${item.id}`)]);
+  }
 });
-calls.slice(0, 6).forEach((call) => {
-const action = tCallOpenAction(call);
-if (action) kb.push([Markup.button.callback(tCallBtnLabel(call), action)]);
-});
-needs.slice(0, 6).forEach((c) => {
-kb.push([Markup.button.callback(tConvoBtnLabel(c), `OPENCARD:${c.id}`)]);
-});
-followups.slice(0, 6).forEach((f) => {
-const action = tFollowupTargetAction(f);
-if (action) kb.push([Markup.button.callback(tFollowupBtnLabel(f), action)]);
-});
+
 kb.push([Markup.button.callback("⬅ Dashboard", "DASH:back")]);
+
 const msg = await smartRender(ctx, lines.join("\n\n"), Markup.inlineKeyboard(kb));
-// ✅ Register as live card for auto-refresh
 registerLiveCard(msg, {
-type: "triage",
-card_key: `triage:${filterSource}`,
-ref_id: filterSource,
+  type: "triage",
+  card_key: `triage:${filterSource}:${activeSection}:${activePage}`,
+  ref_id: filterSource,
 });
+}
+
+bot.action("TRIAGE:open", async (ctx) => {
+try {
+if (!isAdmin(ctx)) return;
+await triageOpen(ctx, "urgent", 1);
+} catch (err) {
+logError(ctx, err);
+await ctx.reply(`❌ Error loading triage: ${err.message}`);
+}
+});
+
+bot.action(/^TRIAGE:(urgent|needs|calls|followups):?(\d*)$/, async (ctx) => {
+try {
+if (!isAdmin(ctx)) return;
+const section = ctx.match[1];
+const page = parseInt(ctx.match[2]) || 1;
+await triageOpen(ctx, section, page);
 } catch (err) {
 logError(ctx, err);
 await ctx.reply(`❌ Error loading triage: ${err.message}`);
