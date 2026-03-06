@@ -1848,7 +1848,7 @@ info += `\n  ${conflictBadge}`;
 }
 return info;
 })();
-return `💬 CONVERSATION
+const text = `💬 CONVERSATION
 --
 ID: ${idShort(conv.id)} • ${lane}
 Identity: ${identity}
@@ -1867,8 +1867,9 @@ Updated: ${tFmtDateTimeShort(conv.updated_at)}
 💬 Messages: ${msgCount}
 ${sla} • ${until}
 CC: ${ccOn ? "📇 Enabled" : "Off"}${gmail}`;
+return { text, msgCount };
 }
-function conversationCardKeyboard(conv) {
+function conversationCardKeyboard(conv, msgCount = null) {
 const id = conv.id;
 // Mirror button only if present
 const mirrorRow = conv.mirror_conversation_id
@@ -1881,9 +1882,16 @@ const ccBtnLabel = ccOn ? "📇 CC ON" : "CC OFF";
 const roleConflictRow = conv?.role_pending && conv?.role_confidence === "low"
 ? [Markup.button.callback(`✅ Confirm [${roleLabel(conv.role_pending)}]`, `CONFIRMROLE:${id}:${conv.role_pending}`)]
 : [];
+// Thread button label
+const threadLabel = (() => {
+if (msgCount === null) return "🧵 Thread";
+if (msgCount === 0) return "🧵 Thread (none)";
+if (msgCount === 1) return "🧵 Thread (1 msg)";
+return `🧵 Thread (${msgCount} msgs)`;
+})();
 return Markup.inlineKeyboard([
 // row 1
-[Markup.button.callback("🧵 Thread (Full)", `THREAD:${id}:0`)],
+[Markup.button.callback(threadLabel, `THREAD:${id}:0`)],
 // row 2
 [
 Markup.button.callback(ccBtnLabel, `CC:${id}`),
@@ -2124,8 +2132,8 @@ if (!conv) {
 await ctx.reply("❌ Conversation not found.");
 return;
 }
-const text = await buildConversationCard(conv);
-const kb = conversationCardKeyboard(conv);
+const { text, msgCount } = await buildConversationCard(conv);
+const kb = conversationCardKeyboard(conv, msgCount);
 // Edit dashboard in place (single card flow)
 await smartRender(ctx, text, kb);
 }));
@@ -2178,8 +2186,8 @@ refreshQueue.add("triage:all");
 refreshQueue.add("dashboard:all");
 
 const updated = await sbGetConversationById(convId);
-const text = await buildConversationCard(updated);
-const kb = conversationCardKeyboard(updated);
+const { text, msgCount } = await buildConversationCard(updated);
+const kb = conversationCardKeyboard(updated, msgCount);
 await smartRender(ctx, `✅ Role confirmed.\n\n${text}`, kb);
 }));
 
@@ -2266,8 +2274,8 @@ refreshQueue.add("triage:all");
 refreshQueue.add("dashboard:all");
 
 const updated = await sbGetConversationById(convId);
-const text = await buildConversationCard(updated);
-const kb = conversationCardKeyboard(updated);
+const { text, msgCount } = await buildConversationCard(updated);
+const kb = conversationCardKeyboard(updated, msgCount);
 await smartRender(ctx, `✅ Role set to ${roleLabel(selectedRole)}.\n\n${text}`, kb);
 } catch (err) {
 logError("ROLESELECT", err);
@@ -2289,8 +2297,8 @@ if (!mirror) {
 await ctx.answerCbQuery("Mirror conversation not found.");
 return;
 }
-const text = await buildConversationCard(mirror);
-const kb = conversationCardKeyboard(mirror);
+const { text, msgCount } = await buildConversationCard(mirror);
+const kb = conversationCardKeyboard(mirror, msgCount);
 // Edit dashboard in place (single card flow)
 await smartRender(ctx, text, kb);
 } catch (err) {
@@ -2606,9 +2614,159 @@ return { ok: res.ok, status: res.status, trace_id, idempotency_key };
 
 }
 // -------------------------------
+// 📇 CC Helper Functions
+// -------------------------------
+function ccKeyboard(convId, bridgeDraft = 2, supportDraft = 2) {
+const tagB = (v) => bridgeDraft === v ? " ✅" : "";
+const tagS = (v) => supportDraft === v ? " ✅" : "";
+return Markup.inlineKeyboard([
+[
+Markup.button.callback(`View Bridge V1${tagB(1)}`, `CCVIEW:${convId}:bridge:1:${bridgeDraft}:${supportDraft}`),
+Markup.button.callback(`View Bridge V2${tagB(2)}`, `CCVIEW:${convId}:bridge:2:${bridgeDraft}:${supportDraft}`),
+Markup.button.callback(`View Bridge V3${tagB(3)}`, `CCVIEW:${convId}:bridge:3:${bridgeDraft}:${supportDraft}`),
+],
+[
+Markup.button.callback(`View Support V1${tagS(1)}`, `CCVIEW:${convId}:support:1:${bridgeDraft}:${supportDraft}`),
+Markup.button.callback(`View Support V2${tagS(2)}`, `CCVIEW:${convId}:support:2:${bridgeDraft}:${supportDraft}`),
+Markup.button.callback(`View Support V3${tagS(3)}`, `CCVIEW:${convId}:support:3:${bridgeDraft}:${supportDraft}`),
+],
+[Markup.button.callback("♻️ Regenerate Drafts", `CCREGEN:${convId}`)],
+[Markup.button.callback("✅ Confirm CC Support", `CCCONFIRM:${convId}:${bridgeDraft}:${supportDraft}`)],
+[Markup.button.callback("⬅ Back to Conversation", `OPENCARD:${convId}`)]
+]);
+}
+
+async function renderCCCard(ctx, convId, bridgeDraft = 2, supportDraft = 2) {
+const drafts = ccDraftsCache.get(convId);
+if (!drafts) {
+return smartRender(ctx, "❌ CC drafts not found. Click Regenerate.", ccKeyboard(convId, bridgeDraft, supportDraft));
+}
+let text = `📇 CC Support\nConversation: ${idShort(convId)}\n\n`;
+text += `This will:\n• Send bridge message from outreach to contact\n• Send forwardable support message from ${SUPPORT_FROM_EMAIL}\n• Create + link the Support mirror thread\n\n`;
+text += `Selected:\n• Bridge Draft: V${bridgeDraft}\n• Support Draft: V${supportDraft}\n\n`;
+text += `Click "View" buttons to see full message text before confirming.`;
+return smartRender(ctx, text, ccKeyboard(convId, bridgeDraft, supportDraft));
+}
+
+// -------------------------------
 // 📇 CC button pressed (opens confirm screen)
 // -------------------------------
 bot.action(/^CC:(.+)$/, async (ctx) => {
+if (!isAdmin(ctx)) return;
+const convId = ctx.match[1];
+const conv = await sbGetConversationById(convId);
+if (!conv) return smartRender(ctx, "❌ Conversation not found.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
+// CC only allowed from program/outreach side (your rule)
+if (!isProgramLaneConversation(conv)) {
+  return smartRender(
+    ctx,
+    "📇 CC Support is only available from the Program/Outreach side (not Support lane).",
+    Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
+  );
+}
+// If already linked, treat as "open mirror" instead of re-CC
+if (conv.mirror_conversation_id) {
+return smartRender(
+ctx,
+"🪞 Already linked to Support.\nOpening the mirror thread now…",
+Markup.inlineKeyboard([[Markup.button.callback("🪞 Open Mirror", `OPENMIRROR:${conv.id}`), Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
+);
+}
+
+// Generate CC drafts with ChatGPT if not cached
+if (!ccDraftsCache.has(convId)) {
+await smartRender(
+ctx,
+`📇 CC Support\nConversation: ${idShort(convId)}\n\n⏳ Generating bridge & support drafts with ChatGPT...`,
+Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
+);
+try {
+const generated = await generateCCDrafts(conv);
+ccDraftsCache.set(convId, generated);
+} catch (err) {
+return smartRender(ctx, `❌ Failed to generate CC drafts: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
+}
+}
+
+// Show CC selection screen
+await renderCCCard(ctx, convId, 2, 2);
+});
+
+// -------------------------------
+// View full CC draft text
+// -------------------------------
+bot.action(/^CCVIEW:(.+):(bridge|support):([123]):(\d):(\d)$/, async (ctx) => {
+if (!isAdmin(ctx)) return;
+const convId = ctx.match[1];
+const type = ctx.match[2]; // "bridge" or "support"
+const version = parseInt(ctx.match[3], 10);
+const currentBridge = parseInt(ctx.match[4], 10);
+const currentSupport = parseInt(ctx.match[5], 10);
+const drafts = ccDraftsCache.get(convId);
+if (!drafts) {
+return smartRender(ctx, "❌ CC drafts not found. Go back and regenerate.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `CC:${convId}`)]]));
+}
+const draft = drafts[type]?.[`v${version}`];
+if (!draft) {
+return smartRender(ctx, `❌ ${type} V${version} not found.`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `CC:${convId}`)]]));
+}
+const isSelected = (type === "bridge" && currentBridge === version) || (type === "support" && currentSupport === version);
+const typeLabel = type === "bridge" ? "Bridge" : "Support";
+let text = `📇 ${typeLabel} Message V${version} ${isSelected ? "✅ SELECTED" : ""}\nConversation: ${idShort(convId)}\n\n`;
+text += `📧 Subject: ${draft.subject || "—"}\n\n`;
+text += `📝 Body:\n${draft.body || "(empty)"}`;
+const newBridge = type === "bridge" ? version : currentBridge;
+const newSupport = type === "support" ? version : currentSupport;
+const buttons = [
+[Markup.button.callback(isSelected ? "✅ Selected" : `✅ Select ${typeLabel} V${version}`, `CCSELECT:${convId}:${type}:${version}:${currentBridge}:${currentSupport}`)],
+[Markup.button.callback("⬅ Back to CC Options", `CC:${convId}`)]
+];
+await smartRender(ctx, text, Markup.inlineKeyboard(buttons));
+});
+
+// -------------------------------
+// Select CC draft version
+// -------------------------------
+bot.action(/^CCSELECT:(.+):(bridge|support):([123]):(\d):(\d)$/, async (ctx) => {
+if (!isAdmin(ctx)) return;
+const convId = ctx.match[1];
+const type = ctx.match[2];
+const version = parseInt(ctx.match[3], 10);
+const currentBridge = parseInt(ctx.match[4], 10);
+const currentSupport = parseInt(ctx.match[5], 10);
+// Update selections
+const newBridge = type === "bridge" ? version : currentBridge;
+const newSupport = type === "support" ? version : currentSupport;
+await renderCCCard(ctx, convId, newBridge, newSupport);
+});
+
+// -------------------------------
+// Regenerate CC drafts
+// -------------------------------
+bot.action(/^CCREGEN:(.+)$/, async (ctx) => {
+if (!isAdmin(ctx)) return;
+const convId = ctx.match[1];
+const conv = await sbGetConversationById(convId);
+if (!conv) return smartRender(ctx, "❌ Conversation not found.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
+ccDraftsCache.delete(convId);
+await smartRender(
+ctx,
+`📇 CC Support\nConversation: ${idShort(convId)}\n\n⏳ Regenerating bridge & support drafts with ChatGPT...`,
+Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
+);
+try {
+const generated = await generateCCDrafts(conv);
+ccDraftsCache.set(convId, generated);
+await renderCCCard(ctx, convId, 2, 2);
+} catch (err) {
+return smartRender(ctx, `❌ Failed to generate CC drafts: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
+}
+});
+
+// -------------------------------
+// ✅ Final CC execution (fires webhook + writes OPS + refresh)
+// -------------------------------
+bot.action(/^CCCONFIRM:(.+):(\d):(\d)$/, async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const conv = await sbGetConversationById(convId);
@@ -2655,56 +2813,17 @@ kb
 );
 });
 // -------------------------------
-// Optional picker (keeps it simple; re-opens confirm with updated selection)
-// -------------------------------
-bot.action(/^CCPICK:(.+):(bridge|support):(\d):(\d)$/, async (ctx) => {
-if (!isAdmin(ctx)) return;
-const convId = ctx.match[1];
-const which = ctx.match[2];
-const a = Number(ctx.match[3]);
-const b = Number(ctx.match[4]);
-const bridgeDraft = which === "bridge" ? a : b;
-const supportDraft = which === "support" ? b : a;
-const kb = Markup.inlineKeyboard([
-[
-Markup.button.callback(`Bridge: V1${bridgeDraft === 1 ? " ✅" : ""}`,
-`CCPICK:${convId}:bridge:1:${supportDraft}`),
-Markup.button.callback(`Bridge: V2${bridgeDraft === 2 ? " ✅" : ""}`,
-`CCPICK:${convId}:bridge:2:${supportDraft}`),
-Markup.button.callback(`Bridge: V3${bridgeDraft === 3 ? " ✅" : ""}`,
-`CCPICK:${convId}:bridge:3:${supportDraft}`),
-],
-[
-Markup.button.callback(`Support: V1${supportDraft === 1 ? " ✅" : ""}`,
-`CCPICK:${convId}:support:${bridgeDraft}:1`),
-Markup.button.callback(`Support: V2${supportDraft === 2 ? " ✅" : ""}`,
-`CCPICK:${convId}:support:${bridgeDraft}:2`),
-Markup.button.callback(`Support: V3${supportDraft === 3 ? " ✅" : ""}`,
-`CCPICK:${convId}:support:${bridgeDraft}:3`),
-],
-
-[Markup.button.callback("✅ Confirm CC Support",
-`CCDO:${convId}:${bridgeDraft}:${supportDraft}`)],
-[Markup.button.callback("Cancel", `OPENCARD:${convId}`)],
-]);
-await ctx.reply(
-`📇 CC Support\n\nSelected:\n• Bridge Draft: V${bridgeDraft}\n• Support Draft:
-V${supportDraft}\n\nConfirm to send both messages + create the Support mirror thread.`,
-kb
-);
-});
-// -------------------------------
 // ✅ Final CC execution (fires webhook + writes OPS + refresh)
 // -------------------------------
-bot.action(/^CCDO:(.+):(\d):(\d)$/, async (ctx) => {
+bot.action(/^CCCONFIRM:(.+):(\d):(\d)$/, async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const bridgeDraft = Number(ctx.match[2] || 2);
 const supportDraft = Number(ctx.match[3] || 2);
 const conv = await sbGetConversationById(convId);
-if (!conv) return ctx.reply("Conversation not found.");
+if (!conv) return smartRender(ctx, "❌ Conversation not found.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
 if (!isProgramLaneConversation(conv)) {
-return ctx.reply("📇 CC Support is only available from the Program/Outreach side.");
+return smartRender(ctx, "📇 CC Support is only available from the Program/Outreach side.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
 }
 // Set suggested flag immediately (so UI reflects intent)
 const { error: ccError } = await ops()
@@ -2746,8 +2865,18 @@ trace_id: result.trace_id,
 idempotency_key: result.idempotency_key,
 payload: { bridgeDraft, supportDraft, result },
 });
-await ctx.reply(result.ok ? "📇 CC Support queued. Mirror thread will appear when ingested." :
-`❌ CC failed (${result.status || "?"})`);
+
+// Clear cache
+ccDraftsCache.delete(convId);
+
+const { text: cardText, msgCount } = await buildConversationCard(conv);
+const successText = result.ok ? `📇 CC Support queued. Mirror thread will appear when ingested.\n\n${cardText}` : `❌ CC failed (${result.status || "?"})`;
+await smartRender(
+ctx,
+successText,
+result.ok ? conversationCardKeyboard(conv, msgCount) : Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
+);
+
 // Refresh the conversation card instantly
 refreshQueue.add(`conversation:${convId}`);
 refreshLiveCards(true).catch(() => {});
@@ -5166,6 +5295,46 @@ const parsed = JSON.parse(content);
 return parsed;
 }
 
+async function generateCCDrafts(conv) {
+if (!OPENAI_API_KEY) {
+throw new Error("Missing OPENAI_API_KEY");
+}
+const inbound = await sbLatestInboundMessage(conv.id);
+const prompt = {
+contact_email: conv.contact_email || "",
+subject: conv.subject || "",
+preview: conv.preview || "",
+latest_inbound: inbound?.body || inbound?.preview || "",
+coach_name: conv.coach_name || "",
+source: conv.source || "outreach",
+};
+const res = await fetch("https://api.openai.com/v1/chat/completions", {
+method: "POST",
+headers: {
+"Content-Type": "application/json",
+Authorization: `Bearer ${OPENAI_API_KEY}`,
+},
+body: JSON.stringify({
+model: "gpt-4o-mini",
+temperature: 0.7,
+response_format: { type: "json_object" },
+messages: [
+{ role: "system", content: "You write CC bridge and support messages. Return JSON with bridge (v1-v3) and support (v1-v3) drafts, each with subject and body." },
+{ role: "user", content: `Create CC drafts for this conversation:\n${JSON.stringify(prompt)}\n\nCreate 6 drafts total:\nBridge messages (to be sent from outreach to contact):\n- V1: Short/Direct ("Looping in support...")\n- V2: Warm/Personal (build relationship)\n- V3: Ultra-brief (executive style)\n\nSupport messages (forwardable from ${SUPPORT_FROM_EMAIL}):\n- V1: Professional/Detailed\n- V2: Warm/Helpful\n- V3: Quick/Action-focused\n\nKeep all under 130 words. Return: {\"bridge\":{\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}},\"support\":{\"v1\":{...},\"v2\":{...},\"v3\":{...}}}` }
+]
+})
+});
+if (!res.ok) throw new Error(`OpenAI error ${res.status}`);
+const json = await res.json();
+const content = json?.choices?.[0]?.message?.content;
+if (!content) throw new Error("No CC draft content from OpenAI");
+const parsed = JSON.parse(content);
+return parsed;
+}
+
+// CC drafts cache (in-memory, per conversation)
+const ccDraftsCache = new Map();
+
 function draftsKeyboard(convId, selectedVersion = null) {
 const tag = (v) => selectedVersion === v ? " ✅" : "";
 return Markup.inlineKeyboard([
@@ -5827,11 +5996,12 @@ sbGetConversationById(meta.ref_id),
 "DB query timed out"
 );
 if (!conv) continue;
+const { text, msgCount } = await buildConversationCard(conv);
 const edited = await safeEditMessageText(
 meta.chat_id,
 msgId,
-await buildConversationCard(conv),
-conversationCardKeyboard(conv)
+text,
+conversationCardKeyboard(conv, msgCount)
 );
 if (edited) editCount++;
 }
