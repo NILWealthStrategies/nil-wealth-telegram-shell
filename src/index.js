@@ -259,20 +259,31 @@ const explicit = normalizeRole(conv?.role);
 if (explicit) return explicit;
 const kind = String(conv?.conversation_kind || "").toLowerCase();
 if (kind === "outreach") return "coach";
+// Use tIsCoachThread logic for better detection
 const hasCoach = !!(conv?.coach_name || conv?.coach_full_name);
-const hasContact = !!(conv?.contact_name || conv?.contact_email || conv?.client_full_name);
-if (hasCoach && !hasContact) return "coach";
+const hasClient = !!(conv?.contact_name || conv?.client_full_name || conv?.first_name || conv?.last_name);
+if (hasCoach && !hasClient) return "coach";
+// Check if contact_email is the only contact field (likely coach email)
+if (hasCoach && conv?.contact_email && !conv?.contact_name && !conv?.client_full_name) return "coach";
 return "parent";
 }
 function conversationIdentityText(conv) {
-const name =
-conv?.contact_name ||
-conv?.client_full_name ||
-conv?.contact_email ||
-conv?.coach_name ||
-conv?.coach_full_name ||
-conv?.email ||
-"—";
+// Get name without "Coach" prefix to avoid duplication
+const coach = conv?.coach_name || conv?.coach_full_name || null;
+const client = conv?.contact_name || conv?.client_full_name || null;
+const email = conv?.contact_email || conv?.email || null;
+
+let name;
+if (client) {
+name = client;
+} else if (coach) {
+// Strip "Coach" prefix if present to avoid duplication with role tag
+name = String(coach).replace(/^Coach\s+/i, '').trim() || coach;
+} else if (email) {
+name = email;
+} else {
+name = "—";
+}
 return `${roleTag(conversationRoleForDisplay(conv))} ${name}`;
 }
 // ---------- ROLE-AWARE LANE ROUTING ----------
@@ -700,6 +711,24 @@ return urgent.slice(0, limit);
 } catch (err) {
 console.warn("sbListUrgentAuto exception:", err.message);
 return [];
+}
+}
+// Count needs_reply items EXCLUDING those >24h (which are auto-escalated to urgent)
+async function sbCountNeedsReplyNonUrgent({ source = "all", role = "all" } = {}) {
+try {
+const OVERDUE_MINUTES = 24 * 60;
+const rows = await sbListConversations({ pipeline: "needs_reply", source, role, limit: 100 });
+let count = 0;
+for (const c of rows || []) {
+const waitingMin = tComputeWaitingMinutes(c);
+if (waitingMin == null || waitingMin <= OVERDUE_MINUTES) {
+count++;
+}
+}
+return count;
+} catch (err) {
+console.warn("sbCountNeedsReplyNonUrgent exception:", err.message);
+return 0;
 }
 }
 async function sbCountCalls() {
@@ -1599,8 +1628,7 @@ filterSource === "support" ? "🧑‍🧒 Support" : filterSource === "programs"
 "🌐 All";
 const counts = {
 urgentCount: await sbCountUrgentAuto({ source: filterSource }),
-needsReplyCount: await sbCountConversations({ pipeline: "needs_reply", source:
-filterSource }),
+needsReplyCount: await sbCountNeedsReplyNonUrgent({ source: filterSource }),
 waitingCount: await sbCountConversations({ pipeline: "actions_waiting", source: filterSource
 }),
 activeCount: await sbCountConversations({ pipeline: "active", source: filterSource }),
@@ -3066,9 +3094,16 @@ c.contact_name ||
 ((c.first_name || c.last_name) ? `${c.first_name || ""} ${c.last_name || ""}`.trim() : null);
 
 const tag = roleTag(conversationRoleForDisplay(c));
-if (tIsCoachThread(c) && coach) return `${tag} Coach ${tSafe(coach, 40)}`;
+// Strip "Coach" prefix from coach name to avoid duplication with role tag
+if (tIsCoachThread(c) && coach) {
+const cleanCoachName = String(coach).replace(/^Coach\s+/i, '').trim() || coach;
+return `${tag} ${tSafe(cleanCoachName, 40)}`;
+}
 if (client) return `${tag} ${tSafe(client, 40)}`;
-if (coach) return `${tag} Coach ${tSafe(coach, 40)}`;
+if (coach) {
+const cleanCoachName = String(coach).replace(/^Coach\s+/i, '').trim() || coach;
+return `${tag} ${tSafe(cleanCoachName, 40)}`;
+}
 return `${tag} —`;
 }
 function tConvoLine(c, idx) {
