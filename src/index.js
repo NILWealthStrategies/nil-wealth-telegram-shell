@@ -1914,7 +1914,7 @@ Markup.button.callback("🗑 Delete", `DELETECONFIRM:conversation:${id}`),
 [Markup.button.callback("✍️ Drafts V1/V2/V3", `DRAFTS:open:${id}`)],
 // BIG action bottom
 [Markup.button.callback(sendLabel, `SEND:${id}:1`)],
-[Markup.button.callback("⬅ Dashboard", "DASH:back")],
+[Markup.button.callback("⬅ Back", `OPENCARD:${id}`)],
 ]);
 }
 // ---------- SUBMISSION CARD ----------
@@ -5554,7 +5554,7 @@ if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const useDraft = Number(ctx.match[2]);
 const conv = await sbGetConversationById(convId);
-if (!conv) return ctx.reply("Conversation not found.");
+if (!conv) return smartRender(ctx, "❌ Conversation not found.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
 
 // Determine send mode(s) based on conversation state
 const isSupport = conv.source === "support";
@@ -5564,7 +5564,8 @@ const isLockedToSupport = isSupport || isCCd;
 // If locked to one mode, skip the choice
 if (isLockedToSupport) {
 // Support mode only
-await ctx.reply(
+await smartRender(
+ctx,
 `📤 Send Draft (Support)\n\nSend lane is locked to Support.\n\n${isSupport ? "This is a Support conversation." : "CC Support has been enabled."}`,
 Markup.inlineKeyboard([
 [Markup.button.callback("✅ Send as Support", `CONFIRMSEND:${convId}:${useDraft}:support`)],
@@ -5580,7 +5581,7 @@ Markup.button.callback("📤 Send as Support", `CONFIRMSEND:${convId}:${useDraft
 ],
 [Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)],
 ]);
-await ctx.reply(`📤 Send Draft\n\nChoose sending lane:\n\n(Outreach selected by default. Use Support only if CC is enabled manually.)`, kb);
+await smartRender(ctx, `📤 Send Draft\n\nChoose sending lane:\n\n(Outreach selected by default. Use Support only if CC is enabled manually.)`, kb);
 }
 });
 // ===============================
@@ -5592,7 +5593,7 @@ const convId = ctx.match[1];
 const useDraft = Number(ctx.match[2]);
 const mode = ctx.match[3];
 const conv = await sbGetConversationById(convId);
-if (!conv) return ctx.reply("Conversation not found.");
+if (!conv) return smartRender(ctx, "❌ Conversation not found.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
 
 const fromEmail = await resolveFromEmail(conv, mode);
 const modeLabel = mode === "support" ? "Support (forwarding)" : "Outreach (direct)";
@@ -5600,7 +5601,7 @@ const kb = Markup.inlineKeyboard([
 [Markup.button.callback("✅ Send Now", `DOSEND:${convId}:${useDraft}:${mode}`)],
 [Markup.button.callback("Cancel", `OPENCARD:${convId}`)],
 ]);
-await ctx.reply(`⚠ Confirm send?\n\nMode: ${modeLabel}\nFrom: ${fromEmail}\nDraft: V${useDraft}`, kb);
+await smartRender(ctx, `⚠ Confirm send?\n\nMode: ${modeLabel}\nFrom: ${fromEmail}\nDraft: V${useDraft}`, kb);
 });
 
 // ===============================
@@ -5612,7 +5613,7 @@ const convId = ctx.match[1];
 const useDraft = Number(ctx.match[2]);
 const mode = ctx.match[3];
 const conv = await sbGetConversationById(convId);
-if (!conv) return ctx.reply("Conversation not found.");
+if (!conv) return smartRender(ctx, "❌ Conversation not found.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
 // Pull the selected conversation draft body (kind="conversation")
 const selected = await sbGetSelectedDraftBody(convId, "conversation");
 const subjectOverride = selected?.subject || conv.subject || "";
@@ -5636,7 +5637,13 @@ trace_id: result.trace_id,
 idempotency_key: result.idempotency_key,
 payload: { mode, useDraft, result },
 });
-await ctx.reply(result.ok ? "✅ Send queued." : `❌ Send failed (${result.status || "?"})`);
+const { text: cardText, msgCount } = await buildConversationCard(conv);
+const successText = result.ok ? `✅ Send queued.\n\n${cardText}` : `❌ Send failed (${result.status || "?"})`;
+await smartRender(
+ctx,
+successText,
+result.ok ? conversationCardKeyboard(conv, msgCount) : Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
+);
 // Instant refresh
 refreshQueue.add(`conversation:${convId}`);
 refreshLiveCards(true).catch(() => {});
