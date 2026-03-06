@@ -5169,7 +5169,7 @@ return parsed;
 function draftsKeyboard(convId, selectedVersion = null) {
 const tag = (v) => selectedVersion === v ? " ✅" : "";
 return Markup.inlineKeyboard([
-[Markup.button.callback(`Use V1${tag(1)}`, `DRAFTS:use:${convId}:1`), Markup.button.callback(`Use V2${tag(2)}`, `DRAFTS:use:${convId}:2`), Markup.button.callback(`Use V3${tag(3)}`, `DRAFTS:use:${convId}:3`)],
+[Markup.button.callback(`View V1${tag(1)}`, `DRAFTS:view:${convId}:1`), Markup.button.callback(`View V2${tag(2)}`, `DRAFTS:view:${convId}:2`), Markup.button.callback(`View V3${tag(3)}`, `DRAFTS:view:${convId}:3`)],
 [Markup.button.callback("✏️ Edit Selected", `DRAFTS:edit:${convId}`), Markup.button.callback("♻️ Regenerate", `DRAFTS:regen:${convId}`)],
 [Markup.button.callback("📤 Send (Support)", `CONFIRMSEND:${convId}:1:support`), Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]
 ]);
@@ -5222,13 +5222,53 @@ await smartRender(ctx, `❌ Draft error: ${err.message}`, Markup.inlineKeyboard(
 }
 });
 
+bot.action(/^DRAFTS:view:(.+):(1|2|3)$/, async (ctx) => {
+if (!isAdmin(ctx)) return;
+const convId = ctx.match[1];
+const version = parseInt(ctx.match[2], 10);
+try {
+const drafts = await sbListConversationDrafts(convId);
+const draft = drafts.find((d) => d.version === version);
+if (!draft) {
+return smartRender(ctx, `❌ Draft V${version} not found.`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `DRAFTS:open:${convId}`)]]));
+}
+const selected = drafts.find((d) => d.selected);
+const isSelected = selected?.version === version;
+const marker = isSelected ? "✅ SELECTED" : "";
+let text = `✍️ Draft V${version} ${marker}\nConversation: ${idShort(convId)}\n\n`;
+text += `📧 Subject: ${draft.subject || "—"}\n\n`;
+text += `📝 Body:\n${draft.body || "(empty)"}`;
+const buttons = [
+[Markup.button.callback(isSelected ? "✅ Selected" : "✅ Select This", `DRAFTS:use:${convId}:${version}`)],
+[Markup.button.callback("⬅ Back to Drafts", `DRAFTS:open:${convId}`)]
+];
+await smartRender(ctx, text, Markup.inlineKeyboard(buttons));
+} catch (err) {
+logError(ctx, err);
+await smartRender(ctx, `❌ Error: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `DRAFTS:open:${convId}`)]]));
+}
+});
+
 bot.action(/^DRAFTS:use:(.+):(1|2|3)$/, async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const version = Number(ctx.match[2]);
 try {
 await sbSelectConversationDraft(convId, version);
-await renderDraftsCard(ctx, convId, `Selected V${version}`);
+// Show the draft view with updated selection
+const drafts = await sbListConversationDrafts(convId);
+const draft = drafts.find((d) => d.version === version);
+if (!draft) {
+return renderDraftsCard(ctx, convId, `✅ Selected V${version}`);
+}
+let text = `✍️ Draft V${version} ✅ SELECTED\nConversation: ${idShort(convId)}\n\n`;
+text += `📧 Subject: ${draft.subject || "—"}\n\n`;
+text += `📝 Body:\n${draft.body || "(empty)"}`;
+const buttons = [
+[Markup.button.callback("✅ Selected", `DRAFTS:use:${convId}:${version}`)],
+[Markup.button.callback("⬅ Back to Drafts", `DRAFTS:open:${convId}`)]
+];
+await smartRender(ctx, text, Markup.inlineKeyboard(buttons));
 } catch (err) {
 logError(ctx, err);
 await smartRender(ctx, `❌ Select draft failed: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
