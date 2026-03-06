@@ -971,18 +971,30 @@ if (error) throw new Error(error.message);
 }
 async function sbDeleteMessageById(messageId) {
 // Soft delete by default; hard delete only if is_test=true
-const { data: msg } = await ops()
+const { data: msg, error: fetchErr } = await ops()
 .from("messages")
 .select("is_test, conversation_id")
 .eq("id", messageId)
 .maybeSingle();
-if (!msg) return;
+if (fetchErr) {
+console.warn("Failed to fetch message for deletion:", fetchErr.message);
+throw new Error(fetchErr.message);
+}
+if (!msg) return; // Message doesn't exist, nothing to do
 if (msg.is_test === true) {
 // Hard delete
-await ops().from("messages").delete().eq("id", messageId);
+const { error: deleteErr } = await ops().from("messages").delete().eq("id", messageId);
+if (deleteErr) {
+console.warn("Failed to hard delete message:", deleteErr.message);
+throw new Error(deleteErr.message);
+}
 } else {
 // Soft delete
-await ops().from("messages").update({ is_deleted: true }).eq("id", messageId);
+const { error: updateErr } = await ops().from("messages").update({ is_deleted: true }).eq("id", messageId);
+if (updateErr) {
+console.warn("Failed to soft delete message:", updateErr.message);
+throw new Error(updateErr.message);
+}
 }
 }
 async function sbListConversationsByPersonId(personId, limit = 10) {
@@ -2695,13 +2707,17 @@ if (!isProgramLaneConversation(conv)) {
 return ctx.reply("📇 CC Support is only available from the Program/Outreach side.");
 }
 // Set suggested flag immediately (so UI reflects intent)
-await ops()
+const { error: ccError } = await ops()
 .from("conversations")
 .update({
 cc_support_suggested: true,
 updated_at: new Date().toISOString(),
 })
 .eq("id", convId);
+if (ccError) {
+console.warn("Failed to set cc_support_suggested:", ccError.message);
+// Don't fail hard - just log and proceed with OPS ledger
+}
 // OPS ledger: intent
 await sbInsertOpsEvent({
 schema_version: "5.3",
