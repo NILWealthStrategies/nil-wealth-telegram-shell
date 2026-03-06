@@ -1914,7 +1914,7 @@ Markup.button.callback("🗑 Delete", `DELETECONFIRM:conversation:${id}`),
 [Markup.button.callback("✍️ Drafts V1/V2/V3", `DRAFTS:open:${id}`)],
 // BIG action bottom
 [Markup.button.callback(sendLabel, `SEND:${id}:1`)],
-[Markup.button.callback("⬅ Back", `OPENCARD:${id}`)],
+[Markup.button.callback("⬅ Dashboard", "DASH:back")],
 ]);
 }
 // ---------- SUBMISSION CARD ----------
