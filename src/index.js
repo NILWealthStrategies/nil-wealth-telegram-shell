@@ -605,7 +605,7 @@ const m = minsUntilUrgent(updatedAtIso);
 const mmAbs = Math.abs(m);
 const h = Math.floor(mmAbs / 60);
 const mm = mmAbs % 60;
-if (m <= 0) return `⏳ Urgent now`;
+if (m <= 0) return `‼️ Urgent now`;
 return `⏳ ${h}h ${mm}m left`;
 }
 // ---------- SMART SORTING (v5.4) ----------
