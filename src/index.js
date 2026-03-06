@@ -665,6 +665,43 @@ console.warn("sbCountSubmissions exception:", err.message);
 return 0;
 }
 }
+// Auto-urgent: count needs_reply items with >24h wait time
+async function sbCountUrgentAuto({ source = "all", role = "all" } = {}) {
+try {
+const OVERDUE_MINUTES = 24 * 60;
+const rows = await sbListConversations({ pipeline: "needs_reply", source, role, limit: 100 });
+let count = 0;
+for (const c of rows || []) {
+const waitingMin = tComputeWaitingMinutes(c);
+if (waitingMin != null && waitingMin > OVERDUE_MINUTES) count++;
+}
+return count;
+} catch (err) {
+console.warn("sbCountUrgentAuto exception:", err.message);
+return 0;
+}
+}
+// Auto-urgent: list needs_reply items with >24h wait time
+async function sbListUrgentAuto({ source = "all", role = "all", limit = 8 } = {}) {
+try {
+const OVERDUE_MINUTES = 24 * 60;
+const rows = await sbListConversations({ pipeline: "needs_reply", source, role, limit: 100 });
+const urgent = [];
+for (const c of rows || []) {
+const waitingMin = tComputeWaitingMinutes(c);
+if (waitingMin != null && waitingMin > OVERDUE_MINUTES) {
+urgent.push(c);
+}
+}
+// Sort by wait time descending
+const waitSort = (a, b) => (tComputeWaitingMinutes(b) || 0) - (tComputeWaitingMinutes(a) || 0);
+urgent.sort(waitSort);
+return urgent.slice(0, limit);
+} catch (err) {
+console.warn("sbListUrgentAuto exception:", err.message);
+return [];
+}
+}
 async function sbCountCalls() {
 try {
 const { count, error } = await ops()
@@ -1561,7 +1598,7 @@ const filterLabel =
 filterSource === "support" ? "🧑‍🧒 Support" : filterSource === "programs" ? "🏈 Programs" :
 "🌐 All";
 const counts = {
-urgentCount: await sbCountConversations({ pipeline: "urgent", source: filterSource }),
+urgentCount: await sbCountUrgentAuto({ source: filterSource }),
 needsReplyCount: await sbCountConversations({ pipeline: "needs_reply", source:
 filterSource }),
 waitingCount: await sbCountConversations({ pipeline: "actions_waiting", source: filterSource
@@ -2006,7 +2043,10 @@ filterSource,
 }
 return;
 }
-const rows = await sbListConversations({ pipeline: viewKey, source: filterSource, role: roleFilter, limit: 8 });
+// Handle urgent with auto-escalation logic
+const rows = viewKey === "urgent" 
+? await sbListUrgentAuto({ source: filterSource, role: roleFilter, limit: 8 })
+: await sbListConversations({ pipeline: viewKey, source: filterSource, role: roleFilter, limit: 8 });
 await showConversationList(ctx, viewKey, rows, filterSource, roleFilter);
 // If you want queue lists to live-refresh too, update showConversationList
 // to return the sent message and register it there.
@@ -3048,30 +3088,28 @@ const program = c.program_name || c.program || c.school || "";
 const progShort = program ? ` (${tSafe(program, 18)})` : "";
 return `Open · ${tSafe(name, 22)}${progShort}`;
 }
-// Shorter format for triage buttons to prevent cutoff
+// Triage button labels: source emoji + full name
 function tConvoBtnLabelTriage(c) {
-// Get just the raw name without tags
+// Get full name
 const coach = c.coach_full_name || c.coach_name || null;
 const client = c.client_full_name || c.contact_name || 
   ((c.first_name || c.last_name) ? `${c.first_name || ""} ${c.last_name || ""}`.trim() : null);
 
-const role = conversationRoleForDisplay(c);
-const roleEmoji = role === "coach" ? "🏈" : "👤";
+// Source emoji (programs vs support)
+const sourceEmoji = sourceSafe(c.source) === "programs" ? "🏈" : "🧑‍🧒";
 
 let displayName;
 if (tIsCoachThread(c) && coach) {
-  // Coach thread: show first name only
-  displayName = coach.split(' ')[0];
+  displayName = coach;
 } else if (client) {
-  // Parent/client thread: show first name only
-  displayName = client.split(' ')[0];
+  displayName = client;
 } else if (coach) {
-  displayName = coach.split(' ')[0];
+  displayName = coach;
 } else {
   displayName = "—";
 }
 
-return `${roleEmoji} ${tSafe(displayName, 16)}`;
+return `${sourceEmoji} ${tSafe(displayName, 24)}`;
 }
 // ---------- follow-up helpers ----------
 function tFollowupLine(f, idx) {
