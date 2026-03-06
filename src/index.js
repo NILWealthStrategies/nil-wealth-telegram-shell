@@ -796,10 +796,13 @@ return data || null;
 async function sbFindConversationByEmail(email) {
 const normalized = normalizeEmail(email);
 if (!normalized) return null;
-const buildQuery = (useNormalized) => {
+const buildQuery = (useNormalized, withRole) => {
+const selectFields = withRole
+  ? "id, role, role_pending, role_confidence, role_source, contact_email, normalized_email, source, conversation_kind, coach_name"
+  : "id, contact_email, normalized_email, source, conversation_kind, coach_name";
 let q = ops()
 .from("conversations")
-.select("id, role, role_pending, role_confidence, role_source, contact_email, normalized_email, source, conversation_kind, coach_name")
+.select(selectFields)
 .order("updated_at", { ascending: false })
 .limit(1);
 if (useNormalized) {
@@ -810,8 +813,10 @@ q = q.ilike("contact_email", normalized);
 return q.maybeSingle();
 };
 const result = await dbSelectFirst([
-() => buildQuery(true),
-() => buildQuery(false),
+() => buildQuery(true, true),
+() => buildQuery(true, false),
+() => buildQuery(false, true),
+() => buildQuery(false, false),
 ]);
 if (result?.error) return null;
 return result.data || null;
@@ -1069,7 +1074,9 @@ created_at: payload.created_at || new Date().toISOString(),
 }
 function isMissingColumnError(error) {
 const msg = String(error?.message || "").toLowerCase();
-return msg.includes("column") && msg.includes("does not exist");
+return (msg.includes("column") && msg.includes("does not exist")) ||
+       (msg.includes("column") && msg.includes("schema cache")) ||
+       (msg.includes("column") && msg.includes("not found"));
 }
 async function sbUpsertSubmissionSafe(row) {
 const { error } = await ops()
@@ -1820,7 +1827,8 @@ const subj = conv.subject || "—";
 const prev = shorten(conv.preview || "", 400);
 const identity = conversationIdentityText(conv);
 const roleInfo = (() => {
-const r = normalizeRole(conv?.role) || "parent";
+// Use conversationRoleForDisplay for consistent role logic with triage
+const r = conversationRoleForDisplay(conv);
 let info = `Role: ${roleLabel(r)}`;
 const conflictBadge = roleConflictBadge(conv);
 if (conflictBadge) {
