@@ -1889,6 +1889,11 @@ if (msgCount === 0) return "🧵 Thread (none)";
 if (msgCount === 1) return "🧵 Thread (1 msg)";
 return `🧵 Thread (${msgCount} msgs)`;
 })();
+// Determine send mode based on conversation state
+const sendMode = conv.source === "programs" && !conv.cc_support_suggested ? "Outreach" : "Support";
+const sendLocked = conv.source === "support" || (conv.source === "programs" && conv.cc_support_suggested);
+const sendLabel = sendLocked ? `📤 Send (${sendMode}) 🔒` : `📤 Send (${sendMode})`;
+
 return Markup.inlineKeyboard([
 // row 1
 [Markup.button.callback(threadLabel, `THREAD:${id}:0`)],
@@ -1908,7 +1913,7 @@ Markup.button.callback("🗑 Delete", `DELETECONFIRM:conversation:${id}`),
 // row 5 - v1/v2/v3 reply drafting
 [Markup.button.callback("✍️ Drafts V1/V2/V3", `DRAFTS:open:${id}`)],
 // BIG action bottom
-[Markup.button.callback("📤 Send Drafts", `SEND:${id}:1`)],
+[Markup.button.callback(sendLabel, `SEND:${id}:1`)],
 [Markup.button.callback("⬅ Dashboard", "DASH:back")],
 ]);
 }
@@ -2869,12 +2874,16 @@ payload: { bridgeDraft, supportDraft, result },
 // Clear cache
 ccDraftsCache.delete(convId);
 
-const { text: cardText, msgCount } = await buildConversationCard(conv);
-const successText = result.ok ? `📇 CC Support queued. Mirror thread will appear when ingested.\n\n${cardText}` : `❌ CC failed (${result.status || "?"})`;
+// Refresh to get updated cc_support_suggested flag
+const updatedConv = await sbGetConversationById(convId);
+const { text: cardText, msgCount } = await buildConversationCard(updatedConv);
+const successText = result.ok ? 
+`📇 CC Support queued.\n🔒 Sending lane locked to Support (was Outreach).\nMirror thread will appear when ingested.\n\n${cardText}` : 
+`❌ CC failed (${result.status || "?"})`;
 await smartRender(
 ctx,
 successText,
-result.ok ? conversationCardKeyboard(conv, msgCount) : Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
+result.ok ? conversationCardKeyboard(updatedConv, msgCount) : Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
 );
 
 // Refresh the conversation card instantly
@@ -5546,14 +5555,33 @@ const convId = ctx.match[1];
 const useDraft = Number(ctx.match[2]);
 const conv = await sbGetConversationById(convId);
 if (!conv) return ctx.reply("Conversation not found.");
+
+// Determine send mode(s) based on conversation state
+const isSupport = conv.source === "support";
+const isCCd = conv.cc_support_suggested === true;
+const isLockedToSupport = isSupport || isCCd;
+
+// If locked to one mode, skip the choice
+if (isLockedToSupport) {
+// Support mode only
+await ctx.reply(
+`📤 Send Draft (Support)\n\nSend lane is locked to Support.\n\n${isSupport ? "This is a Support conversation." : "CC Support has been enabled."}`,
+Markup.inlineKeyboard([
+[Markup.button.callback("✅ Send as Support", `CONFIRMSEND:${convId}:${useDraft}:support`)],
+[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)],
+])
+);
+} else {
+// Programs without CC: can choose between outreach and support
 const kb = Markup.inlineKeyboard([
-[Markup.button.callback("Confirm Support Send",
-`CONFIRMSEND:${convId}:${useDraft}:support`)],
-[Markup.button.callback("Confirm Outreach Send",
-`CONFIRMSEND:${convId}:${useDraft}:outreach`)],
+[
+Markup.button.callback("📤 Send as Outreach ✅", `CONFIRMSEND:${convId}:${useDraft}:outreach`),
+Markup.button.callback("📤 Send as Support", `CONFIRMSEND:${convId}:${useDraft}:support`),
+],
 [Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)],
 ]);
-await ctx.reply(`📤 Send Draft ${useDraft ? "ON" : "OFF"}\n\nChoose send mode:`, kb);
+await ctx.reply(`📤 Send Draft\n\nChoose sending lane:\n\n(Outreach selected by default. Use Support only if CC is enabled manually.)`, kb);
+}
 });
 // ===============================
 // CONFIRM SEND SCREEN (single send)
@@ -5565,11 +5593,14 @@ const useDraft = Number(ctx.match[2]);
 const mode = ctx.match[3];
 const conv = await sbGetConversationById(convId);
 if (!conv) return ctx.reply("Conversation not found.");
+
+const fromEmail = await resolveFromEmail(conv, mode);
+const modeLabel = mode === "support" ? "Support (forwarding)" : "Outreach (direct)";
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("✅ Send Now", `DOSEND:${convId}:${useDraft}:${mode}`)],
 [Markup.button.callback("Cancel", `OPENCARD:${convId}`)],
 ]);
-await ctx.reply(`⚠ Confirm send?\nMode: ${mode}\nDraft: ${useDraft}`, kb);
+await ctx.reply(`⚠ Confirm send?\n\nMode: ${modeLabel}\nFrom: ${fromEmail}\nDraft: V${useDraft}`, kb);
 });
 
 // ===============================
