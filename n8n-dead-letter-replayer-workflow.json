@@ -1,0 +1,195 @@
+{
+  "name": "NIL Dead Letter Replayer",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/10 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule",
+      "name": "Every 10 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [220, 260]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "schema": "nil",
+        "tableId": "dead_letters",
+        "returnAll": false,
+        "limit": 50,
+        "options": {
+          "sort": {
+            "column": "created_at",
+            "direction": "asc"
+          }
+        }
+      },
+      "id": "fetch-deadletters",
+      "name": "Fetch Dead Letters",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [450, 260],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop",
+      "name": "Replay One By One",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [670, 260]
+    },
+    {
+      "parameters": {
+        "jsCode": "const row = $json;\nconst payload = row.payload || row.error_data || {};\nconst eventType = payload.event_type || payload?.data?.event_type || 'unknown.event';\nconst entityId = payload.entity_id || payload?.data?.entity_id || null;\nconst dedupe = payload.idempotency_key || `dlq_replay|${row.id}`;\nreturn [{json:{dead_letter_id:row.id, payload, event_type:eventType, entity_id:entityId, idempotency_key:dedupe, trace_id:payload.trace_id || $execution.id}}];"
+      },
+      "id": "normalize",
+      "name": "Normalize Dead Letter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [890, 260]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_INGEST_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-nil-secret",
+              "value": "={{ $env.BASE_WEBHOOK_SECRET }}"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "jsonBody": "={{ { schema_version: ($json.payload.schema_version || '5.3'), event_type: $json.event_type, source: 'n8n_dlq_replayer', direction: 'inbound', trace_id: $json.trace_id, idempotency_key: $json.idempotency_key, entity_type: ($json.payload.entity_type || 'unknown'), entity_id: $json.entity_id, submission_id: ($json.payload.submission_id || null), payload: $json.payload.payload || $json.payload } }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "replay-to-ops",
+      "name": "Replay to OPS Ingest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1110, 260]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ]
+        }
+      },
+      "id": "replay-ok",
+      "name": "Replay Succeeded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1330, 260]
+    },
+    {
+      "parameters": {
+        "operation": "delete",
+        "schema": "nil",
+        "tableId": "dead_letters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "value": "={{ $('Normalize Dead Letter').item.json.dead_letter_id }}"
+            }
+          ]
+        }
+      },
+      "id": "delete-on-success",
+      "name": "Delete Replayed Dead Letter",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1550, 180],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "nil",
+        "tableId": "ops_events",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "event_type": "dead_letter.replay_failed",
+            "source": "n8n",
+            "trace_id": "={{ $('Normalize Dead Letter').item.json.trace_id }}",
+            "data": "={{ { dead_letter_id: $('Normalize Dead Letter').item.json.dead_letter_id, replay_error: $json, replayed_at: $now } }}"
+          }
+        }
+      },
+      "id": "log-failure",
+      "name": "Log Replay Failure",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1550, 350],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 10 Minutes": {
+      "main": [[{"node": "Fetch Dead Letters", "type": "main", "index": 0}]]
+    },
+    "Fetch Dead Letters": {
+      "main": [[{"node": "Replay One By One", "type": "main", "index": 0}]]
+    },
+    "Replay One By One": {
+      "main": [[{"node": "Normalize Dead Letter", "type": "main", "index": 0}]]
+    },
+    "Normalize Dead Letter": {
+      "main": [[{"node": "Replay to OPS Ingest", "type": "main", "index": 0}]]
+    },
+    "Replay to OPS Ingest": {
+      "main": [[{"node": "Replay Succeeded?", "type": "main", "index": 0}]]
+    },
+    "Replay Succeeded?": {
+      "main": [[{"node": "Delete Replayed Dead Letter", "type": "main", "index": 0}], [{"node": "Log Replay Failure", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -1,0 +1,146 @@
+{
+  "name": "NIL SLA Escalator",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/20 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule",
+      "name": "Every 20 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [220, 260]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "schema": "nil",
+        "tableId": "conversations",
+        "returnAll": true,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "pipeline",
+              "condition": "in",
+              "value": "open,needs_reply,followups"
+            }
+          ]
+        }
+      },
+      "id": "get-conversations",
+      "name": "Get Active Conversations",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [450, 260],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = Array.isArray($json) ? $json : [];\nconst now = Date.now();\nconst urgentAfterMins = Number($env.URGENT_AFTER_MINUTES || 180);\nconst escalations = [];\nfor (const r of rows) {\n  const updated = new Date(r.updated_at || r.created_at || now).getTime();\n  const ageMins = Math.floor((now - updated)/60000);\n  const dueNow = r.next_action_at ? new Date(r.next_action_at).getTime() <= now : false;\n  const shouldUrgent = ageMins >= urgentAfterMins || dueNow;\n  if (shouldUrgent && r.pipeline !== 'urgent') {\n    escalations.push({ id:r.id, from:r.pipeline, to:'urgent', age_mins:ageMins, reason: dueNow ? 'next_action_due' : 'stale_thread' });\n  }\n}\nreturn escalations.map(e=>({json:e}));"
+      },
+      "id": "compute-escalations",
+      "name": "Compute Escalations",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [670, 260]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop",
+      "name": "Loop Escalations",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [890, 260]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": "nil",
+        "tableId": "conversations",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "value": "={{ $json.id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "pipeline": "urgent",
+            "updated_at": "={{ $now }}"
+          }
+        }
+      },
+      "id": "update-urgent",
+      "name": "Set Pipeline Urgent",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1110, 260],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_INGEST_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-nil-secret",
+              "value": "={{ $env.BASE_WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "jsonBody": "={{ { schema_version:'5.3', event_type:'conversation.updated', source:'n8n_sla_escalator', direction:'inbound', trace_id:$execution.id, idempotency_key:'sla_escalation|' + $json.id, entity_type:'conversation', entity_id:$json.id, payload:{pipeline_from:$json.from, pipeline_to:'urgent', reason:$json.reason, age_mins:$json.age_mins} } }}"
+      },
+      "id": "emit-update",
+      "name": "Emit Conversation Updated",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1330, 260]
+    }
+  ],
+  "connections": {
+    "Every 20 Minutes": {
+      "main": [[{"node": "Get Active Conversations", "type": "main", "index": 0}]]
+    },
+    "Get Active Conversations": {
+      "main": [[{"node": "Compute Escalations", "type": "main", "index": 0}]]
+    },
+    "Compute Escalations": {
+      "main": [[{"node": "Loop Escalations", "type": "main", "index": 0}]]
+    },
+    "Loop Escalations": {
+      "main": [[{"node": "Set Pipeline Urgent", "type": "main", "index": 0}]]
+    },
+    "Set Pipeline Urgent": {
+      "main": [[{"node": "Emit Conversation Updated", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

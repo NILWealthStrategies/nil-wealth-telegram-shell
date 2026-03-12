@@ -1,0 +1,348 @@
+{
+  "name": "NIL CC Support Executor",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "cc-support-executor",
+        "httpMethod": "POST",
+        "responseMode": "lastNode"
+      },
+      "id": "webhook",
+      "name": "CC Support Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 320]
+    },
+    {
+      "parameters": {
+        "jsCode": "const b = $json.body || $json;\nif (b.event_type !== 'cc_support.requested') throw new Error('unexpected event_type');\nreturn [{json:{...b, conversation_id:b.conversation_id || b.entity_id, normalized_email:String(b.contact_email||'').trim().toLowerCase()}}];"
+      },
+      "id": "normalize-input",
+      "name": "Normalize Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 320]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "schema": "nil",
+        "tableId": "ops_events",
+        "returnAll": false,
+        "limit": 1,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "idempotency_key",
+              "value": "={{ $json.idempotency_key }}"
+            },
+            {
+              "keyName": "event_type",
+              "value": "cc_support.dispatch_requested"
+            }
+          ]
+        }
+      },
+      "id": "check-dedupe",
+      "name": "Check Dedupe",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [660, 320],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ Array.isArray($json) ? $json.length : 0 }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ]
+        }
+      },
+      "id": "already-processed",
+      "name": "Already Processed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [880, 320]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "schema": "nil",
+        "tableId": "conversations",
+        "returnAll": false,
+        "limit": 1,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "value": "={{ $('Normalize Request').item.json.conversation_id }}"
+            }
+          ]
+        }
+      },
+      "id": "get-source-conversation",
+      "name": "Get Source Conversation",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1110, 430],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "schema": "nil",
+        "tableId": "conversations",
+        "returnAll": false,
+        "limit": 1,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "contact_email",
+              "condition": "ilike",
+              "value": "={{ $('Normalize Request').item.json.normalized_email }}"
+            },
+            {
+              "keyName": "source",
+              "value": "support"
+            }
+          ]
+        }
+      },
+      "id": "find-support-conversation",
+      "name": "Find Support Mirror",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1330, 430],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "schema": "nil",
+        "tableId": "conversations",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $json[0]?.id || undefined }}",
+            "contact_email": "={{ $('Normalize Request').item.json.contact_email }}",
+            "source": "support",
+            "pipeline": "open",
+            "subject": "={{ 'Support: ' + (($('Normalize Request').item.json.payload || {}).subject || '') }}",
+            "preview": "CC Support mirror thread",
+            "updated_at": "={{ $now }}"
+          }
+        }
+      },
+      "id": "upsert-support-mirror",
+      "name": "Upsert Support Mirror",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1550, 430],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": "nil",
+        "tableId": "conversations",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "value": "={{ $('Get Source Conversation').item.json[0].id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "mirror_conversation_id": "={{ $('Upsert Support Mirror').item.json.id || $('Upsert Support Mirror').item.json[0].id }}",
+            "cc_support_enabled": true,
+            "cc_support_suggested": true,
+            "cc_support_locked_at": "={{ $now }}",
+            "updated_at": "={{ $now }}"
+          }
+        }
+      },
+      "id": "update-source",
+      "name": "Update Source CC Flags",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1770, 430],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": "nil",
+        "tableId": "conversations",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "value": "={{ $('Upsert Support Mirror').item.json.id || $('Upsert Support Mirror').item.json[0].id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "mirror_conversation_id": "={{ $('Get Source Conversation').item.json[0].id }}",
+            "updated_at": "={{ $now }}"
+          }
+        }
+      },
+      "id": "update-mirror-backlink",
+      "name": "Update Mirror Backlink",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1990, 430],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "schema": "nil",
+        "tableId": "card_mirrors",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "card_key": "={{ 'conversation:' + $('Get Source Conversation').item.json[0].id }}",
+            "mirror_card_key": "={{ 'conversation:' + ($('Upsert Support Mirror').item.json.id || $('Upsert Support Mirror').item.json[0].id) }}",
+            "relationship_type": "linked"
+          }
+        }
+      },
+      "id": "upsert-card-link",
+      "name": "Upsert Card Mirror Link",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2210, 430],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_INGEST_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-nil-secret",
+              "value": "={{ $env.BASE_WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "jsonBody": "={{ { schema_version:'5.3', event_type:'conversation.updated', source:'n8n', direction:'inbound', trace_id: $('Normalize Request').item.json.trace_id || $execution.id, idempotency_key: $('Normalize Request').item.json.idempotency_key + '|source_refresh', entity_type:'conversation', entity_id:$('Get Source Conversation').item.json[0].id, payload:{cc_support_enabled:true, mirror_conversation_id: ($('Upsert Support Mirror').item.json.id || $('Upsert Support Mirror').item.json[0].id)} } }}"
+      },
+      "id": "emit-source-updated",
+      "name": "Emit Source Conversation Updated",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2430, 430]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_INGEST_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-nil-secret",
+              "value": "={{ $env.BASE_WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "jsonBody": "={{ { schema_version:'5.3', event_type:'conversation.updated', source:'n8n', direction:'inbound', trace_id: $('Normalize Request').item.json.trace_id || $execution.id, idempotency_key: $('Normalize Request').item.json.idempotency_key + '|mirror_refresh', entity_type:'conversation', entity_id: ($('Upsert Support Mirror').item.json.id || $('Upsert Support Mirror').item.json[0].id), payload:{mirror_conversation_id:$('Get Source Conversation').item.json[0].id} } }}"
+      },
+      "id": "emit-mirror-updated",
+      "name": "Emit Mirror Conversation Updated",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2650, 430]
+    }
+  ],
+  "connections": {
+    "CC Support Webhook": {
+      "main": [[{"node":"Normalize Request","type":"main","index":0}]]
+    },
+    "Normalize Request": {
+      "main": [[{"node":"Check Dedupe","type":"main","index":0}]]
+    },
+    "Check Dedupe": {
+      "main": [[{"node":"Already Processed?","type":"main","index":0}]]
+    },
+    "Already Processed?": {
+      "main": [[], [{"node":"Get Source Conversation","type":"main","index":0}]]
+    },
+    "Get Source Conversation": {
+      "main": [[{"node":"Find Support Mirror","type":"main","index":0}]]
+    },
+    "Find Support Mirror": {
+      "main": [[{"node":"Upsert Support Mirror","type":"main","index":0}]]
+    },
+    "Upsert Support Mirror": {
+      "main": [[{"node":"Update Source CC Flags","type":"main","index":0}]]
+    },
+    "Update Source CC Flags": {
+      "main": [[{"node":"Update Mirror Backlink","type":"main","index":0}]]
+    },
+    "Update Mirror Backlink": {
+      "main": [[{"node":"Upsert Card Mirror Link","type":"main","index":0}]]
+    },
+    "Upsert Card Mirror Link": {
+      "main": [[{"node":"Emit Source Conversation Updated","type":"main","index":0}]]
+    },
+    "Emit Source Conversation Updated": {
+      "main": [[{"node":"Emit Mirror Conversation Updated","type":"main","index":0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

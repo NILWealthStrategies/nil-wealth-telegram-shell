@@ -1,0 +1,231 @@
+{
+  "name": "NIL Conversation Identity Linker",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "identity-linker",
+        "httpMethod": "POST",
+        "responseMode": "lastNode"
+      },
+      "id": "webhook",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const b = $json.body || $json;\nconst email = String(b.contact_email || b.client_email || '').trim().toLowerCase();\nif (!email) return [{json:{skip:true, reason:'missing_email', raw:b}}];\nreturn [{json:{skip:false, normalized_email:email, conversation_id:b.entity_id || b.conversation_id || null, trace_id:b.trace_id || $execution.id, idempotency_key:b.idempotency_key || null, raw:b}}];"
+      },
+      "id": "normalize",
+      "name": "Normalize Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ]
+        }
+      },
+      "id": "skip-check",
+      "name": "Skip If Missing Email",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "schema": "nil",
+        "tableId": "conversations",
+        "returnAll": true,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "contact_email",
+              "condition": "ilike",
+              "value": "={{ $json.normalized_email }}"
+            }
+          ]
+        }
+      },
+      "id": "get-conversations",
+      "name": "Get Conversations By Email",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [900, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $json;\nif (!Array.isArray(rows) || rows.length < 2) return [{json:{linked:false, reason:'no_siblings'}}];\nconst sorted = [...rows].sort((a,b)=>{\n  const aPrograms = a.source === 'programs' ? 0 : 1;\n  const bPrograms = b.source === 'programs' ? 0 : 1;\n  if (aPrograms !== bPrograms) return aPrograms - bPrograms;\n  return new Date(b.updated_at||0) - new Date(a.updated_at||0);\n});\nconst canonical = sorted[0];\nconst siblings = sorted.slice(1).map(s=>s.id);\nreturn [{json:{linked:true, canonical_id:canonical.id, canonical_card_key:`conversation:${canonical.id}`, sibling_ids:siblings, sibling_card_keys:siblings.map(id=>`conversation:${id}`)}}];"
+      },
+      "id": "pick-canonical",
+      "name": "Pick Canonical Conversation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.linked }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ]
+        }
+      },
+      "id": "has-siblings",
+      "name": "Has Siblings",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1330, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop-siblings",
+      "name": "Loop Siblings",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1540, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": "nil",
+        "tableId": "conversations",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "value": "={{ $json.sibling_ids[0] }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "mirror_conversation_id": "={{ $json.canonical_id }}",
+            "updated_at": "={{ $now }}"
+          }
+        }
+      },
+      "id": "update-mirror-id",
+      "name": "Update Sibling Mirror ID",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1760, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "schema": "nil",
+        "tableId": "card_mirrors",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "card_key": "={{ $json.canonical_card_key }}",
+            "mirror_card_key": "={{ 'conversation:' + $json.sibling_ids[0] }}",
+            "relationship_type": "identity_email_link"
+          }
+        }
+      },
+      "id": "upsert-card-mirror",
+      "name": "Upsert Card Mirror",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1980, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_INGEST_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-nil-secret",
+              "value": "={{ $env.BASE_WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "jsonBody": "={{ { schema_version:'5.3', event_type:'conversation.updated', source:'n8n', direction:'inbound', trace_id:$execution.id, idempotency_key:'identity_link|' + $json.canonical_id, entity_type:'conversation', entity_id:$json.canonical_id, payload:{linked_siblings:$json.sibling_ids} } }}"
+      },
+      "id": "ops-ingest-refresh",
+      "name": "Emit Conversation Updated",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2200, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{"node":"Normalize Email","type":"main","index":0}]]
+    },
+    "Normalize Email": {
+      "main": [[{"node":"Skip If Missing Email","type":"main","index":0}]]
+    },
+    "Skip If Missing Email": {
+      "main": [[], [{"node":"Get Conversations By Email","type":"main","index":0}]]
+    },
+    "Get Conversations By Email": {
+      "main": [[{"node":"Pick Canonical Conversation","type":"main","index":0}]]
+    },
+    "Pick Canonical Conversation": {
+      "main": [[{"node":"Has Siblings","type":"main","index":0}]]
+    },
+    "Has Siblings": {
+      "main": [[], [{"node":"Loop Siblings","type":"main","index":0}]]
+    },
+    "Loop Siblings": {
+      "main": [[{"node":"Update Sibling Mirror ID","type":"main","index":0}]]
+    },
+    "Update Sibling Mirror ID": {
+      "main": [[{"node":"Upsert Card Mirror","type":"main","index":0}]]
+    },
+    "Upsert Card Mirror": {
+      "main": [[{"node":"Emit Conversation Updated","type":"main","index":0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

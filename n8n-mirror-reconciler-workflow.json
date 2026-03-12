@@ -1,0 +1,279 @@
+{
+  "name": "NIL Mirror Reconciler",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/15 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule",
+      "name": "Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [220, 260]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "schema": "nil",
+        "tableId": "conversations",
+        "returnAll": true,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "mirror_conversation_id",
+              "condition": "notNull",
+              "value": "true"
+            }
+          ]
+        }
+      },
+      "id": "get-mirrored",
+      "name": "Get Mirrored Conversations",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [450, 260],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop",
+      "name": "Loop Conversations",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [670, 260]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "schema": "nil",
+        "tableId": "conversations",
+        "returnAll": false,
+        "limit": 1,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "value": "={{ $json.mirror_conversation_id }}"
+            }
+          ]
+        }
+      },
+      "id": "get-partner",
+      "name": "Get Mirror Partner",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [890, 260],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ Array.isArray($json) ? $json.length : 0 }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ]
+        }
+      },
+      "id": "partner-exists",
+      "name": "Partner Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1110, 260]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": "nil",
+        "tableId": "conversations",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "value": "={{ $('Loop Conversations').item.json.id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "mirror_conversation_id": null,
+            "updated_at": "={{ $now }}"
+          }
+        }
+      },
+      "id": "clear-bad-link",
+      "name": "Clear Broken Mirror Link",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1320, 120],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": "nil",
+        "tableId": "conversations",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "value": "={{ $json[0].id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "mirror_conversation_id": "={{ $('Loop Conversations').item.json.id }}",
+            "updated_at": "={{ $now }}"
+          }
+        }
+      },
+      "id": "fix-backlink",
+      "name": "Fix Back Link",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1320, 330],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "schema": "nil",
+        "tableId": "card_mirrors",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "card_key": "={{ 'conversation:' + $('Loop Conversations').item.json.id }}",
+            "mirror_card_key": "={{ 'conversation:' + $('Loop Conversations').item.json.mirror_conversation_id }}",
+            "relationship_type": "linked"
+          }
+        }
+      },
+      "id": "upsert-forward",
+      "name": "Upsert Card Mirror Forward",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1540, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "schema": "nil",
+        "tableId": "card_mirrors",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "card_key": "={{ 'conversation:' + $('Loop Conversations').item.json.mirror_conversation_id }}",
+            "mirror_card_key": "={{ 'conversation:' + $('Loop Conversations').item.json.id }}",
+            "relationship_type": "linked"
+          }
+        }
+      },
+      "id": "upsert-reverse",
+      "name": "Upsert Card Mirror Reverse",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1760, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_INGEST_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-nil-secret",
+              "value": "={{ $env.BASE_WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "jsonBody": "={{ { schema_version:'5.3', event_type:'conversation.updated', source:'n8n', direction:'inbound', trace_id:$execution.id, idempotency_key:'mirror_repair|' + $('Loop Conversations').item.json.id + '|' + $('Loop Conversations').item.json.mirror_conversation_id, entity_type:'conversation', entity_id:$('Loop Conversations').item.json.id, payload:{repair_type:'mirror_reconciled'} } }}"
+      },
+      "id": "emit-refresh",
+      "name": "Emit Refresh Event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1980, 300]
+    }
+  ],
+  "connections": {
+    "Every 15 Minutes": {
+      "main": [[{"node":"Get Mirrored Conversations","type":"main","index":0}]]
+    },
+    "Get Mirrored Conversations": {
+      "main": [[{"node":"Loop Conversations","type":"main","index":0}]]
+    },
+    "Loop Conversations": {
+      "main": [[{"node":"Get Mirror Partner","type":"main","index":0}]]
+    },
+    "Get Mirror Partner": {
+      "main": [[{"node":"Partner Exists?","type":"main","index":0}]]
+    },
+    "Partner Exists?": {
+      "main": [[{"node":"Clear Broken Mirror Link","type":"main","index":0}], [{"node":"Fix Back Link","type":"main","index":0}]]
+    },
+    "Fix Back Link": {
+      "main": [[{"node":"Upsert Card Mirror Forward","type":"main","index":0}]]
+    },
+    "Upsert Card Mirror Forward": {
+      "main": [[{"node":"Upsert Card Mirror Reverse","type":"main","index":0}]]
+    },
+    "Upsert Card Mirror Reverse": {
+      "main": [[{"node":"Emit Refresh Event","type":"main","index":0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

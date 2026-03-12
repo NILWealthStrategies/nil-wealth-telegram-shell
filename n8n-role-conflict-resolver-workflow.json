@@ -1,0 +1,200 @@
+{
+  "name": "NIL Role Conflict Resolver",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 */1 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule",
+      "name": "Hourly Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [220, 260]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "schema": "nil",
+        "tableId": "conversations",
+        "returnAll": true,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "role_pending",
+              "condition": "notNull",
+              "value": "true"
+            }
+          ]
+        }
+      },
+      "id": "get-conflicts",
+      "name": "Get Role Pending Conversations",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [450, 260],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop",
+      "name": "Loop Conflicts",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [670, 260]
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $json;\nconst current = (c.role || '').toLowerCase();\nconst pending = (c.role_pending || '').toLowerCase();\n// Auto-policy: if current missing -> accept pending; if current exists and differs -> keep pending for manual unless confidence high\nconst autoAccept = !current || (current !== pending && (c.role_confidence || '').toLowerCase() === 'high');\nreturn [{json:{id:c.id, current_role:current || null, pending_role:pending || null, auto_accept:autoAccept}}];"
+      },
+      "id": "policy",
+      "name": "Apply Resolution Policy",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [890, 260]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.auto_accept }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ]
+        }
+      },
+      "id": "auto-accept",
+      "name": "Auto Accept?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1110, 260]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": "nil",
+        "tableId": "conversations",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "value": "={{ $json.id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "role": "={{ $json.pending_role }}",
+            "role_pending": null,
+            "role_confidence": "high",
+            "role_source": "n8n_role_conflict_resolver",
+            "role_last_updated_at": "={{ $now }}",
+            "updated_at": "={{ $now }}"
+          }
+        }
+      },
+      "id": "accept-role",
+      "name": "Accept Pending Role",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1330, 180],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_INGEST_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-nil-secret",
+              "value": "={{ $env.BASE_WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "jsonBody": "={{ { schema_version:'5.3', event_type:'conversation.role.confirmed', source:'n8n_role_conflict_resolver', direction:'inbound', trace_id:$execution.id, idempotency_key:'role_confirmed|' + $json.id + '|' + $json.pending_role, entity_type:'conversation', entity_id:$json.id, payload:{previous_role:$json.current_role, role:$json.pending_role, auto:true} } }}"
+      },
+      "id": "emit-confirmed",
+      "name": "Emit Role Confirmed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1550, 180]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "nil",
+        "tableId": "ops_events",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "event_type": "conversation.role.review_required",
+            "trace_id": "={{ $execution.id }}",
+            "data": "={{ { conversation_id:$json.id, current_role:$json.current_role, pending_role:$json.pending_role, auto:false, reason:'policy_requires_manual_review', created_at:$now } }}"
+          }
+        }
+      },
+      "id": "log-review-needed",
+      "name": "Log Manual Review Required",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1330, 360],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-nil",
+          "name": "Supabase NIL Wealth"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Hourly Trigger": {
+      "main": [[{"node": "Get Role Pending Conversations", "type": "main", "index": 0}]]
+    },
+    "Get Role Pending Conversations": {
+      "main": [[{"node": "Loop Conflicts", "type": "main", "index": 0}]]
+    },
+    "Loop Conflicts": {
+      "main": [[{"node": "Apply Resolution Policy", "type": "main", "index": 0}]]
+    },
+    "Apply Resolution Policy": {
+      "main": [[{"node": "Auto Accept?", "type": "main", "index": 0}]]
+    },
+    "Auto Accept?": {
+      "main": [[{"node": "Accept Pending Role", "type": "main", "index": 0}], [{"node": "Log Manual Review Required", "type": "main", "index": 0}]]
+    },
+    "Accept Pending Role": {
+      "main": [[{"node": "Emit Role Confirmed", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

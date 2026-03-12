@@ -7,7 +7,7 @@ const { v4: uuidv4 } = require("uuid");
 const { createClient } = require("@supabase/supabase-js");
 // ---------- VERSION ----------
 const CODE_VERSION =
-"Index.js V6.0";
+"Index.js V5.6";
 const BUILD_VERSION =
 process.env.BUILD_VERSION ||
 process.env.RENDER_GIT_COMMIT ||
@@ -28,8 +28,6 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ||
 "";
 // v5.1 send integration (Make/n8n “send” hook). If empty, send actions stub.
 const MAKE_SEND_WEBHOOK_URL = process.env.MAKE_SEND_WEBHOOK_URL || "";
-const CC_SUPPORT_WEBHOOK_URL = process.env.CC_SUPPORT_WEBHOOK_URL || "";
-const WEBHOOK_TIMEOUT_MS = Number(process.env.WEBHOOK_TIMEOUT_MS || 15000);
 // policy knobs (same as v5.1)
 const URGENT_AFTER_MINUTES = Number(process.env.URGENT_AFTER_MINUTES ||
 180);
@@ -40,7 +38,6 @@ const COMPLETE_AFTER_HOURS = Number(process.env.COMPLETE_AFTER_HOURS ||
 48);
 const SUPPORT_FROM_EMAIL =
 process.env.SUPPORT_FROM_EMAIL || "support@mynilwealthstrategies.com";
-const OUTREACH_FROM_EMAIL = process.env.OUTREACH_FROM_EMAIL || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OUTBOX_POLL_MS = Number(process.env.OUTBOX_POLL_MS || 7000);
 // live cards
@@ -77,55 +74,12 @@ const draftEditState = new Map(); // userId -> { convId, version }
 
 // Operation timeout wrapper - prevents hanging on long operations
 function withTimeout(promise, timeoutMs = 25000, errorMsg = "Operation timed out") {
-  const safeTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 25000;
-  let timeoutId;
-  const timeoutPromise = new Promise((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error(errorMsg)), safeTimeoutMs);
-  });
-
-  return Promise.race([promise, timeoutPromise]).finally(() => {
-    if (timeoutId) clearTimeout(timeoutId);
-  });
-}
-
-async function postJsonWebhook(url, payload, { timeoutMs = WEBHOOK_TIMEOUT_MS, headers = {} } = {}) {
-  if (!url) {
-    return { ok: false, status: 503, error: "webhook_url_not_configured", bodyText: "" };
-  }
-
-  const safeTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : WEBHOOK_TIMEOUT_MS;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), safeTimeoutMs);
-
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...headers,
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-
-    const bodyText = await res.text().catch(() => "");
-    return {
-      ok: res.ok,
-      status: res.status,
-      bodyText,
-      error: res.ok ? null : "webhook_non_2xx",
-    };
-  } catch (err) {
-    const isAbort = err?.name === "AbortError";
-    return {
-      ok: false,
-      status: 504,
-      error: isAbort ? "webhook_timeout" : String(err?.message || err),
-      bodyText: "",
-    };
-  } finally {
-    clearTimeout(timeout);
-  }
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(errorMsg)), timeoutMs)
+    ),
+  ]);
 }
 
 // Safe callback query answerer - ALWAYS answers, even on errors
@@ -305,31 +259,20 @@ const explicit = normalizeRole(conv?.role);
 if (explicit) return explicit;
 const kind = String(conv?.conversation_kind || "").toLowerCase();
 if (kind === "outreach") return "coach";
-// Use tIsCoachThread logic for better detection
 const hasCoach = !!(conv?.coach_name || conv?.coach_full_name);
-const hasClient = !!(conv?.contact_name || conv?.client_full_name || conv?.first_name || conv?.last_name);
-if (hasCoach && !hasClient) return "coach";
-// Check if contact_email is the only contact field (likely coach email)
-if (hasCoach && conv?.contact_email && !conv?.contact_name && !conv?.client_full_name) return "coach";
+const hasContact = !!(conv?.contact_name || conv?.contact_email || conv?.client_full_name);
+if (hasCoach && !hasContact) return "coach";
 return "parent";
 }
 function conversationIdentityText(conv) {
-// Get name without "Coach" prefix to avoid duplication
-const coach = conv?.coach_name || conv?.coach_full_name || null;
-const client = conv?.contact_name || conv?.client_full_name || null;
-const email = conv?.contact_email || conv?.email || null;
-
-let name;
-if (client) {
-name = client;
-} else if (coach) {
-// Strip "Coach" prefix if present to avoid duplication with role tag
-name = String(coach).replace(/^Coach\s+/i, '').trim() || coach;
-} else if (email) {
-name = email;
-} else {
-name = "—";
-}
+const name =
+conv?.contact_name ||
+conv?.client_full_name ||
+conv?.contact_email ||
+conv?.coach_name ||
+conv?.coach_full_name ||
+conv?.email ||
+"—";
 return `${roleTag(conversationRoleForDisplay(conv))} ${name}`;
 }
 // ---------- ROLE-AWARE LANE ROUTING ----------
@@ -651,7 +594,7 @@ const m = minsUntilUrgent(updatedAtIso);
 const mmAbs = Math.abs(m);
 const h = Math.floor(mmAbs / 60);
 const mm = mmAbs % 60;
-if (m <= 0) return `‼️ Urgent now`;
+if (m <= 0) return `⏳ Urgent now`;
 return `⏳ ${h}h ${mm}m left`;
 }
 // ---------- SMART SORTING (v5.4) ----------
@@ -722,96 +665,6 @@ console.warn("sbCountSubmissions exception:", err.message);
 return 0;
 }
 }
-// Auto-urgent: count needs_reply items with >24h wait time
-async function sbCountUrgentAuto({ source = "all", role = "all" } = {}) {
-try {
-const OVERDUE_MINUTES = 24 * 60;
-const rows = await sbListConversations({ pipeline: "needs_reply", source, role, limit: 100 });
-let count = 0;
-for (const c of rows || []) {
-const waitingMin = tComputeWaitingMinutes(c);
-if (waitingMin != null && waitingMin > OVERDUE_MINUTES) count++;
-}
-return count;
-} catch (err) {
-console.warn("sbCountUrgentAuto exception:", err.message);
-return 0;
-}
-}
-// Auto-urgent: list needs_reply items with >24h wait time
-async function sbListUrgentAuto({ source = "all", role = "all", limit = 8 } = {}) {
-try {
-const OVERDUE_MINUTES = 24 * 60;
-const rows = await sbListConversations({ pipeline: "needs_reply", source, role, limit: 100 });
-const urgent = [];
-for (const c of rows || []) {
-const waitingMin = tComputeWaitingMinutes(c);
-if (waitingMin != null && waitingMin > OVERDUE_MINUTES) {
-urgent.push(c);
-}
-}
-// Sort by wait time descending
-const waitSort = (a, b) => (tComputeWaitingMinutes(b) || 0) - (tComputeWaitingMinutes(a) || 0);
-urgent.sort(waitSort);
-return urgent.slice(0, limit);
-} catch (err) {
-console.warn("sbListUrgentAuto exception:", err.message);
-return [];
-}
-}
-// ---------- HANDOFF PENDING (Instantly-flagged for support hand-off) ----------
-async function sbCountHandoffPending({ source = "all" } = {}) {
-  try {
-    let q = ops()
-      .from("conversations")
-      .select("id", { count: "exact", head: true })
-      .eq("needs_support_handoff", true)
-      .not("cc_support_suggested", "eq", true);
-    if (source !== "all") q = q.eq("source", sourceSafe(source));
-    const { count, error } = await q;
-    if (error) return 0;
-    return count || 0;
-  } catch (err) {
-    console.warn("sbCountHandoffPending exception:", err.message);
-    return 0;
-  }
-}
-async function sbListHandoffPending({ source = "all", limit = 24 } = {}) {
-  try {
-    let q = ops()
-      .from("conversations")
-      .select("id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at, cc_support_suggested, mirror_conversation_id, role, needs_support_handoff, needs_support_handoff_at, handoff_detected_reason")
-      .eq("needs_support_handoff", true)
-      .not("cc_support_suggested", "eq", true)
-      .order("needs_support_handoff_at", { ascending: false })
-      .limit(limit);
-    if (source !== "all") q = q.eq("source", sourceSafe(source));
-    const { data, error } = await q;
-    if (error) return [];
-    return data || [];
-  } catch (err) {
-    console.warn("sbListHandoffPending exception:", err.message);
-    return [];
-  }
-}
-// Count needs_reply items EXCLUDING those >24h (which are auto-escalated to urgent)
-async function sbCountNeedsReplyNonUrgent({ source = "all", role = "all" } = {}) {
-try {
-const OVERDUE_MINUTES = 24 * 60;
-const rows = await sbListConversations({ pipeline: "needs_reply", source, role, limit: 100 });
-let count = 0;
-for (const c of rows || []) {
-const waitingMin = tComputeWaitingMinutes(c);
-if (waitingMin == null || waitingMin <= OVERDUE_MINUTES) {
-count++;
-}
-}
-return count;
-} catch (err) {
-console.warn("sbCountNeedsReplyNonUrgent exception:", err.message);
-return 0;
-}
-}
 async function sbCountCalls() {
 try {
 const { count, error } = await ops()
@@ -834,8 +687,8 @@ const buildQuery = (withRole) => {
     .from("conversations")
     .select(
       withRole
-        ? 'id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at, cc_support_suggested, gmail_url, mirror_conversation_id, role, role_pending, role_confidence, needs_support_handoff, needs_support_handoff_at, handoff_detected_reason'
-        : 'id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at, cc_support_suggested, gmail_url, mirror_conversation_id, needs_support_handoff, needs_support_handoff_at, handoff_detected_reason'
+        ? 'id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at, cc_support_suggested, gmail_url, mirror_conversation_id, role, role_pending, role_confidence'
+        : 'id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at, cc_support_suggested, gmail_url, mirror_conversation_id'
     )
     .order("updated_at", { ascending: false })
     .limit(limit * 2); // Fetch 2x limit for sorting
@@ -877,13 +730,10 @@ return data || null;
 async function sbFindConversationByEmail(email) {
 const normalized = normalizeEmail(email);
 if (!normalized) return null;
-const buildQuery = (useNormalized, withRole) => {
-const selectFields = withRole
-  ? "id, role, role_pending, role_confidence, role_source, contact_email, normalized_email, source, conversation_kind, coach_name"
-  : "id, contact_email, normalized_email, source, conversation_kind, coach_name";
+const buildQuery = (useNormalized) => {
 let q = ops()
 .from("conversations")
-.select(selectFields)
+.select("id, role, role_pending, role_confidence, role_source, contact_email, normalized_email, source, conversation_kind, coach_name")
 .order("updated_at", { ascending: false })
 .limit(1);
 if (useNormalized) {
@@ -894,10 +744,8 @@ q = q.ilike("contact_email", normalized);
 return q.maybeSingle();
 };
 const result = await dbSelectFirst([
-() => buildQuery(true, true),
-() => buildQuery(true, false),
-() => buildQuery(false, true),
-() => buildQuery(false, false),
+() => buildQuery(true),
+() => buildQuery(false),
 ]);
 if (result?.error) return null;
 return result.data || null;
@@ -1052,30 +900,18 @@ if (error) throw new Error(error.message);
 }
 async function sbDeleteMessageById(messageId) {
 // Soft delete by default; hard delete only if is_test=true
-const { data: msg, error: fetchErr } = await ops()
+const { data: msg } = await ops()
 .from("messages")
 .select("is_test, conversation_id")
 .eq("id", messageId)
 .maybeSingle();
-if (fetchErr) {
-console.warn("Failed to fetch message for deletion:", fetchErr.message);
-throw new Error(fetchErr.message);
-}
-if (!msg) return; // Message doesn't exist, nothing to do
+if (!msg) return;
 if (msg.is_test === true) {
 // Hard delete
-const { error: deleteErr } = await ops().from("messages").delete().eq("id", messageId);
-if (deleteErr) {
-console.warn("Failed to hard delete message:", deleteErr.message);
-throw new Error(deleteErr.message);
-}
+await ops().from("messages").delete().eq("id", messageId);
 } else {
 // Soft delete
-const { error: updateErr } = await ops().from("messages").update({ is_deleted: true }).eq("id", messageId);
-if (updateErr) {
-console.warn("Failed to soft delete message:", updateErr.message);
-throw new Error(updateErr.message);
-}
+await ops().from("messages").update({ is_deleted: true }).eq("id", messageId);
 }
 }
 async function sbListConversationsByPersonId(personId, limit = 10) {
@@ -1167,9 +1003,7 @@ created_at: payload.created_at || new Date().toISOString(),
 }
 function isMissingColumnError(error) {
 const msg = String(error?.message || "").toLowerCase();
-return (msg.includes("column") && msg.includes("does not exist")) ||
-       (msg.includes("column") && msg.includes("schema cache")) ||
-       (msg.includes("column") && msg.includes("not found"));
+return msg.includes("column") && msg.includes("does not exist");
 }
 async function sbUpsertSubmissionSafe(row) {
 const { error } = await ops()
@@ -1511,7 +1345,6 @@ return rows;
 }
 function viewTitle(key) {
 const map = {
-handoff: "📌 Loop in Support",
 urgent: "‼️ Urgent",
 needs_reply: "📝 Needs Reply",
 actions_waiting: "⏳ Waiting",
@@ -1551,6 +1384,7 @@ return t !== "═════" && t !== "─────";
 })
 .join("\n");
 }
+
 return safe;
 }
 
@@ -1727,9 +1561,9 @@ const filterLabel =
 filterSource === "support" ? "🧑‍🧒 Support" : filterSource === "programs" ? "🏈 Programs" :
 "🌐 All";
 const counts = {
-handoffCount: await sbCountHandoffPending({ source: filterSource }),
-urgentCount: await sbCountUrgentAuto({ source: filterSource }),
-needsReplyCount: await sbCountNeedsReplyNonUrgent({ source: filterSource }),
+urgentCount: await sbCountConversations({ pipeline: "urgent", source: filterSource }),
+needsReplyCount: await sbCountConversations({ pipeline: "needs_reply", source:
+filterSource }),
 waitingCount: await sbCountConversations({ pipeline: "actions_waiting", source: filterSource
 }),
 activeCount: await sbCountConversations({ pipeline: "active", source: filterSource }),
@@ -1748,7 +1582,7 @@ ${CODE_VERSION} • Build: ${String(BUILD_VERSION).slice(0, 8)}
 🧮 Filter: ${filterLabel}
 
 🗂 ALL QUEUES
-${counts.handoffCount > 0 ? `📌 Loop in Support: ${counts.handoffCount}\n` : ""}‼️ Urgent: ${counts.urgentCount}
+‼️ Urgent: ${counts.urgentCount}
 📝 Needs Reply: ${counts.needsReplyCount}
 ⏳ Waiting: ${counts.waitingCount}
 💬 Active: ${counts.activeCount}
@@ -1803,51 +1637,11 @@ filterSource === "support"
 : filterSource === "programs"
 ? "🏈 Programs"
 : "🌐 All";
-const laneHint =
-filterSource === "programs"
-? "Programs lane shows Instantly threads, handoffs, follow-ups, pools, and client activity."
-: "Tap a queue below to open it.";
 return `${headerLine("all_queues", filterLabel)} · ${roleFilterLabel(roleFilter)}
-${laneHint}`;
+Tap a queue below to open it.`;
 }
 // ---------- ALL QUEUES KEYBOARD ----------
-function allQueuesKeyboard(filterSource = "all") {
-if (filterSource === "programs") {
-return Markup.inlineKeyboard([
-[
-Markup.button.callback("Role: All", "ROLEFILTER:all"),
-Markup.button.callback("Parent", "ROLEFILTER:parent"),
-Markup.button.callback("Athlete", "ROLEFILTER:athlete"),
-],
-[
-Markup.button.callback("Coach", "ROLEFILTER:coach"),
-Markup.button.callback("Trainer", "ROLEFILTER:trainer"),
-Markup.button.callback("Other", "ROLEFILTER:other"),
-],
-[
-Markup.button.callback("🤖 Instantly Threads", "VIEW:active"),
-Markup.button.callback("📌 Loop in Support", "HANDOFF:open"),
-],
-[
-Markup.button.callback("‼️ Urgent", "VIEW:urgent"),
-Markup.button.callback("📝 Needs Reply", "VIEW:needs_reply"),
-],
-[
-Markup.button.callback("📚 Follow-Ups", "VIEW:followups"),
-Markup.button.callback("🌊 Pools", "POOLS:open"),
-],
-[
-Markup.button.callback("👥 Clients", "CLIENTS:open"),
-Markup.button.callback("📱 Calls", "CALLS:hub"),
-],
-[
-Markup.button.callback("🧾 Submissions", "VIEW:website_submissions"),
-Markup.button.callback("✅ Completed", "VIEW:completed"),
-],
-[Markup.button.callback("⬅ Dashboard", "DASH:back")],
-]);
-}
-
+function allQueuesKeyboard() {
 return Markup.inlineKeyboard([
 [
 Markup.button.callback("Role: All", "ROLEFILTER:all"),
@@ -1944,25 +1738,14 @@ const sla = slaBadge(conv.updated_at);
 const until = urgentCountdown(conv.updated_at);
 const ccOn = conv.cc_support_suggested === true;
 const gmail = conv.gmail_url ? `\n  Gmail: ${conv.gmail_url}` : "";
-const pipelineRaw = conv.pipeline || "—";
-const pipelineLabel = (() => {
-  switch(pipelineRaw) {
-    case "urgent": return "‼️ Urgent";
-    case "needs_reply": return "⏳ Needs Reply";
-    case "active": return "💬 Active";
-    case "completed": return "✅ Completed";
-    case "forwarded": return "➡️ Forwarded";
-    default: return pipelineRaw;
-  }
-})();
+const pipeline = conv.pipeline || "—";
 const coach = conv.coach_name || "—";
 const contact = conv.contact_email || "—";
 const subj = conv.subject || "—";
 const prev = shorten(conv.preview || "", 400);
 const identity = conversationIdentityText(conv);
 const roleInfo = (() => {
-// Use conversationRoleForDisplay for consistent role logic with triage
-const r = conversationRoleForDisplay(conv);
+const r = normalizeRole(conv?.role) || "parent";
 let info = `Role: ${roleLabel(r)}`;
 const conflictBadge = roleConflictBadge(conv);
 if (conflictBadge) {
@@ -1970,16 +1753,13 @@ info += `\n  ${conflictBadge}`;
 }
 return info;
 })();
-const handoffBadge = (conv.needs_support_handoff === true && !conv.cc_support_suggested)
-  ? `🚨 HANDOFF DETECTED${conv.handoff_detected_reason ? ` — ${conv.handoff_detected_reason}` : ""}\nTap "📌 Loop in Support" to take over from Instantly.\n--\n`
-  : "";
-const text = `💬 CONVERSATION
---
-${handoffBadge}ID: ${idShort(conv.id)} • ${lane}
+return `💬 CONVERSATION
+━━━━━━━━━━━━━━━━━━━━━━
+ID: ${idShort(conv.id)} • ${lane}
 Identity: ${identity}
 ${roleInfo}
 
-Status: ${pipelineLabel}
+Pipeline: ${pipeline}
 Coach: ${coach}
 Contact: ${contact}
 
@@ -1987,14 +1767,13 @@ Contact: ${contact}
 
 Preview: ${prev}
 
---
+━━━━━━━━━━━━━━━━━━━━━━
 Updated: ${tFmtDateTimeShort(conv.updated_at)}
 💬 Messages: ${msgCount}
 ${sla} • ${until}
 CC: ${ccOn ? "📇 Enabled" : "Off"}${gmail}`;
-return { text, msgCount };
 }
-function conversationCardKeyboard(conv, msgCount = null) {
+function conversationCardKeyboard(conv) {
 const id = conv.id;
 // Mirror button only if present
 const mirrorRow = conv.mirror_conversation_id
@@ -2007,53 +1786,27 @@ const ccBtnLabel = ccOn ? "📇 CC ON" : "CC OFF";
 const roleConflictRow = conv?.role_pending && conv?.role_confidence === "low"
 ? [Markup.button.callback(`✅ Confirm [${roleLabel(conv.role_pending)}]`, `CONFIRMROLE:${id}:${conv.role_pending}`)]
 : [];
-// Thread button label
-const threadLabel = (() => {
-if (msgCount === null) return "🧵 Thread";
-if (msgCount === 0) return "🧵 Thread (none)";
-if (msgCount === 1) return "🧵 Thread (1 msg)";
-return `🧵 Thread (${msgCount} msgs)`;
-})();
-// Instantly AI manages outreach replies — Telegram is read-only viewer + support handoff point
-const isInstantlyManaged = conv.source === "programs" && !conv.cc_support_suggested;
-const loopBtnLabel = conv.needs_support_handoff ? "🚨 Loop in Support NOW" : "📌 Loop in Support";
-
-if (isInstantlyManaged) {
-  // Outreach thread: Instantly owns the lane, but admins can still trigger a manual follow-up.
-  return Markup.inlineKeyboard([
-    [Markup.button.callback(threadLabel, `THREAD:${id}:0`)],
-    [
-      Markup.button.callback(loopBtnLabel, `CC:${id}`),
-      Markup.button.callback("👥 People", `PEOPLE:${id}`),
-    ],
-    [
-      ...roleConflictRow,
-      ...mirrorRow,
-      Markup.button.callback("🗑 Delete", `DELETECONFIRM:conversation:${id}`),
-    ],
-    [Markup.button.callback("🔧 Set Role", `SETROLE:${id}`)],
-    [Markup.button.callback("✍️ Drafts V1/V2/V3", `DRAFTS:open:${id}`)],
-    [Markup.button.callback("📚 Follow-Up", `CONFIRMSEND:${id}:1:outreach`)],
-    [Markup.button.callback("⬅ Dashboard", "DASH:back")],
-  ]);
-}
-
-// Support lane or CC-locked — full send/draft flow via Gmail
 return Markup.inlineKeyboard([
-  [Markup.button.callback(threadLabel, `THREAD:${id}:0`)],
-  [
-    Markup.button.callback(ccBtnLabel, `CC:${id}`),
-    Markup.button.callback("👥 People", `PEOPLE:${id}`),
-  ],
-  [
-    ...roleConflictRow,
-    ...mirrorRow,
-    Markup.button.callback("🗑 Delete", `DELETECONFIRM:conversation:${id}`),
-  ],
-  [Markup.button.callback("🔧 Set Role", `SETROLE:${id}`)],
-  [Markup.button.callback("✍️ Drafts V1/V2/V3", `DRAFTS:open:${id}`)],
-  [Markup.button.callback("📤 Send (Support) 🔒", `SEND:${id}:1`)],
-  [Markup.button.callback("⬅ Dashboard", "DASH:back")],
+// row 1
+[Markup.button.callback("🧵 Thread (Full)", `THREAD:${id}:0`)],
+// row 2
+[
+Markup.button.callback(ccBtnLabel, `CC:${id}`),
+Markup.button.callback("👥 People", `PEOPLE:${id}`),
+],
+// row 3 - role conflict if exists (mirror + delete)
+[
+...roleConflictRow,
+...mirrorRow,
+Markup.button.callback("🗑 Delete", `DELETECONFIRM:conversation:${id}`),
+],
+// row 4 - role management
+[Markup.button.callback("🔧 Set Role", `SETROLE:${id}`)],
+// row 5 - v1/v2/v3 reply drafting
+[Markup.button.callback("✍️ Drafts V1/V2/V3", `DRAFTS:open:${id}`)],
+// BIG action bottom
+[Markup.button.callback("📤 Send Drafts", `SEND:${id}:1`)],
+[Markup.button.callback("⬅ Dashboard", "DASH:back")],
 ]);
 }
 // ---------- SUBMISSION CARD ----------
@@ -2080,7 +1833,7 @@ const heard = sub.how_heard_about || p.how_heard_about || "—";
 const emailSent = sub.email_sent === true || sub.enrollment_email_sent === true;
 const smsSent = sub.sms_sent === true || sub.enrollment_sms_sent === true;
 return `🧾 SUBMISSION
---
+━━━━━━━━━━━━━━━━━━━━━━
 ID: ${idShort(sub.submission_id)}
 
 Name: ${name}
@@ -2095,7 +1848,7 @@ How Heard: ${heard}
 Coverage: ${coverageLabel(p)}
 Referral: ${p.referral_source || p.referral || "—"}
 
---
+━━━━━━━━━━━━━━━━━━━━━━
 Sent Email: ${emailStatusIcon(emailSent)}
 Sent SMS: ${smsStatusIcon(smsSent)}
 
@@ -2156,7 +1909,7 @@ if (!isAdmin(ctx)) return;
 const v = ctx.match[1];
 setAdminRoleFilter(ctx, v);
 const filterSource = getAdminFilter(ctx);
-await smartRender(ctx, await allQueuesText(filterSource, v), allQueuesKeyboard(filterSource));
+await smartRender(ctx, await allQueuesText(filterSource, v), allQueuesKeyboard());
 }));
 
 // ---------- ALL QUEUES ----------
@@ -2168,7 +1921,7 @@ const roleFilter = getAdminRoleFilter(ctx);
 const msg = await smartRender(
 ctx,
 await allQueuesText(filterSource, roleFilter),
-allQueuesKeyboard(filterSource)
+allQueuesKeyboard()
 );
 // Optional: track as live card (queue list)
 if (msg?.message_id) {
@@ -2243,10 +1996,7 @@ filterSource,
 }
 return;
 }
-// Handle urgent with auto-escalation logic
-const rows = viewKey === "urgent" 
-? await sbListUrgentAuto({ source: filterSource, role: roleFilter, limit: 8 })
-: await sbListConversations({ pipeline: viewKey, source: filterSource, role: roleFilter, limit: 8 });
+const rows = await sbListConversations({ pipeline: viewKey, source: filterSource, role: roleFilter, limit: 8 });
 await showConversationList(ctx, viewKey, rows, filterSource, roleFilter);
 // If you want queue lists to live-refresh too, update showConversationList
 // to return the sent message and register it there.
@@ -2276,8 +2026,8 @@ if (!conv) {
 await ctx.reply("❌ Conversation not found.");
 return;
 }
-const { text, msgCount } = await buildConversationCard(conv);
-const kb = conversationCardKeyboard(conv, msgCount);
+const text = await buildConversationCard(conv);
+const kb = conversationCardKeyboard(conv);
 // Edit dashboard in place (single card flow)
 await smartRender(ctx, text, kb);
 }));
@@ -2330,8 +2080,8 @@ refreshQueue.add("triage:all");
 refreshQueue.add("dashboard:all");
 
 const updated = await sbGetConversationById(convId);
-const { text, msgCount } = await buildConversationCard(updated);
-const kb = conversationCardKeyboard(updated, msgCount);
+const text = await buildConversationCard(updated);
+const kb = conversationCardKeyboard(updated);
 await smartRender(ctx, `✅ Role confirmed.\n\n${text}`, kb);
 }));
 
@@ -2418,8 +2168,8 @@ refreshQueue.add("triage:all");
 refreshQueue.add("dashboard:all");
 
 const updated = await sbGetConversationById(convId);
-const { text, msgCount } = await buildConversationCard(updated);
-const kb = conversationCardKeyboard(updated, msgCount);
+const text = await buildConversationCard(updated);
+const kb = conversationCardKeyboard(updated);
 await smartRender(ctx, `✅ Role set to ${roleLabel(selectedRole)}.\n\n${text}`, kb);
 } catch (err) {
 logError("ROLESELECT", err);
@@ -2441,8 +2191,8 @@ if (!mirror) {
 await ctx.answerCbQuery("Mirror conversation not found.");
 return;
 }
-const { text, msgCount } = await buildConversationCard(mirror);
-const kb = conversationCardKeyboard(mirror, msgCount);
+const text = await buildConversationCard(mirror);
+const kb = conversationCardKeyboard(mirror);
 // Edit dashboard in place (single card flow)
 await smartRender(ctx, text, kb);
 } catch (err) {
@@ -2710,10 +2460,7 @@ function isProgramLaneConversation(conv) {
 const s = sourceSafe(conv?.source);
 return s === "programs";
 }
-async function requestCcSupportWorkflow(
-conv,
-{ bridge_draft = 2, support_draft = 2, bridge_message = null, support_message = null } = {}
-) {
+async function requestCcSupportWorkflow(conv, { bridge_draft = 2, support_draft = 2 } = {}) {
 const trace_id = makeTraceId();
 const idempotency_key = makeCcIdempotencyKey(conv.id);
 const payload = {
@@ -2734,18 +2481,6 @@ contact_email: conv.contact_email || null,
 // Draft choices (your UI will show “V2 selected” etc.)
 bridge_draft: Number(bridge_draft),
 support_draft: Number(support_draft),
-bridge_message: bridge_message
-? {
-subject: bridge_message.subject || "",
-body: bridge_message.body || "",
-}
-: null,
-support_message: support_message
-? {
-subject: support_message.subject || "",
-body: support_message.body || "",
-}
-: null,
 // Threading fields for downstream correctness
 gmail_thread_id: conv.gmail_thread_id || null,
 message_id_header: conv.message_id_header || null,
@@ -2760,49 +2495,18 @@ subject: conv.subject || "",
 cc_support_suggested: true,
 },
 };
-const result = await postJsonWebhook(CC_SUPPORT_WEBHOOK_URL, payload);
-return {
-...result,
-trace_id,
-idempotency_key,
-};
+if (!process.env.CC_SUPPORT_WEBHOOK_URL) {
+console.log("CC SUPPORT STUB (no CC_SUPPORT_WEBHOOK_URL):", payload);
+return { ok: true, stub: true, trace_id, idempotency_key };
+}
+const res = await fetch(process.env.CC_SUPPORT_WEBHOOK_URL, {
+method: "POST",
+headers: { "Content-Type": "application/json" },
+body: JSON.stringify(payload),
+});
+return { ok: res.ok, status: res.status, trace_id, idempotency_key };
 
 }
-// -------------------------------
-// 📇 CC Helper Functions
-// -------------------------------
-function ccKeyboard(convId, bridgeDraft = 2, supportDraft = 2) {
-const tagB = (v) => bridgeDraft === v ? " ✅" : "";
-const tagS = (v) => supportDraft === v ? " ✅" : "";
-return Markup.inlineKeyboard([
-[
-Markup.button.callback(`View Bridge V1${tagB(1)}`, `CCVIEW:${convId}:bridge:1:${bridgeDraft}:${supportDraft}`),
-Markup.button.callback(`View Bridge V2${tagB(2)}`, `CCVIEW:${convId}:bridge:2:${bridgeDraft}:${supportDraft}`),
-Markup.button.callback(`View Bridge V3${tagB(3)}`, `CCVIEW:${convId}:bridge:3:${bridgeDraft}:${supportDraft}`),
-],
-[
-Markup.button.callback(`View Support V1${tagS(1)}`, `CCVIEW:${convId}:support:1:${bridgeDraft}:${supportDraft}`),
-Markup.button.callback(`View Support V2${tagS(2)}`, `CCVIEW:${convId}:support:2:${bridgeDraft}:${supportDraft}`),
-Markup.button.callback(`View Support V3${tagS(3)}`, `CCVIEW:${convId}:support:3:${bridgeDraft}:${supportDraft}`),
-],
-[Markup.button.callback("♻️ Regenerate Drafts", `CCREGEN:${convId}`)],
-[Markup.button.callback("✅ Confirm CC Support", `CCCONFIRM:${convId}:${bridgeDraft}:${supportDraft}`)],
-[Markup.button.callback("⬅ Back to Conversation", `OPENCARD:${convId}`)]
-]);
-}
-
-async function renderCCCard(ctx, convId, bridgeDraft = 2, supportDraft = 2) {
-const drafts = ccDraftsCache.get(convId);
-if (!drafts) {
-return smartRender(ctx, "❌ CC drafts not found. Click Regenerate.", ccKeyboard(convId, bridgeDraft, supportDraft));
-}
-let text = `📇 CC Support\nConversation: ${idShort(convId)}\n\n`;
-text += `This will:\n• Send bridge message from outreach to contact\n• Send forwardable support message from ${SUPPORT_FROM_EMAIL}\n• Create + link the Support mirror thread\n\n`;
-text += `Selected:\n• Bridge Draft: V${bridgeDraft}\n• Support Draft: V${supportDraft}\n\n`;
-text += `Click "View" buttons to see full message text before confirming.`;
-return smartRender(ctx, text, ccKeyboard(convId, bridgeDraft, supportDraft));
-}
-
 // -------------------------------
 // 📇 CC button pressed (opens confirm screen)
 // -------------------------------
@@ -2810,147 +2514,108 @@ bot.action(/^CC:(.+)$/, async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const conv = await sbGetConversationById(convId);
-if (!conv) return smartRender(ctx, "❌ Conversation not found.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
+if (!conv) return ctx.reply("Conversation not found.");
 // CC only allowed from program/outreach side (your rule)
 if (!isProgramLaneConversation(conv)) {
-  return smartRender(
-    ctx,
-    "📇 CC Support is only available from the Program/Outreach side (not Support lane).",
-    Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
+  return ctx.reply(
+    "📇 CC Support is only available from the Program/Outreach side (not Support lane)."
   );
 }
-// If already linked, treat as "open mirror" instead of re-CC
+// If already linked, treat as “open mirror” instead of re-CC
 if (conv.mirror_conversation_id) {
-return smartRender(
-ctx,
+return ctx.reply(
 "🪞 Already linked to Support.\nOpening the mirror thread now…",
-Markup.inlineKeyboard([[Markup.button.callback("🪞 Open Mirror", `OPENMIRROR:${conv.id}`), Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
+Markup.inlineKeyboard([[Markup.button.callback("🪞 Open Mirror",
+`OPENMIRROR:${conv.id}`)]])
 );
 }
+// Confirm screen (V2 default selected — you can change defaults)
+const bridgeDraft = 2;
+const supportDraft = 2;
+const kb = Markup.inlineKeyboard([
+[
+Markup.button.callback("Bridge: V1", `CCPICK:${convId}:bridge:1:${supportDraft}`),
+Markup.button.callback("Bridge: V2 ✅", `CCPICK:${convId}:bridge:2:${supportDraft}`),
+Markup.button.callback("Bridge: V3", `CCPICK:${convId}:bridge:3:${supportDraft}`),
+],
+[
+Markup.button.callback("Support: V1", `CCPICK:${convId}:support:${bridgeDraft}:1`),
+Markup.button.callback("Support: V2 ✅", `CCPICK:${convId}:support:${bridgeDraft}:2`),
+Markup.button.callback("Support: V3", `CCPICK:${convId}:support:${bridgeDraft}:3`),
+],
+[Markup.button.callback("✅ Confirm CC Support",
+`CCDO:${convId}:${bridgeDraft}:${supportDraft}`)],
 
-// Generate CC drafts with ChatGPT if not cached
-if (!ccDraftsCache.has(convId)) {
-await smartRender(
-ctx,
-`📇 CC Support\nConversation: ${idShort(convId)}\n\n⏳ Generating bridge & support drafts with ChatGPT...`,
-Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
+[Markup.button.callback("Cancel", `OPENCARD:${convId}`)],
+]);
+await ctx.reply(
+`📇 CC Support\n\nThis will:\n• Send a short bridge message from outreach (\"I'm looping in
+support…\")\n• Send the forwardable support message from ${SUPPORT_FROM_EMAIL}\n•
+Create + link the Support mirror thread\n\nSelected:\n• Bridge Draft: V${bridgeDraft}\n• Support
+Draft: V${supportDraft}`,
+kb
 );
-try {
-const generated = await generateCCDrafts(conv);
-ccDraftsCache.set(convId, generated);
-} catch (err) {
-return smartRender(ctx, `❌ Failed to generate CC drafts: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
-}
-}
-
-// Show CC selection screen
-await renderCCCard(ctx, convId, 2, 2);
 });
-
 // -------------------------------
-// View full CC draft text
+// Optional picker (keeps it simple; re-opens confirm with updated selection)
 // -------------------------------
-bot.action(/^CCVIEW:(.+):(bridge|support):([123]):(\d):(\d)$/, async (ctx) => {
+bot.action(/^CCPICK:(.+):(bridge|support):(\d):(\d)$/, async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
-const type = ctx.match[2]; // "bridge" or "support"
-const version = parseInt(ctx.match[3], 10);
-const currentBridge = parseInt(ctx.match[4], 10);
-const currentSupport = parseInt(ctx.match[5], 10);
-const drafts = ccDraftsCache.get(convId);
-if (!drafts) {
-return smartRender(ctx, "❌ CC drafts not found. Go back and regenerate.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `CC:${convId}`)]]));
-}
-const draft = drafts[type]?.[`v${version}`];
-if (!draft) {
-return smartRender(ctx, `❌ ${type} V${version} not found.`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `CC:${convId}`)]]));
-}
-const isSelected = (type === "bridge" && currentBridge === version) || (type === "support" && currentSupport === version);
-const typeLabel = type === "bridge" ? "Bridge" : "Support";
-let text = `📇 ${typeLabel} Message V${version} ${isSelected ? "✅ SELECTED" : ""}\nConversation: ${idShort(convId)}\n\n`;
-text += `📧 Subject: ${draft.subject || "—"}\n\n`;
-text += `📝 Body:\n${draft.body || "(empty)"}`;
-const newBridge = type === "bridge" ? version : currentBridge;
-const newSupport = type === "support" ? version : currentSupport;
-const buttons = [
-[Markup.button.callback(isSelected ? "✅ Selected" : `✅ Select ${typeLabel} V${version}`, `CCSELECT:${convId}:${type}:${version}:${currentBridge}:${currentSupport}`)],
-[Markup.button.callback("⬅ Back to CC Options", `CC:${convId}`)]
-];
-await smartRender(ctx, text, Markup.inlineKeyboard(buttons));
-});
+const which = ctx.match[2];
+const a = Number(ctx.match[3]);
+const b = Number(ctx.match[4]);
+const bridgeDraft = which === "bridge" ? a : b;
+const supportDraft = which === "support" ? b : a;
+const kb = Markup.inlineKeyboard([
+[
+Markup.button.callback(`Bridge: V1${bridgeDraft === 1 ? " ✅" : ""}`,
+`CCPICK:${convId}:bridge:1:${supportDraft}`),
+Markup.button.callback(`Bridge: V2${bridgeDraft === 2 ? " ✅" : ""}`,
+`CCPICK:${convId}:bridge:2:${supportDraft}`),
+Markup.button.callback(`Bridge: V3${bridgeDraft === 3 ? " ✅" : ""}`,
+`CCPICK:${convId}:bridge:3:${supportDraft}`),
+],
+[
+Markup.button.callback(`Support: V1${supportDraft === 1 ? " ✅" : ""}`,
+`CCPICK:${convId}:support:${bridgeDraft}:1`),
+Markup.button.callback(`Support: V2${supportDraft === 2 ? " ✅" : ""}`,
+`CCPICK:${convId}:support:${bridgeDraft}:2`),
+Markup.button.callback(`Support: V3${supportDraft === 3 ? " ✅" : ""}`,
+`CCPICK:${convId}:support:${bridgeDraft}:3`),
+],
 
-// -------------------------------
-// Select CC draft version
-// -------------------------------
-bot.action(/^CCSELECT:(.+):(bridge|support):([123]):(\d):(\d)$/, async (ctx) => {
-if (!isAdmin(ctx)) return;
-const convId = ctx.match[1];
-const type = ctx.match[2];
-const version = parseInt(ctx.match[3], 10);
-const currentBridge = parseInt(ctx.match[4], 10);
-const currentSupport = parseInt(ctx.match[5], 10);
-// Update selections
-const newBridge = type === "bridge" ? version : currentBridge;
-const newSupport = type === "support" ? version : currentSupport;
-await renderCCCard(ctx, convId, newBridge, newSupport);
-});
-
-// -------------------------------
-// Regenerate CC drafts
-// -------------------------------
-bot.action(/^CCREGEN:(.+)$/, async (ctx) => {
-if (!isAdmin(ctx)) return;
-const convId = ctx.match[1];
-const conv = await sbGetConversationById(convId);
-if (!conv) return smartRender(ctx, "❌ Conversation not found.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
-ccDraftsCache.delete(convId);
-await smartRender(
-ctx,
-`📇 CC Support\nConversation: ${idShort(convId)}\n\n⏳ Regenerating bridge & support drafts with ChatGPT...`,
-Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
+[Markup.button.callback("✅ Confirm CC Support",
+`CCDO:${convId}:${bridgeDraft}:${supportDraft}`)],
+[Markup.button.callback("Cancel", `OPENCARD:${convId}`)],
+]);
+await ctx.reply(
+`📇 CC Support\n\nSelected:\n• Bridge Draft: V${bridgeDraft}\n• Support Draft:
+V${supportDraft}\n\nConfirm to send both messages + create the Support mirror thread.`,
+kb
 );
-try {
-const generated = await generateCCDrafts(conv);
-ccDraftsCache.set(convId, generated);
-await renderCCCard(ctx, convId, 2, 2);
-} catch (err) {
-return smartRender(ctx, `❌ Failed to generate CC drafts: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
-}
 });
-
-bot.action(/^CCCONFIRM:(.+):(\d):(\d)$/, async (ctx) => {
+// -------------------------------
+// ✅ Final CC execution (fires webhook + writes OPS + refresh)
+// -------------------------------
+bot.action(/^CCDO:(.+):(\d):(\d)$/, async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const bridgeDraft = Number(ctx.match[2] || 2);
 const supportDraft = Number(ctx.match[3] || 2);
 const conv = await sbGetConversationById(convId);
-const drafts = ccDraftsCache.get(convId);
-if (!conv) return smartRender(ctx, "❌ Conversation not found.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
+if (!conv) return ctx.reply("Conversation not found.");
 if (!isProgramLaneConversation(conv)) {
-return smartRender(ctx, "📇 CC Support is only available from the Program/Outreach side.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
+return ctx.reply("📇 CC Support is only available from the Program/Outreach side.");
 }
-if (!drafts) {
-return smartRender(ctx, "❌ CC drafts expired. Re-open CC Support and regenerate if needed.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `CC:${convId}`)]]));
-}
-const bridgeMessage = drafts.bridge?.[`v${bridgeDraft}`] || null;
-const supportMessage = drafts.support?.[`v${supportDraft}`] || null;
-if (!bridgeMessage || !supportMessage) {
-return smartRender(ctx, "❌ Selected CC draft content is missing. Re-open CC Support and try again.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `CC:${convId}`)]]));
-}
-// Set suggested flag immediately + clear handoff (so UI reflects intent)
-const { error: ccError } = await ops()
+// Set suggested flag immediately (so UI reflects intent)
+await ops()
 .from("conversations")
 .update({
 cc_support_suggested: true,
-needs_support_handoff: false,
-needs_support_handoff_at: null,
 updated_at: new Date().toISOString(),
 })
 .eq("id", convId);
-if (ccError) {
-console.warn("Failed to set cc_support_suggested:", ccError.message);
-// Don't fail hard - just log and proceed with OPS ledger
-}
 // OPS ledger: intent
 await sbInsertOpsEvent({
 schema_version: "5.3",
@@ -2966,8 +2631,6 @@ payload: { bridgeDraft, supportDraft },
 const result = await requestCcSupportWorkflow(conv, {
 bridge_draft: bridgeDraft,
 support_draft: supportDraft,
-bridge_message: bridgeMessage,
-support_message: supportMessage,
 });
 // OPS ledger: dispatch
 await sbInsertOpsEvent({
@@ -2981,25 +2644,8 @@ trace_id: result.trace_id,
 idempotency_key: result.idempotency_key,
 payload: { bridgeDraft, supportDraft, result },
 });
-
-// Clear cache
-ccDraftsCache.delete(convId);
-
-// Refresh to get updated cc_support_suggested flag
-const updatedConv = await sbGetConversationById(convId);
-const { text: cardText, msgCount } = await buildConversationCard(updatedConv);
-const errorHint = !result.ok
-? `\n\nReason: ${shorten(result.error || result.bodyText || "unknown_error", 220)}`
-: "";
-const successText = result.ok ? 
-`📇 CC Support queued.\n🔒 Sending lane locked to Support (was Outreach).\nMirror thread will appear when ingested.\n\n${cardText}` : 
-`❌ CC failed (${result.status || "?"})${errorHint}`;
-await smartRender(
-ctx,
-successText,
-result.ok ? conversationCardKeyboard(updatedConv, msgCount) : Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
-);
-
+await ctx.reply(result.ok ? "📇 CC Support queued. Mirror thread will appear when ingested." :
+`❌ CC failed (${result.status || "?"})`);
 // Refresh the conversation card instantly
 refreshQueue.add(`conversation:${convId}`);
 refreshLiveCards(true).catch(() => {});
@@ -3370,16 +3016,9 @@ c.contact_name ||
 ((c.first_name || c.last_name) ? `${c.first_name || ""} ${c.last_name || ""}`.trim() : null);
 
 const tag = roleTag(conversationRoleForDisplay(c));
-// Strip "Coach" prefix from coach name to avoid duplication with role tag
-if (tIsCoachThread(c) && coach) {
-const cleanCoachName = String(coach).replace(/^Coach\s+/i, '').trim() || coach;
-return `${tag} ${tSafe(cleanCoachName, 40)}`;
-}
+if (tIsCoachThread(c) && coach) return `${tag} Coach ${tSafe(coach, 40)}`;
 if (client) return `${tag} ${tSafe(client, 40)}`;
-if (coach) {
-const cleanCoachName = String(coach).replace(/^Coach\s+/i, '').trim() || coach;
-return `${tag} ${tSafe(cleanCoachName, 40)}`;
-}
+if (coach) return `${tag} Coach ${tSafe(coach, 40)}`;
 return `${tag} —`;
 }
 function tConvoLine(c, idx) {
@@ -3399,28 +3038,30 @@ const program = c.program_name || c.program || c.school || "";
 const progShort = program ? ` (${tSafe(program, 18)})` : "";
 return `Open · ${tSafe(name, 22)}${progShort}`;
 }
-// Triage button labels: source emoji + full name
+// Shorter format for triage buttons to prevent cutoff
 function tConvoBtnLabelTriage(c) {
-// Get full name
+// Get just the raw name without tags
 const coach = c.coach_full_name || c.coach_name || null;
 const client = c.client_full_name || c.contact_name || 
   ((c.first_name || c.last_name) ? `${c.first_name || ""} ${c.last_name || ""}`.trim() : null);
 
-// Source emoji (programs vs support)
-const sourceEmoji = sourceSafe(c.source) === "programs" ? "🏈" : "🧑‍🧒";
+const role = conversationRoleForDisplay(c);
+const roleEmoji = role === "coach" ? "🏈" : "👤";
 
 let displayName;
 if (tIsCoachThread(c) && coach) {
-  displayName = coach;
+  // Coach thread: show first name only
+  displayName = coach.split(' ')[0];
 } else if (client) {
-  displayName = client;
+  // Parent/client thread: show first name only
+  displayName = client.split(' ')[0];
 } else if (coach) {
-  displayName = coach;
+  displayName = coach.split(' ')[0];
 } else {
   displayName = "—";
 }
 
-return `${sourceEmoji} ${tSafe(displayName, 24)}`;
+return `${roleEmoji} ${tSafe(displayName, 16)}`;
 }
 // ---------- follow-up helpers ----------
 function tFollowupLine(f, idx) {
@@ -3544,7 +3185,6 @@ const pageSize = 10;
 const OVERDUE_THRESHOLD_HOURS = 24; // Items waiting > 24h are urgent
 
 // Fetch all items for all sections
-const handoffRaw = await sbListHandoffPending({ source: filterSource, limit: 24 });
 const needsRaw = await sbListConversations({ pipeline: "needs_reply", source: filterSource, role: roleFilter, limit: 48 });
 const callsRaw = await sbListCallsTriage({ source: filterSource, limit: 24, windowHours: TRIAGE_CALL_WINDOW_HOURS });
 const followupsRaw = await sbListCoachFollowupsDueNow({ source: filterSource, limit: 24 });
@@ -3588,7 +3228,6 @@ const followups = (followupsRaw || []).slice().sort((a, b) => {
 
 // Build unified item list with tier info
 const allItems = [];
-handoffRaw.forEach(c => allItems.push({ type: "convo", tier: "handoff", item: c }));
 urgent.forEach(c => allItems.push({ type: "convo", tier: "urgent", item: c }));
 needs.forEach(c => allItems.push({ type: "convo", tier: "needs", item: c }));
 calls.forEach(c => allItems.push({ type: "call", tier: "calls", item: c }));
@@ -3596,7 +3235,7 @@ followups.forEach(f => allItems.push({ type: "followup", tier: "followups", item
 
 // Pagination
 const totalPages = Math.max(1, Math.ceil(allItems.length / pageSize));
-const safePage = Math.min(totalPages, Math.max(1, Number(activePage) || 1));
+const safePage = activePage > totalPages ? 1 : activePage;
 const start = (safePage - 1) * pageSize;
 const pageItems = allItems.slice(start, start + pageSize);
 
@@ -3604,7 +3243,6 @@ const pageItems = allItems.slice(start, start + pageSize);
 const lines = [];
 const title = (typeof viewTitle === "function") ? viewTitle("triage") : "⚡ Triage";
 lines.push(`${title} · ${roleFilterLabel(roleFilter)}`);
-lines.push(`${handoffRaw.length > 0 ? `📌 ${handoffRaw.length} · ` : ""}‼ ${urgent.length} · ⏳ ${needs.length} · 📱 ${calls.length} · 📚 ${followups.length}`);
 lines.push("");
 
 if (pageItems.length === 0) {
@@ -3618,7 +3256,6 @@ if (pageItems.length === 0) {
     if (entry.tier !== currentTier) {
       if (currentTier !== null) lines.push(""); // Blank line between tiers
       const tierHeaders = {
-        handoff: "📌 LOOP IN SUPPORT — Flagged by Instantly",
         urgent: "‼ URGENT (Overdue > 24h)",
         needs: "⏳ NEEDS REPLY",
         calls: "📱 CALLS (DUE)",
@@ -3629,7 +3266,7 @@ if (pageItems.length === 0) {
     }
     
     // Add item line
-    if (entry.type === "call") {
+    if (entry.type === "calls") {
       lines.push(tCallLine(entry.item, itemNum));
     } else if (entry.type === "followup") {
       lines.push(tFollowupLine(entry.item, itemNum));
@@ -3644,13 +3281,23 @@ lines.push("");
 // Build buttons
 const kb = [];
 
+// Section counts
+kb.push([
+  Markup.button.text(urgent.length ? `‼ Urgent (${urgent.length})` : "‼ Urgent"),
+  Markup.button.text(needs.length ? `⏳ Needs (${needs.length})` : "⏳ Needs"),
+]);
+kb.push([
+  Markup.button.text(calls.length ? `📱 Calls (${calls.length})` : "📱 Calls"),
+  Markup.button.text(followups.length ? `📚 Follow (${followups.length})` : "📚 Follow"),
+]);
+
 // Pagination
 if (totalPages > 1) {
   const navRow = [];
   if (safePage > 1) {
     navRow.push(Markup.button.callback("◀️ Prev", `TRIAGE:all:${safePage - 1}`));
   }
-  navRow.push(Markup.button.callback(`· ${safePage}/${totalPages} ·`, `TRIAGE:all:${safePage}`));
+  navRow.push(Markup.button.text(`${safePage}/${totalPages}`));
   if (safePage < totalPages) {
     navRow.push(Markup.button.callback("Next ▶️", `TRIAGE:all:${safePage + 1}`));
   }
@@ -3659,7 +3306,7 @@ if (totalPages > 1) {
 
 // Open buttons for displayed items
 pageItems.forEach((entry) => {
-  if (entry.type === "call") {
+  if (entry.type === "calls") {
     const action = tCallOpenAction(entry.item);
     if (action) kb.push([Markup.button.callback(tCallBtnLabel(entry.item), action)]);
   } else if (entry.type === "followup") {
@@ -3680,69 +3327,6 @@ registerLiveCard(msg, {
 });
 }
 
-async function handoffOpen(ctx, activePage = 1) {
-const filterSource = getAdminFilter(ctx) || "all";
-const roleFilter = getAdminRoleFilter(ctx) || "all";
-const pageSize = 10;
-const raw = await sbListHandoffPending({ source: filterSource, limit: 80 });
-const items = roleFilter === "all"
-  ? raw
-  : (raw || []).filter((c) => conversationRoleForDisplay(c) === roleFilter);
-const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
-const safePage = Math.min(totalPages, Math.max(1, Number(activePage) || 1));
-const start = (safePage - 1) * pageSize;
-const pageItems = items.slice(start, start + pageSize);
-const filterLabel =
-filterSource === "support"
-? "🧑‍🧒 Support"
-: filterSource === "programs"
-? "🏈 Programs"
-: "🌐 All";
-
-const lines = [];
-lines.push(`${headerLine("handoff", filterLabel)} · ${roleFilterLabel(roleFilter)}`);
-lines.push(`Flagged by Instantly for immediate human handoff.`);
-lines.push(`Open: ${items.length}`);
-lines.push("");
-
-if (pageItems.length === 0) {
-  lines.push("No handoff items.");
-} else {
-  pageItems.forEach((conv, idx) => {
-    const reason = conv.handoff_detected_reason ? `\n Reason: ${conv.handoff_detected_reason}` : "";
-    lines.push(`${tConvoLine(conv, start + idx + 1)}${reason}`);
-  });
-}
-
-const kb = [];
-if (totalPages > 1) {
-  const navRow = [];
-  if (safePage > 1) {
-    navRow.push(Markup.button.callback("◀️ Prev", `HANDOFF:${safePage - 1}`));
-  }
-  navRow.push(Markup.button.callback(`· ${safePage}/${totalPages} ·`, `HANDOFF:${safePage}`));
-  if (safePage < totalPages) {
-    navRow.push(Markup.button.callback("Next ▶️", `HANDOFF:${safePage + 1}`));
-  }
-  kb.push(navRow);
-}
-
-pageItems.forEach((conv) => {
-  kb.push([Markup.button.callback(tConvoBtnLabelTriage(conv), `OPENCARD:${conv.id}`)]);
-});
-
-kb.push([Markup.button.callback("⬅ All Queues", "ALLQ:open")]);
-kb.push([Markup.button.callback("⬅ Dashboard", "DASH:back")]);
-
-const msg = await smartRender(ctx, lines.join("\n\n"), Markup.inlineKeyboard(kb));
-registerLiveCard(msg, {
-  type: "handoff",
-  card_key: `handoff:${filterSource}:${roleFilter}:${safePage}`,
-  ref_id: `handoff:${filterSource}:${roleFilter}`,
-  filterSource,
-});
-}
-
 bot.action("TRIAGE:open", async (ctx) => {
 try {
 if (!isAdmin(ctx)) return;
@@ -3752,17 +3336,6 @@ logError(ctx, err);
 await ctx.reply(`❌ Error loading triage: ${err.message}`);
 }
 });
-
-bot.action("HANDOFF:open", safeAction(async (ctx) => {
-if (!isAdmin(ctx)) return;
-await handoffOpen(ctx, 1);
-}));
-
-bot.action(/^HANDOFF:(\d+)$/, safeAction(async (ctx) => {
-if (!isAdmin(ctx)) return;
-const page = parseInt(ctx.match[1], 10) || 1;
-await handoffOpen(ctx, page);
-}));
 
 bot.action(/^TRIAGE:all:(\d+)$/, async (ctx) => {
 try {
@@ -4003,13 +3576,10 @@ async function sbCountTriageDueNow({ source = "all" } = {}) {
 // Recommended: implement as SELECT count(*) from nil.v_triage_due_now where
 // source=...
 // Placeholder stub (replace with your Supabase query)
-let q = ops()
+const { count, error } = await ops()
 .from("v_triage_due_now")
-.select("card_key", { count: "exact", head: true });
-if (source !== "all") {
-q = q.eq("source", source);
-}
-const { count, error } = await q; // adjust if your view stores source differently
+.select("card_key", { count: "exact", head: true })
+.eq("source", source === "all" ? "all" : source); // adjust if your view stores source differently
 if (error) {
 console.log("sbCountTriageDueNow error:", error);
 return 0;
@@ -4047,32 +3617,25 @@ return Number(count) || 0;
 async function sbListCoachFollowupsDueNow({ source = "all", limit = 24 } = {}) {
 // List coach followups that are due now from nil.conversations
 const now = new Date().toISOString();
-const buildQuery = (withMetrics = true) => {
-  const metricCols = withMetrics
-    ? ", guide_opens_year, enroll_clicks_year, eapp_visits_year"
-    : "";
-  let q = ops()
-    .from("conversations")
-    .select(
-      `id, coach_id, coach_name, contact_email, source, pipeline, subject, preview, updated_at, created_at, next_action_at${metricCols}`
-    )
-    .eq("pipeline", "followups")
-    .lte("next_action_at", now)
-    .order("next_action_at", { ascending: true })
-    .limit(limit);
-  if (source !== "all") q = q.eq("source", sourceSafe(source));
-  return q;
-};
 
-const result = await dbSelectFirst([
-  () => buildQuery(true),
-  () => buildQuery(false),
-]);
-if (result?.error) {
-  console.log("sbListCoachFollowupsDueNow error:", result.error);
-  return [];
+let q = ops()
+.from("conversations")
+.select("id, coach_id, coach_name, contact_email, source, pipeline, subject, preview, updated_at, created_at")
+.eq("pipeline", "followups")
+.lte("next_action_at", now)
+.order("next_action_at", { ascending: true })
+.limit(limit);
+
+if (source !== "all") {
+q = q.eq("source", sourceSafe(source));
 }
-return result?.data || [];
+
+const { data, error } = await q;
+if (error) {
+console.log("sbListCoachFollowupsDueNow error:", error);
+return [];
+}
+return data || [];
 }
 async function sbCountCallsToday({ source = "all", dayStartISO, dayEndISO } = {}) {
 // Recommended: view like nil.v_calls_card with scheduled_at
@@ -4103,22 +3666,32 @@ const { dayKey, time, dayStartISO, dayEndISO } = nyParts(now);
 // - dayStartISO: ISO string at NY 00:00
 // - dayEndISO: ISO string at next day NY 00:00
 // Pull counts (parallel)
-const [triageDue, callsToday] = await Promise.all([
-  sbCountTriageDueNow({ source: filterSource }).catch(() => 0),
-  sbCountCallsToday({ source: filterSource, dayStartISO, dayEndISO }).catch(() => 0),
-]);
+const [
+triageDue,
+callsToday,
 
+needsReply,
+followupsDue
+] = await Promise.all([
+sbCountTriageDueNow({ source: filterSource }).catch(() => 0),
+sbCountCallsToday({ source: filterSource, dayStartISO, dayEndISO }).catch(() => 0),
+sbCountNeedsReply({ source: filterSource }).catch(() => 0),
+sbCountCoachFollowupsDueNow({ source: filterSource }).catch(() => 0),
+]);
 const text =
 `📅 TODAY
 --
 ${dayKey} • ${time}
 
 ⚡️ Triage Due: ${triageDue}
-📱 Calls Scheduled: ${callsToday}
+📱 Calls Today: ${callsToday}
+⏳ Needs Reply: ${needsReply}
+📚 Follow-Ups Due: ${followupsDue}
 --`;
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("⚡️ Triage", "TRIAGE:open")],
-[Markup.button.callback("📱 Calls", "CALLS:hub"), Markup.button.callback("🗂 All Queues", "ALLQ:open")],
+[Markup.button.callback("📱 Calls", "CALLS:hub"), Markup.button.callback("🗂 All Queues",
+"ALLQ:open")],
 [Markup.button.callback("🔎 Search", "SEARCH:help"), Markup.button.callback("🕘 Recent", "SEARCH:recent")],
 [Markup.button.callback("⬅ Dashboard", "DASH:back")],
 ]);
@@ -5060,7 +4633,7 @@ const notes = esc(c.notes || c.calendly_payload?.notes || "—");
 const convId = c.conversation_id ? esc(idShort(c.conversation_id)) : "—";
 return (
 `📱 <b>CALL</b>
---
+━━━━━━━━━━━━━━━━━━━━━━
 ID: ${esc(idShort(c.id))}
 
 <b>Client</b>
@@ -5078,7 +4651,7 @@ Sport/Level: ${sportLevel}
 Help: ${help}
 Notes: ${notes}
 
---
+━━━━━━━━━━━━━━━━━━━━━━
 <b>Linked</b>
 Conversation: ${convId}`
 );
@@ -5357,8 +4930,12 @@ return msg;
 async function resolveFromEmail(conv, sendAs) {
 // support always uses support inbox
 if (sendAs === "support") return SUPPORT_FROM_EMAIL;
-// outreach must use a configured outreach sender. Never fall back to support.
-return conv?.outreach_from_email || OUTREACH_FROM_EMAIL || null;
+// outreach should use an outreach sender (recommended), fallback to inbound_from_email
+// only if you truly want that behavior
+// NOTE: using inbound_from_email as FROM can break DMARC unless you have verified
+// sender / domain alignment
+return conv?.outreach_from_email || OUTREACH_FROM_EMAIL ||
+SUPPORT_FROM_EMAIL;
 }
 // helpers
 function makeSendIdempotencyKey(conv, useDraft, mode) {
@@ -5390,6 +4967,13 @@ const { data, error } = await ops()
 if (error) return null;
 const row = Array.isArray(data) ? data[0] : null;
 return row ? { version: row.version, subject: row.subject || "", body: row.body || "" } : null;
+}
+async function sbEnsureCcPackageDrafts(convId) {
+// If you already generate these drafts elsewhere (n8n/AI), you can noop this.
+// This stub just ensures "bridge" + "support_forward" exist.
+// Implement however you want; simplest is:
+// - if missing, insert a default V1 selected for each kind.
+return true;
 }
 
 async function sbListConversationDrafts(conversationId) {
@@ -5462,16 +5046,6 @@ if (!OPENAI_API_KEY) {
 throw new Error("Missing OPENAI_API_KEY");
 }
 const inbound = await sbLatestInboundMessage(conv.id);
-const isPrograms = sourceSafe(conv.source) === "programs";
-let coverageExplorationYear = null;
-if (isPrograms) {
-  try {
-    const yearly = await sbMetricSummary({ source: "programs", window: "year" });
-    coverageExplorationYear = Number(yearly?.coverageExploration || 0);
-  } catch (_) {
-    coverageExplorationYear = null;
-  }
-}
 const prompt = {
 contact_email: conv.contact_email || "",
 subject: conv.subject || "",
@@ -5479,16 +5053,7 @@ preview: conv.preview || "",
 latest_inbound: inbound?.body || inbound?.preview || "",
 coach_name: conv.coach_name || "",
 source: conv.source || "support",
-followup_due_at: conv.followup_next_action_at || conv.next_action_at || null,
-metrics_window: "year",
-enroll_clicks_year: Number(conv.enroll_clicks_year || 0),
-guide_opens_year: Number(conv.guide_opens_year || 0),
-coverage_exploration_total_year: coverageExplorationYear,
 };
-const programsSystemPrompt = "You write concise professional outreach follow-up replies for coach conversations. Return JSON with v1,v2,v3 each containing subject and body.";
-const supportSystemPrompt = "You write concise professional support replies. Return JSON with v1,v2,v3 each containing subject and body.";
-const programsUserPrompt = `Create 3 follow-up reply drafts for this Programs conversation:\n${JSON.stringify(prompt)}\n\nRules:\n- This is a manual follow-up reply in the outreach lane (not autonomous AI send)\n- Use metric context naturally when helpful: Enroll Clicks, Parent Guide Opens, and Total Coverage Exploration\n- Keep under 130 words\n- Include one clear next step\n- Keep tone human, confident, and concise\n- Do not mention AI\nReturn: {\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}}`;
-const supportUserPrompt = `Create 3 reply drafts for this inbound conversation:\n${JSON.stringify(prompt)}\n\nRules:\n- V1 direct/helpful\n- V2 warm/relationship-focused\n- V3 concise/executive\n- Keep under 130 words\n- Include clear next step\n- Do not mention AI\nReturn: {\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}}`;
 const res = await fetch("https://api.openai.com/v1/chat/completions", {
 method: "POST",
 headers: {
@@ -5500,8 +5065,8 @@ model: "gpt-4o-mini",
 temperature: 0.7,
 response_format: { type: "json_object" },
 messages: [
-{ role: "system", content: isPrograms ? programsSystemPrompt : supportSystemPrompt },
-{ role: "user", content: isPrograms ? programsUserPrompt : supportUserPrompt }
+{ role: "system", content: "You write concise professional support replies. Return JSON with v1,v2,v3 each containing subject and body." },
+{ role: "user", content: `Create 3 reply drafts for this inbound conversation:\n${JSON.stringify(prompt)}\n\nRules:\n- V1 direct/helpful\n- V2 warm/relationship-focused\n- V3 concise/executive\n- Keep under 130 words\n- Include clear next step\n- Do not mention AI\nReturn: {\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}}` }
 ]
 })
 });
@@ -5513,50 +5078,10 @@ const parsed = JSON.parse(content);
 return parsed;
 }
 
-async function generateCCDrafts(conv) {
-if (!OPENAI_API_KEY) {
-throw new Error("Missing OPENAI_API_KEY");
-}
-const inbound = await sbLatestInboundMessage(conv.id);
-const prompt = {
-contact_email: conv.contact_email || "",
-subject: conv.subject || "",
-preview: conv.preview || "",
-latest_inbound: inbound?.body || inbound?.preview || "",
-coach_name: conv.coach_name || "",
-source: conv.source || "outreach",
-};
-const res = await fetch("https://api.openai.com/v1/chat/completions", {
-method: "POST",
-headers: {
-"Content-Type": "application/json",
-Authorization: `Bearer ${OPENAI_API_KEY}`,
-},
-body: JSON.stringify({
-model: "gpt-4o-mini",
-temperature: 0.7,
-response_format: { type: "json_object" },
-messages: [
-{ role: "system", content: "You write CC bridge and support messages. Return JSON with bridge (v1-v3) and support (v1-v3) drafts, each with subject and body." },
-{ role: "user", content: `Create CC drafts for this conversation:\n${JSON.stringify(prompt)}\n\nCreate 6 drafts total:\nBridge messages (to be sent from outreach to contact):\n- V1: Short/Direct ("Looping in support...")\n- V2: Warm/Personal (build relationship)\n- V3: Ultra-brief (executive style)\n\nSupport messages (forwardable from ${SUPPORT_FROM_EMAIL}):\n- V1: Professional/Detailed\n- V2: Warm/Helpful\n- V3: Quick/Action-focused\n\nKeep all under 130 words. Return: {\"bridge\":{\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}},\"support\":{\"v1\":{...},\"v2\":{...},\"v3\":{...}}}` }
-]
-})
-});
-if (!res.ok) throw new Error(`OpenAI error ${res.status}`);
-const json = await res.json();
-const content = json?.choices?.[0]?.message?.content;
-if (!content) throw new Error("No CC draft content from OpenAI");
-const parsed = JSON.parse(content);
-return parsed;
-}
-
-// CC drafts cache (in-memory, per conversation)
-const ccDraftsCache = new Map();
-
 function draftsKeyboard(convId, selectedVersion = null) {
 const tag = (v) => selectedVersion === v ? " ✅" : "";
 return Markup.inlineKeyboard([
-[Markup.button.callback(`View V1${tag(1)}`, `DRAFTS:view:${convId}:1`), Markup.button.callback(`View V2${tag(2)}`, `DRAFTS:view:${convId}:2`), Markup.button.callback(`View V3${tag(3)}`, `DRAFTS:view:${convId}:3`)],
+[Markup.button.callback(`Use V1${tag(1)}`, `DRAFTS:use:${convId}:1`), Markup.button.callback(`Use V2${tag(2)}`, `DRAFTS:use:${convId}:2`), Markup.button.callback(`Use V3${tag(3)}`, `DRAFTS:use:${convId}:3`)],
 [Markup.button.callback("✏️ Edit Selected", `DRAFTS:edit:${convId}`), Markup.button.callback("♻️ Regenerate", `DRAFTS:regen:${convId}`)],
 [Markup.button.callback("📤 Send (Support)", `CONFIRMSEND:${convId}:1:support`), Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]
 ]);
@@ -5609,53 +5134,13 @@ await smartRender(ctx, `❌ Draft error: ${err.message}`, Markup.inlineKeyboard(
 }
 });
 
-bot.action(/^DRAFTS:view:(.+):(1|2|3)$/, async (ctx) => {
-if (!isAdmin(ctx)) return;
-const convId = ctx.match[1];
-const version = parseInt(ctx.match[2], 10);
-try {
-const drafts = await sbListConversationDrafts(convId);
-const draft = drafts.find((d) => d.version === version);
-if (!draft) {
-return smartRender(ctx, `❌ Draft V${version} not found.`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `DRAFTS:open:${convId}`)]]));
-}
-const selected = drafts.find((d) => d.selected);
-const isSelected = selected?.version === version;
-const marker = isSelected ? "✅ SELECTED" : "";
-let text = `✍️ Draft V${version} ${marker}\nConversation: ${idShort(convId)}\n\n`;
-text += `📧 Subject: ${draft.subject || "—"}\n\n`;
-text += `📝 Body:\n${draft.body || "(empty)"}`;
-const buttons = [
-[Markup.button.callback(isSelected ? "✅ Selected" : "✅ Select This", `DRAFTS:use:${convId}:${version}`)],
-[Markup.button.callback("⬅ Back to Drafts", `DRAFTS:open:${convId}`)]
-];
-await smartRender(ctx, text, Markup.inlineKeyboard(buttons));
-} catch (err) {
-logError(ctx, err);
-await smartRender(ctx, `❌ Error: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `DRAFTS:open:${convId}`)]]));
-}
-});
-
 bot.action(/^DRAFTS:use:(.+):(1|2|3)$/, async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const version = Number(ctx.match[2]);
 try {
 await sbSelectConversationDraft(convId, version);
-// Show the draft view with updated selection
-const drafts = await sbListConversationDrafts(convId);
-const draft = drafts.find((d) => d.version === version);
-if (!draft) {
-return renderDraftsCard(ctx, convId, `✅ Selected V${version}`);
-}
-let text = `✍️ Draft V${version} ✅ SELECTED\nConversation: ${idShort(convId)}\n\n`;
-text += `📧 Subject: ${draft.subject || "—"}\n\n`;
-text += `📝 Body:\n${draft.body || "(empty)"}`;
-const buttons = [
-[Markup.button.callback("✅ Selected", `DRAFTS:use:${convId}:${version}`)],
-[Markup.button.callback("⬅ Back to Drafts", `DRAFTS:open:${convId}`)]
-];
-await smartRender(ctx, text, Markup.inlineKeyboard(buttons));
+await renderDraftsCard(ctx, convId, `Selected V${version}`);
 } catch (err) {
 logError(ctx, err);
 await smartRender(ctx, `❌ Select draft failed: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
@@ -5711,17 +5196,6 @@ null } = {}
 ) {
 const trace_id = makeTraceId();
 const idempotency_key = makeSendIdempotencyKey(conv, useDraft, sendAs);
-const fromEmail = await resolveFromEmail(conv, sendAs);
-if (sendAs === "outreach" && !fromEmail) {
-return {
-ok: false,
-status: 422,
-trace_id,
-idempotency_key,
-error: "outreach_sender_not_configured",
-bodyText: "",
-};
-}
 const payload = {
 schema_version: "5.3",
 event_type: "outbox.email.send_requested",
@@ -5739,7 +5213,7 @@ subject: subjectOverride ?? (conv.subject || ""),
 body: bodyOverride ?? "",
 cc_support: !!ccSupport,
 send_as: sendAs,
-from_email: fromEmail,
+from_email: await resolveFromEmail(conv, sendAs),
 // threading support
 gmail_thread_id: conv.gmail_thread_id || null,
 message_id_header: conv.message_id_header || null,
@@ -5748,18 +5222,21 @@ references: conv.references || null,
 mirror_conversation_id: conv.mirror_conversation_id || null,
 use_draft: Number(useDraft),
 };
-const sendHeaders = {};
-if (BASE_WEBHOOK_SECRET) sendHeaders["x-nil-secret"] = BASE_WEBHOOK_SECRET;
-const res = await postJsonWebhook(MAKE_SEND_WEBHOOK_URL, payload, {
-headers: sendHeaders,
+// local dev safety
+if (!MAKE_SEND_WEBHOOK_URL) {
+console.log("SEND STUB:", payload);
+return { ok: true, stub: true, trace_id, idempotency_key };
+}
+const res = await fetch(MAKE_SEND_WEBHOOK_URL, {
+method: "POST",
+headers: { "Content-Type": "application/json" },
+body: JSON.stringify(payload),
 });
 return {
 ok: res.ok,
 status: res.status,
 trace_id,
 idempotency_key,
-error: res.error || null,
-bodyText: res.bodyText || "",
 };
 }
 
@@ -5771,35 +5248,15 @@ if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const useDraft = Number(ctx.match[2]);
 const conv = await sbGetConversationById(convId);
-if (!conv) return smartRender(ctx, "❌ Conversation not found.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
-
-// Determine send mode(s) based on conversation state
-const isSupport = conv.source === "support";
-const isCCd = conv.cc_support_suggested === true;
-const isLockedToSupport = isSupport || isCCd;
-
-// If locked to one mode, skip the choice
-if (isLockedToSupport) {
-// Support mode only
-await smartRender(
-ctx,
-`📤 Send Draft (Support)\n\nSend lane is locked to Support.\n\n${isSupport ? "This is a Support conversation." : "CC Support has been enabled."}`,
-Markup.inlineKeyboard([
-[Markup.button.callback("✅ Send as Support", `CONFIRMSEND:${convId}:${useDraft}:support`)],
-[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)],
-])
-);
-} else {
-// Programs without CC: can choose between outreach and support
+if (!conv) return ctx.reply("Conversation not found.");
 const kb = Markup.inlineKeyboard([
-[
-Markup.button.callback("📤 Send as Outreach ✅", `CONFIRMSEND:${convId}:${useDraft}:outreach`),
-Markup.button.callback("📤 Send as Support", `CONFIRMSEND:${convId}:${useDraft}:support`),
-],
+[Markup.button.callback("Confirm Support Send",
+`CONFIRMSEND:${convId}:${useDraft}:support`)],
+[Markup.button.callback("Confirm Outreach Send",
+`CONFIRMSEND:${convId}:${useDraft}:outreach`)],
 [Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)],
 ]);
-await smartRender(ctx, `📤 Send Draft\n\nChoose sending lane:\n\n(Outreach selected by default. Use Support only if CC is enabled manually.)`, kb);
-}
+await ctx.reply(`📤 Send Draft ${useDraft ? "ON" : "OFF"}\n\nChoose send mode:`, kb);
 });
 // ===============================
 // CONFIRM SEND SCREEN (single send)
@@ -5810,24 +5267,12 @@ const convId = ctx.match[1];
 const useDraft = Number(ctx.match[2]);
 const mode = ctx.match[3];
 const conv = await sbGetConversationById(convId);
-if (!conv) return smartRender(ctx, "❌ Conversation not found.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
-
-const fromEmail = await resolveFromEmail(conv, mode);
-if (mode === "outreach" && !fromEmail) {
-return smartRender(
-ctx,
-"❌ Outreach sender is not configured. Set OUTREACH_FROM_EMAIL (or conversation outreach sender) before sending.",
-Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
-);
-}
-const modeLabel = mode === "support" ? "Support (forwarding)" : "Outreach (direct)";
-const selectedDraft = await sbGetSelectedDraftBody(convId, "conversation");
-const draftLabel = selectedDraft?.version ? `Selected V${selectedDraft.version}` : `V${useDraft}`;
+if (!conv) return ctx.reply("Conversation not found.");
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("✅ Send Now", `DOSEND:${convId}:${useDraft}:${mode}`)],
 [Markup.button.callback("Cancel", `OPENCARD:${convId}`)],
 ]);
-await smartRender(ctx, `⚠ Confirm send?\n\nMode: ${modeLabel}\nFrom: ${fromEmail}\nDraft: ${draftLabel}`, kb);
+await ctx.reply(`⚠ Confirm send?\nMode: ${mode}\nDraft: ${useDraft}`, kb);
 });
 
 // ===============================
@@ -5839,7 +5284,7 @@ const convId = ctx.match[1];
 const useDraft = Number(ctx.match[2]);
 const mode = ctx.match[3];
 const conv = await sbGetConversationById(convId);
-if (!conv) return smartRender(ctx, "❌ Conversation not found.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
+if (!conv) return ctx.reply("Conversation not found.");
 // Pull the selected conversation draft body (kind="conversation")
 const selected = await sbGetSelectedDraftBody(convId, "conversation");
 const subjectOverride = selected?.subject || conv.subject || "";
@@ -5863,20 +5308,142 @@ trace_id: result.trace_id,
 idempotency_key: result.idempotency_key,
 payload: { mode, useDraft, result },
 });
-const { text: cardText, msgCount } = await buildConversationCard(conv);
-const errorHint = !result.ok
-? `\n\nReason: ${shorten(result.error || result.bodyText || "unknown_error", 220)}`
-: "";
-const successText = result.ok ? `✅ Send queued.\n\n${cardText}` : `❌ Send failed (${result.status || "?"})${errorHint}`;
-await smartRender(
-ctx,
-successText,
-result.ok ? conversationCardKeyboard(conv, msgCount) : Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
-);
+await ctx.reply(result.ok ? "✅ Send queued." : `❌ Send failed (${result.status || "?"})`);
 // Instant refresh
 refreshQueue.add(`conversation:${convId}`);
 refreshLiveCards(true).catch(() => {});
 
+});
+// ==========================================================
+// CC SUPPORT PACKAGE (Bridge + Support Forward + SEND BOTH)
+// ==========================================================
+// Open package menu (only meaningful on PROGRAM/OUTREACH conversations)
+bot.action(/^CCPACKAGE:(.+)$/, async (ctx) => {
+if (!isAdmin(ctx)) return;
+const convId = ctx.match[1];
+const conv = await sbGetConversationById(convId);
+if (!conv) return ctx.reply("Conversation not found.");
+// Optional guard: hide this for support threads
+if (conv.conversation_kind === "support") {
+return ctx.reply("CC Support Package is not available on support threads.");
+}
+// Ensure drafts exist (bridge + support_forward)
+await sbEnsureCcPackageDrafts(convId);
+const bridge = await sbGetSelectedDraftBody(convId, "bridge");
+const support = await sbGetSelectedDraftBody(convId, "support_forward");
+const kb = Markup.inlineKeyboard([
+[Markup.button.callback("Open Bridge Draft", `CCOPEN:bridge:${convId}`)],
+[Markup.button.callback("Open Support Forward Draft",
+`CCOPEN:support_forward:${convId}`)],
+[Markup.button.callback(`✅ SEND BOTH (Bridge V${bridge?.version || "?"} + Support
+V${support?.version || "?"})`, `CCSEND:${convId}`)],
+[Markup.button.callback("Cancel", `OPENCARD:${convId}`)],
+]);
+await ctx.reply(
+`📇 CC Support Package\n\nThis will send:\n• Bridge message (Outreach → Coach)\n•
+Support forward message (Support → Coach)\n\nReview drafts, then send both.`,
+kb
+);
+});
+// Open one of the CC drafts (you can route this to your existing OPENCARD builder if you treat
+// these as draft cards)
+bot.action(/^CCOPEN:(bridge|support_forward):(.+)$/, async (ctx) => {
+
+if (!isAdmin(ctx)) return;
+const kind = ctx.match[1];
+const convId = ctx.match[2];
+const d = await sbGetSelectedDraftBody(convId, kind);
+if (!d) return ctx.reply("Draft not found.");
+await ctx.reply(
+`🧾 ${kind === "bridge" ? "Bridge Draft" : "Support Forward Draft"}\nSelected:
+V${d.version}\n\nSubject:\n${d.subject || "—"}\n\nBody:\n${d.body || "—"}`,
+Markup.inlineKeyboard([
+[Markup.button.callback("⬅ Back to Package", `CCPACKAGE:${convId}`)]
+])
+);
+});
+// Final: send BOTH + link/lock support
+bot.action(/^CCSEND:(.+)$/, async (ctx) => {
+if (!isAdmin(ctx)) return;
+const convId = ctx.match[1];
+const conv = await sbGetConversationById(convId);
+if (!conv) return ctx.reply("Conversation not found.");
+if (conv.conversation_kind === "support") {
+return ctx.reply("CC Support Package is not available on support threads.");
+}
+const bridge = await sbGetSelectedDraftBody(convId, "bridge");
+const support = await sbGetSelectedDraftBody(convId, "support_forward");
+if (!bridge || !support) return ctx.reply("Missing bridge/support drafts.");
+// Confirm screen (one final button)
+const kb = Markup.inlineKeyboard([
+[Markup.button.callback("✅ Send Both Now", `CCDOSEND:${convId}`)],
+[Markup.button.callback("Cancel", `CCPACKAGE:${convId}`)],
+]);
+await ctx.reply(
+`⚠ Confirm CC Package Send?\n\nBridge: Outreach → Coach
+(V${bridge.version})\nSupport: Support → Coach (V${support.version})`,
+kb
+);
+
+});
+bot.action(/^CCDOSEND:(.+)$/, async (ctx) => {
+if (!isAdmin(ctx)) return;
+const convId = ctx.match[1];
+const conv = await sbGetConversationById(convId);
+if (!conv) return ctx.reply("Conversation not found.");
+const bridge = await sbGetSelectedDraftBody(convId, "bridge");
+const support = await sbGetSelectedDraftBody(convId, "support_forward");
+if (!bridge || !support) return ctx.reply("Missing bridge/support drafts.");
+// Send Bridge from OUTREACH identity
+const r1 = await sendViaMake(conv, {
+useDraft: Number(bridge.version || 1),
+ccSupport: false, // bridge is just coach-facing
+sendAs: "outreach",
+subjectOverride: bridge.subject || conv.subject || "",
+bodyOverride: bridge.body || "",
+});
+// Send Support Forward from SUPPORT identity
+const r2 = await sendViaMake(conv, {
+useDraft: Number(support.version || 1),
+ccSupport: false, // support forward is the new operational thread anchor
+sendAs: "support",
+subjectOverride: support.subject || conv.subject || "",
+bodyOverride: support.body || "",
+});
+// Link + lock
+const nowIso = new Date().toISOString();
+await ops()
+.from("conversations")
+.update({
+cc_support_enabled: true,
+cc_support_locked_at: nowIso,
+// if you already have linked IDs, set them here too
+// support_linked_conversation_id: conv.support_linked_conversation_id || <create/find support conversation id>
+updated_at: nowIso,
+})
+.eq("id", convId);
+
+// Ledger event
+await sbInsertOpsEvent({
+schema_version: "5.3",
+event_type: "cc_support.package_sent",
+source: "telegram",
+direction: "outbound",
+entity_type: "conversation",
+entity_id: convId,
+payload: {
+bridge: { version: bridge.version, trace_id: r1.trace_id, ok: r1.ok, status: r1.status },
+support: { version: support.version, trace_id: r2.trace_id, ok: r2.ok, status: r2.status },
+},
+});
+await ctx.reply(
+(r1.ok && r2.ok)
+? "✅ Bridge queued.\n✅ Support forward queued.\n📎 Support linked + locked."
+: `⚠ Package queued with issues.\nBridge ok=${r1.ok}\nSupport ok=${r2.ok}`
+);
+// Refresh everywhere
+refreshQueue.add(`conversation:${convId}`);
+refreshLiveCards(true).catch(() => {});
 });
 // ==========================================================
 // UNIVERSAL DELETE (SOFT BY DEFAULT; HARD ONLY FOR is_test=true)
@@ -6132,12 +5699,11 @@ sbGetConversationById(meta.ref_id),
 "DB query timed out"
 );
 if (!conv) continue;
-const { text, msgCount } = await buildConversationCard(conv);
 const edited = await safeEditMessageText(
 meta.chat_id,
 msgId,
-text,
-conversationCardKeyboard(conv, msgCount)
+await buildConversationCard(conv),
+conversationCardKeyboard(conv)
 );
 if (edited) editCount++;
 }
@@ -6496,30 +6062,6 @@ refreshQueue.add("triage:all");
 
 refreshQueue.add("dashboard:all");
 }
-// OUTREACH HANDOFF DETECTED (posted by n8n when Instantly AI flags a support hand-off)
-if (event_type === "outreach.handoff_detected") {
-  if (!entity_id) {
-    console.warn("outreach.handoff_detected missing entity_id");
-  } else {
-    const { error: hdErr } = await ops()
-      .from("conversations")
-      .update({
-        needs_support_handoff: true,
-        needs_support_handoff_at: nowIso,
-        handoff_detected_reason: payload?.reason || payload?.detected_phrase || payload?.trigger || null,
-        pipeline: "needs_reply",
-        updated_at: nowIso,
-      })
-      .eq("id", entity_id);
-    if (hdErr && !isMissingColumnError(hdErr)) {
-      console.warn("outreach.handoff_detected update error:", hdErr.message);
-    }
-    refreshQueue.add(makeCardKey("conversation", entity_id));
-    refreshQueue.add("triage:all");
-    refreshQueue.add("dashboard:all");
-    refreshQueue.add("allq:all");
-  }
-}
 // CALLS
 if (event_type.startsWith("call.")) {
 if (entity_id) refreshQueue.add(makeCardKey("call", entity_id));
@@ -6813,42 +6355,8 @@ app.post("/api/nil-outbox/result", async (req, res) => {
   }
 });
 
-// ---------- HEALTH ----------
-app.get("/health", (_req, res) => {
-  const warnings = [];
-  if (!MAKE_SEND_WEBHOOK_URL) warnings.push("MAKE_SEND_WEBHOOK_URL missing");
-  if (!CC_SUPPORT_WEBHOOK_URL) warnings.push("CC_SUPPORT_WEBHOOK_URL missing");
-  if (!OUTREACH_FROM_EMAIL) warnings.push("OUTREACH_FROM_EMAIL missing");
-
-  res.json({
-    ok: true,
-    service: "nil-wealth-telegram-shell",
-    version: CODE_VERSION,
-    build: String(BUILD_VERSION),
-    warnings,
-    features: {
-      telegram_bot_enabled: ENABLE_TELEGRAM_BOT,
-      live_refresh_enabled: ENABLE_TELEGRAM_LIVE_REFRESH,
-    },
-    timestamp: new Date().toISOString(),
-  });
-});
-
-app.get("/ready", (_req, res) => {
-  const missing = [];
-  if (!SUPABASE_URL) missing.push("SUPABASE_URL");
-  if (!SUPABASE_SERVICE_ROLE_KEY) missing.push("SUPABASE_SERVICE_ROLE_KEY");
-  if (!BOT_TOKEN && ENABLE_TELEGRAM_BOT) missing.push("TELEGRAM_BOT_TOKEN");
-
-  if (missing.length > 0) {
-    return res.status(503).json({ ok: false, missing });
-  }
-
-  return res.json({ ok: true, missing: [] });
-});
-
 // ---------- START ----------
-const server = app.listen(PORT, "0.0.0.0", () => {
+app.listen(PORT, "0.0.0.0", () => {
 console.log(`Webhook server listening on 0.0.0.0:${PORT}`);
 console.log(`${CODE_VERSION} · Build ${BUILD_VERSION}`);
 });
@@ -6875,10 +6383,9 @@ console.log(`[WARN] Auto answerCbQuery failed: ${msg.substring(0, 50)}`);
 }
 
 // Add timeout protection to all handler executions
-let middlewareTimeoutId;
-const timeoutPromise = new Promise((_, reject) => {
-middlewareTimeoutId = setTimeout(() => reject(new Error("Handler execution timeout")), 35000);
-});
+const timeoutPromise = new Promise((_, reject) =>
+setTimeout(() => reject(new Error("Handler execution timeout")), 35000)
+);
 
 try {
 await Promise.race([next(), timeoutPromise]);
@@ -6887,8 +6394,6 @@ const errMsg = String(err?.message || "Unknown error");
 console.log(`[ERROR] Handler error: ${errMsg.substring(0, 60)}`);
 // Re-throw so bot.catch() can handle it
 throw err;
-} finally {
-if (middlewareTimeoutId) clearTimeout(middlewareTimeoutId);
 }
 });
 
@@ -6921,50 +6426,4 @@ console.log(`✅ Global protection middleware active`);
 } else {
 console.log("Telegram bot launch disabled (ENABLE_TELEGRAM_BOT=false)");
 }
-
-let isShuttingDown = false;
-async function gracefulShutdown(signal) {
-  if (isShuttingDown) return;
-  isShuttingDown = true;
-  console.log(`[INFO] Received ${signal}. Starting graceful shutdown...`);
-
-  try {
-    if (ENABLE_TELEGRAM_BOT) {
-      await bot.stop(signal).catch(() => {});
-    }
-  } catch (_) {}
-
-  server.close((err) => {
-    if (err) {
-      console.error("[ERROR] HTTP server close error:", err);
-      process.exit(1);
-      return;
-    }
-    console.log("[INFO] Graceful shutdown complete.");
-    process.exit(0);
-  });
-
-  // Force-exit if close hangs (e.g., stuck sockets)
-  setTimeout(() => {
-    console.error("[WARN] Forced shutdown after timeout.");
-    process.exit(1);
-  }, 10000).unref();
-}
-
-process.on("SIGTERM", () => {
-  gracefulShutdown("SIGTERM");
-});
-
-process.on("SIGINT", () => {
-  gracefulShutdown("SIGINT");
-});
-
-process.on("unhandledRejection", (reason) => {
-  console.error("[ERROR] Unhandled Promise Rejection:", reason);
-});
-
-process.on("uncaughtException", (err) => {
-  console.error("[ERROR] Uncaught Exception:", err);
-  gracefulShutdown("uncaughtException");
-});
 
