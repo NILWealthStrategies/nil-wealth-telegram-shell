@@ -29,6 +29,7 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ||
 // v5.1 send integration (Make/n8n “send” hook). If empty, send actions stub.
 const MAKE_SEND_WEBHOOK_URL = process.env.MAKE_SEND_WEBHOOK_URL || "";
 const CC_SUPPORT_WEBHOOK_URL = process.env.CC_SUPPORT_WEBHOOK_URL || "";
+const HANDOFF_WEBHOOK_URL = process.env.HANDOFF_WEBHOOK_URL || "";
 const WEBHOOK_TIMEOUT_MS = Number(process.env.WEBHOOK_TIMEOUT_MS || 15000);
 // policy knobs (same as v5.1)
 const URGENT_AFTER_MINUTES = Number(process.env.URGENT_AFTER_MINUTES ||
@@ -71,6 +72,20 @@ const ops = () => supabase.schema("nil");
 const userFilters = new Map(); // userId -> filter value ("all" | "programs" | "support")
 const userRoleFilters = new Map(); // userId -> role filter ("all" | "parent" | "athlete" | "coach" | "trainer" | "other")
 const draftEditState = new Map(); // userId -> { convId, version }
+const EVENT_TYPES = {
+  LEAD_CREATED: "lead.created",
+  LEAD_UPDATED: "lead.updated",
+  CALENDLY_BOOKED: "calendly.booked",
+  CONVERSATION_CREATED: "conversation.created",
+  CONVERSATION_UPDATED: "conversation.updated",
+  MESSAGE_INGESTED: "message.ingested",
+  HANDOFF_DETECTED: "outreach.handoff_detected",
+  IDENTITY_LINKED: "conversation.identity_linked",
+  OUTBOX_EMAIL_SENT: "outbox.email.sent",
+  OUTBOX_EMAIL_FAILED: "outbox.email.failed",
+  CC_SUPPORT_ACTIVATED: "cc_support.activated",
+  ANALYTICS_RECORDED: "analytics.recorded",
+};
 // ==========================================================
 // CRITICAL: TELEGRAM BOT RELIABILITY WRAPPERS
 // ==========================================================
@@ -126,6 +141,72 @@ async function postJsonWebhook(url, payload, { timeoutMs = WEBHOOK_TIMEOUT_MS, h
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function validateOutboundPayload(payload, options = {}) {
+  const {
+    requireConversationId = true,
+    requireThreadKey = true,
+    requireSendAs = false,
+    requireSubject = false,
+    requireBody = false,
+    requireCcMessages = false,
+  } = options;
+  const errors = [];
+  const allowedSendAs = new Set(["support", "outreach"]);
+  const basicEmailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  if (!payload || typeof payload !== "object") {
+    return { ok: false, errors: ["payload_missing_or_invalid"] };
+  }
+
+  if (requireConversationId && !payload.conversation_id) {
+    errors.push("conversation_id_required");
+  }
+  if (requireThreadKey && !payload.thread_key) {
+    errors.push("thread_key_required");
+  }
+  if (requireSendAs && !allowedSendAs.has(String(payload.send_as || ""))) {
+    errors.push("send_as_invalid");
+  }
+  if (requireSubject && !String(payload.subject || "").trim()) {
+    errors.push("subject_required");
+  }
+  if (requireBody && !String(payload.body || "").trim()) {
+    errors.push("body_required");
+  }
+
+  if (payload.from_email && !basicEmailRegex.test(String(payload.from_email).trim())) {
+    errors.push("from_email_invalid");
+  }
+
+  if (!payload.trace_id) {
+    payload.trace_id = makeTraceId();
+  }
+  if (!payload.idempotency_key) {
+    payload.idempotency_key = deriveIdempotencyKey(payload);
+  }
+
+  if (requireCcMessages) {
+    const bridgeBody = String(payload.bridge_message?.body || "").trim();
+    const supportBody = String(payload.support_message?.body || "").trim();
+    if (!bridgeBody) errors.push("bridge_message_body_required");
+    if (!supportBody) errors.push("support_message_body_required");
+  }
+
+  return { ok: errors.length === 0, errors };
+}
+
+function logOutboundValidationError(context, payload, errors) {
+  console.warn("[VALIDATION] outbound payload rejected", {
+    context,
+    errors,
+    conversation_id: payload?.conversation_id || null,
+    thread_key: payload?.thread_key || null,
+    event_type: payload?.event_type || null,
+    send_as: payload?.send_as || null,
+    trace_id: payload?.trace_id || null,
+  });
 }
 
 // Safe callback query answerer - ALWAYS answers, even on errors
@@ -592,9 +673,11 @@ throw new Error(`/ops/ingest ${resp.status}: ${txt || "unknown"}`);
 }
 }
 let outboxWorkerRunning = false;
+let lastOutboxTickAt = null;
 async function runOutboxSenderTick() {
 if (outboxWorkerRunning) return;
 outboxWorkerRunning = true;
+lastOutboxTickAt = new Date().toISOString();
 try {
 // Email/SMS outbox processing moved to n8n workflows
 } catch (err) {
@@ -759,7 +842,9 @@ console.warn("sbListUrgentAuto exception:", err.message);
 return [];
 }
 }
-// ---------- HANDOFF PENDING (Instantly-flagged for support hand-off) ----------
+// ---------- HANDOFF PENDING (surface layer) ----------
+// Ownership note: upstream detector can be n8n/provider intelligence.
+// This bot layer reads and acts on persisted handoff flags for operators.
 async function sbCountHandoffPending({ source = "all" } = {}) {
   try {
     let q = ops()
@@ -812,6 +897,21 @@ console.warn("sbCountNeedsReplyNonUrgent exception:", err.message);
 return 0;
 }
 }
+async function sbCountDeadLetters() {
+try {
+const { count, error } = await ops()
+.from("dead_letters")
+.select("received_at", { count: "exact", head: true });
+if (error) {
+  console.warn("sbCountDeadLetters error:", error.message);
+  return null;
+}
+return Number(count) || 0;
+} catch (err) {
+console.warn("sbCountDeadLetters exception:", err.message);
+return null;
+}
+}
 async function sbCountCalls() {
 try {
 const { count, error } = await ops()
@@ -826,6 +926,47 @@ return count || 0;
 console.warn("sbCountCalls exception:", err.message);
 return 0;
 }
+}
+
+async function buildOpsHealthSummary() {
+  const deadLetterBacklog = await sbCountDeadLetters();
+  const pendingHandoffs = await sbCountHandoffPending({ source: "all" });
+  return {
+    config: {
+      make_send_webhook_configured: !!MAKE_SEND_WEBHOOK_URL,
+      cc_support_webhook_configured: !!CC_SUPPORT_WEBHOOK_URL,
+      handoff_webhook_configured: !!HANDOFF_WEBHOOK_URL,
+      openai_api_key_configured: !!OPENAI_API_KEY,
+      support_from_email_configured: !!SUPPORT_FROM_EMAIL,
+      outreach_from_email_configured: !!OUTREACH_FROM_EMAIL,
+    },
+    runtime: {
+      last_outbox_tick_at: lastOutboxTickAt,
+      dead_letter_backlog: deadLetterBacklog,
+      pending_handoff_conversations: Number.isFinite(pendingHandoffs) ? pendingHandoffs : null,
+    },
+  };
+}
+
+function buildOpsHealthText(summary) {
+  const cfg = summary?.config || {};
+  const rt = summary?.runtime || {};
+  const b = (v) => (v ? "yes" : "no");
+  return `🩺 OPS HEALTH
+--
+Config
+MAKE_SEND_WEBHOOK_URL: ${b(cfg.make_send_webhook_configured)}
+CC_SUPPORT_WEBHOOK_URL: ${b(cfg.cc_support_webhook_configured)}
+HANDOFF_WEBHOOK_URL: ${b(cfg.handoff_webhook_configured)}
+OPENAI_API_KEY: ${b(cfg.openai_api_key_configured)}
+SUPPORT_FROM_EMAIL: ${b(cfg.support_from_email_configured)}
+OUTREACH_FROM_EMAIL: ${b(cfg.outreach_from_email_configured)}
+
+Runtime
+Last Outbox Tick: ${rt.last_outbox_tick_at || "never"}
+Dead Letter Backlog: ${rt.dead_letter_backlog == null ? "n/a" : rt.dead_letter_backlog}
+Pending Handoffs: ${rt.pending_handoff_conversations == null ? "n/a" : rt.pending_handoff_conversations}
+--`;
 }
 // ---------- LISTS ----------
 async function sbListConversations({ pipeline, source = "all", role = "all", limit = 8 }) {
@@ -2130,6 +2271,12 @@ if (!isAdmin(ctx)) return;
 await ctx.reply(await analyticsText(), analyticsKeyboard());
 }));
 
+bot.command("health", safeCommand(async (ctx) => {
+if (!isAdmin(ctx)) return;
+const summary = await buildOpsHealthSummary();
+await ctx.reply(buildOpsHealthText(summary));
+}));
+
 bot.action("DASH:back", safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const filterSource = getAdminFilter(ctx);
@@ -2760,6 +2907,25 @@ subject: conv.subject || "",
 cc_support_suggested: true,
 },
 };
+const validation = validateOutboundPayload(payload, {
+  requireConversationId: true,
+  requireThreadKey: true,
+  requireSendAs: false,
+  requireSubject: false,
+  requireBody: false,
+  requireCcMessages: true,
+});
+if (!validation.ok) {
+logOutboundValidationError("requestCcSupportWorkflow", payload, validation.errors);
+return {
+ok: false,
+status: 422,
+error: "invalid_outbound_payload",
+bodyText: validation.errors.join(","),
+trace_id: payload.trace_id,
+idempotency_key: payload.idempotency_key,
+};
+}
 const result = await postJsonWebhook(CC_SUPPORT_WEBHOOK_URL, payload);
 return {
 ...result,
@@ -5748,6 +5914,24 @@ references: conv.references || null,
 mirror_conversation_id: conv.mirror_conversation_id || null,
 use_draft: Number(useDraft),
 };
+const validation = validateOutboundPayload(payload, {
+  requireConversationId: true,
+  requireThreadKey: true,
+  requireSendAs: true,
+  requireSubject: true,
+  requireBody: true,
+});
+if (!validation.ok) {
+logOutboundValidationError("sendViaMake", payload, validation.errors);
+return {
+ok: false,
+status: 422,
+trace_id: payload.trace_id,
+idempotency_key: payload.idempotency_key,
+error: "invalid_outbound_payload",
+bodyText: validation.errors.join(","),
+};
+}
 const sendHeaders = {};
 if (BASE_WEBHOOK_SECRET) sendHeaders["x-nil-secret"] = BASE_WEBHOOK_SECRET;
 const res = await postJsonWebhook(MAKE_SEND_WEBHOOK_URL, payload, {
@@ -6478,7 +6662,7 @@ refreshQueue.add("dashboard:all");
 refreshQueue.add("allq:all");
 }
 // CONVERSATIONS / MESSAGES (inbound/outbound)
-if (event_type === "conversation.updated" || event_type === "message.ingested") {
+if (event_type === EVENT_TYPES.CONVERSATION_UPDATED || event_type === EVENT_TYPES.MESSAGE_INGESTED) {
 if (entity_id) refreshQueue.add(makeCardKey("conversation", entity_id));
 refreshQueue.add("triage:all");
 refreshQueue.add("pools:all");
@@ -6496,10 +6680,12 @@ refreshQueue.add("triage:all");
 
 refreshQueue.add("dashboard:all");
 }
-// OUTREACH HANDOFF DETECTED (posted by n8n when Instantly AI flags a support hand-off)
-if (event_type === "outreach.handoff_detected") {
+// OUTREACH HANDOFF DETECTED
+// Ownership note: n8n/provider intelligence is the upstream handoff detector.
+// index.js remains the consumer/display/action layer for handoff state in Telegram.
+if (event_type === EVENT_TYPES.HANDOFF_DETECTED) {
   if (!entity_id) {
-    console.warn("outreach.handoff_detected missing entity_id");
+    console.warn(`${EVENT_TYPES.HANDOFF_DETECTED} missing entity_id`);
   } else {
     const { error: hdErr } = await ops()
       .from("conversations")
@@ -6512,7 +6698,7 @@ if (event_type === "outreach.handoff_detected") {
       })
       .eq("id", entity_id);
     if (hdErr && !isMissingColumnError(hdErr)) {
-      console.warn("outreach.handoff_detected update error:", hdErr.message);
+      console.warn(`${EVENT_TYPES.HANDOFF_DETECTED} update error:`, hdErr.message);
     }
     refreshQueue.add(makeCardKey("conversation", entity_id));
     refreshQueue.add("triage:all");
@@ -6818,6 +7004,9 @@ app.get("/health", (_req, res) => {
   const warnings = [];
   if (!MAKE_SEND_WEBHOOK_URL) warnings.push("MAKE_SEND_WEBHOOK_URL missing");
   if (!CC_SUPPORT_WEBHOOK_URL) warnings.push("CC_SUPPORT_WEBHOOK_URL missing");
+  if (!HANDOFF_WEBHOOK_URL) warnings.push("HANDOFF_WEBHOOK_URL missing");
+  if (!OPENAI_API_KEY) warnings.push("OPENAI_API_KEY missing");
+  if (!SUPPORT_FROM_EMAIL) warnings.push("SUPPORT_FROM_EMAIL missing");
   if (!OUTREACH_FROM_EMAIL) warnings.push("OUTREACH_FROM_EMAIL missing");
 
   res.json({
@@ -6826,6 +7015,14 @@ app.get("/health", (_req, res) => {
     version: CODE_VERSION,
     build: String(BUILD_VERSION),
     warnings,
+    config: {
+      make_send_webhook_configured: !!MAKE_SEND_WEBHOOK_URL,
+      cc_support_webhook_configured: !!CC_SUPPORT_WEBHOOK_URL,
+      handoff_webhook_configured: !!HANDOFF_WEBHOOK_URL,
+      openai_api_key_configured: !!OPENAI_API_KEY,
+      support_from_email_configured: !!SUPPORT_FROM_EMAIL,
+      outreach_from_email_configured: !!OUTREACH_FROM_EMAIL,
+    },
     features: {
       telegram_bot_enabled: ENABLE_TELEGRAM_BOT,
       live_refresh_enabled: ENABLE_TELEGRAM_LIVE_REFRESH,
