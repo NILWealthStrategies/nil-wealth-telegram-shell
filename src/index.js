@@ -970,13 +970,14 @@ Pending Handoffs: ${rt.pending_handoff_conversations == null ? "n/a" : rt.pendin
 }
 // ---------- LISTS ----------
 async function sbListConversations({ pipeline, source = "all", role = "all", limit = 8 }) {
-const buildQuery = (withRole) => {
+const buildQuery = (withRole, withHandoff) => {
+  const handoffCols = withHandoff ? ', needs_support_handoff, needs_support_handoff_at, handoff_detected_reason' : '';
   let q = ops()
     .from("conversations")
     .select(
       withRole
-        ? 'id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at, cc_support_suggested, gmail_url, mirror_conversation_id, role, role_pending, role_confidence, needs_support_handoff, needs_support_handoff_at, handoff_detected_reason'
-        : 'id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at, cc_support_suggested, gmail_url, mirror_conversation_id, needs_support_handoff, needs_support_handoff_at, handoff_detected_reason'
+        ? `id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at, cc_support_suggested, gmail_url, mirror_conversation_id, role, role_pending, role_confidence${handoffCols}`
+        : `id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at, cc_support_suggested, gmail_url, mirror_conversation_id${handoffCols}`
     )
     .order("updated_at", { ascending: false })
     .limit(limit * 2); // Fetch 2x limit for sorting
@@ -990,8 +991,10 @@ const buildQuery = (withRole) => {
   return q;
 };
 const result = await dbSelectFirst([
-  () => buildQuery(true),
-  () => buildQuery(false),
+  () => buildQuery(true, true),
+  () => buildQuery(false, true),
+  () => buildQuery(true, false),  // fallback: handoff columns may not exist yet
+  () => buildQuery(false, false), // fallback: no role, no handoff columns
 ]);
 if (result?.error) throw new Error(result.error.message || result.error);
 const sorted = smartSortByPriority(result?.data || []);
@@ -1880,7 +1883,7 @@ completedCount: await sbCountConversations({ pipeline: "completed", source: filt
 submissionsCount: await sbCountSubmissions(),
 callsCount: await sbCountCalls(),
 };
-const m = await sbMetricSummary({ source: filterSource, window: "all" });
+const m = await sbMetricSummary({ source: filterSource, window: "all" }).catch(() => ({}));
 return `🏠 NIL WEALTH OPS DASHBOARD
 ${CODE_VERSION} • Build: ${String(BUILD_VERSION).slice(0, 8)}
 
@@ -2079,7 +2082,7 @@ return msg;
 }
 // ---------- CONVERSATION CARD (v5.3 CLEAN + OPS SAFE) ----------
 async function buildConversationCard(conv) {
-const msgCount = await sbCountMessages(conv.id);
+const msgCount = await sbCountMessages(conv.id).catch(() => 0);
 const lane = laneLabel(sourceSafe(conv.source));
 const sla = slaBadge(conv.updated_at);
 const until = urgentCountdown(conv.updated_at);
@@ -2483,7 +2486,7 @@ await smartRender(ctx, `✅ Role confirmed.\n\n${text}`, kb);
 }));
 
 // ---------- SET ROLE (ADMIN) ----------
-bot.action(/^SETROLE:(.+)$/, async (ctx) => {
+bot.action(/^SETROLE:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 try {
 const convId = ctx.match[1];
@@ -2505,12 +2508,12 @@ kb
 );
 } catch (err) {
 logError("SETROLE", err);
-await ctx.reply(`❌ Error: ${err.message}`);
+await ctx.reply(`❌ Error: ${err.message}`).catch(() => {});
 }
-});
+}));
 
 // ---------- ROLE SELECT (APPLY) ----------
-bot.action(/^ROLESELECT:([^:]+):(.+)$/, async (ctx) => {
+bot.action(/^ROLESELECT:([^:]+):(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 try {
 const convId = ctx.match[1];
@@ -2570,11 +2573,11 @@ const kb = conversationCardKeyboard(updated, msgCount);
 await smartRender(ctx, `✅ Role set to ${roleLabel(selectedRole)}.\n\n${text}`, kb);
 } catch (err) {
 logError("ROLESELECT", err);
-await ctx.reply(`❌ Error setting role: ${err.message}`);
+await ctx.reply(`❌ Error setting role: ${err.message}`).catch(() => {});
 }
-});
+}));
 // ---------- OPEN MIRROR ----------
-bot.action(/^OPENMIRROR:(.+)$/, async (ctx) => {
+bot.action(/^OPENMIRROR:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 try {
 const convId = ctx.match[1];
@@ -2593,12 +2596,12 @@ const kb = conversationCardKeyboard(mirror, msgCount);
 // Edit dashboard in place (single card flow)
 await smartRender(ctx, text, kb);
 } catch (err) {
-logError(ctx, err);
-await ctx.answerCbQuery("❌ Error opening mirror");
+logError("OPENMIRROR", err);
+await ctx.reply("❌ Error opening mirror. Try /dashboard to refresh.").catch(() => {});
 }
-});
+}));
 // ---------- MIRRORS LIST (v5.4) ----------
-bot.action(/^MIRRORS:(.+)$/, async (ctx) => {
+bot.action(/^MIRRORS:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const cardKey = ctx.match[1];
 const mirrors = await getMirrors(cardKey);
@@ -2626,7 +2629,7 @@ buttons.push([Markup.button.callback("🔄 Refresh", `MIRRORS:${cardKey}`)]);
 buttons.push([Markup.button.callback("⬅ Back", `OPENCARD:${cardKey}`)]);
 
 return smartRender(ctx, text, Markup.inlineKeyboard(buttons));
-});
+}));
 // ==========================================================
 // 🧵 THREAD VIEW (paged) — v5.3 OPS CLEAN + LIVE REFRESH + LATEST JUMP +
 // DEBUG + DELETE (TEST) + 🪞 MIRROR
@@ -2753,7 +2756,7 @@ newestMsgId,
 };
 }
 // ---------- THREAD VIEW (paged) ----------
-bot.action(/^THREAD:(.+):(\d+)$/, async (ctx) => {
+bot.action(/^THREAD:(.+):(\d+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const offset = Number(ctx.match[2] || 0);
@@ -2761,18 +2764,17 @@ const limit = 6;
 try {
 const page = await buildThreadPage(convId, offset, limit);
 if (!page.ok) {
-await ctx.answerCbQuery(page.error || "Thread not found.");
+await ctx.reply(page.error || "Thread not found.").catch(() => {});
 return;
 }
-// Edit dashboard in place (single card flow)
 await smartRender(ctx, page.text, page.keyboard);
 } catch (err) {
-logError(ctx, err);
-await ctx.answerCbQuery("❌ Thread error");
+logError("THREAD", err);
+await ctx.reply("❌ Thread error. Try /dashboard.").catch(() => {});
 }
-});
+}));
 // ---------- THREAD DELETE NEWEST (TEST ONLY) ----------
-bot.action(/^THREADDEL:(.+):(\d+):(.+)$/, async (ctx) => {
+bot.action(/^THREADDEL:(.+):(\d+):(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const offset = Number(ctx.match[2] || 0);
@@ -2786,8 +2788,8 @@ Markup.inlineKeyboard([
 [Markup.button.callback("Cancel", `THREAD:${convId}:${offset}`)],
 ])
 );
-});
-bot.action(/^THREADDELDO:(.+):(\d+):(.+)$/, async (ctx) => {
+}));
+bot.action(/^THREADDELDO:(.+):(\d+):(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const offset = Number(ctx.match[2] || 0);
@@ -2803,16 +2805,16 @@ entity_type: "message",
 entity_id: messageId,
 payload: { convId, offset, messageId, reason: "thread_delete_newest" },
 });
-await ctx.reply("🗑 Deleted.");
+await ctx.reply("🗑 Deleted.").catch(() => {});
 
 // ✅ Refresh thread + parent card (stable key)
 refreshQueue.add(`thread:${convId}`);
 refreshQueue.add(`conversation:${convId}`);
 refreshLiveCards(true).catch(() => {});
 } catch (e) {
-await ctx.reply(`Delete failed: ${String(e.message || e)}`);
+await ctx.reply(`Delete failed: ${String(e.message || e)}`).catch(() => {});
 }
-});
+}));
 // ==========================================================
 // REFRESH ENGINE ADDITION (paste into refreshLiveCards loop)
 // Sample refresh handler for thread_view (removed to avoid parsing issues)
@@ -2972,7 +2974,7 @@ return smartRender(ctx, text, ccKeyboard(convId, bridgeDraft, supportDraft));
 // -------------------------------
 // 📇 CC button pressed (opens confirm screen)
 // -------------------------------
-bot.action(/^CC:(.+)$/, async (ctx) => {
+bot.action(/^CC:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const conv = await sbGetConversationById(convId);
@@ -3011,12 +3013,12 @@ return smartRender(ctx, `❌ Failed to generate CC drafts: ${err.message}`, Mark
 
 // Show CC selection screen
 await renderCCCard(ctx, convId, 2, 2);
-});
+}));
 
 // -------------------------------
 // View full CC draft text
 // -------------------------------
-bot.action(/^CCVIEW:(.+):(bridge|support):([123]):(\d):(\d)$/, async (ctx) => {
+bot.action(/^CCVIEW:(.+):(bridge|support):([123]):(\d):(\d)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const type = ctx.match[2]; // "bridge" or "support"
@@ -3043,12 +3045,12 @@ const buttons = [
 [Markup.button.callback("⬅ Back to CC Options", `CC:${convId}`)]
 ];
 await smartRender(ctx, text, Markup.inlineKeyboard(buttons));
-});
+}));
 
 // -------------------------------
 // Select CC draft version
 // -------------------------------
-bot.action(/^CCSELECT:(.+):(bridge|support):([123]):(\d):(\d)$/, async (ctx) => {
+bot.action(/^CCSELECT:(.+):(bridge|support):([123]):(\d):(\d)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const type = ctx.match[2];
@@ -3059,12 +3061,12 @@ const currentSupport = parseInt(ctx.match[5], 10);
 const newBridge = type === "bridge" ? version : currentBridge;
 const newSupport = type === "support" ? version : currentSupport;
 await renderCCCard(ctx, convId, newBridge, newSupport);
-});
+}));
 
 // -------------------------------
 // Regenerate CC drafts
 // -------------------------------
-bot.action(/^CCREGEN:(.+)$/, async (ctx) => {
+bot.action(/^CCREGEN:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const conv = await sbGetConversationById(convId);
@@ -3082,9 +3084,9 @@ await renderCCCard(ctx, convId, 2, 2);
 } catch (err) {
 return smartRender(ctx, `❌ Failed to generate CC drafts: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
 }
-});
+}));
 
-bot.action(/^CCCONFIRM:(.+):(\d):(\d)$/, async (ctx) => {
+bot.action(/^CCCONFIRM:(.+):(\d):(\d)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const bridgeDraft = Number(ctx.match[2] || 2);
@@ -3169,7 +3171,7 @@ result.ok ? conversationCardKeyboard(updatedConv, msgCount) : Markup.inlineKeybo
 // Refresh the conversation card instantly
 refreshQueue.add(`conversation:${convId}`);
 refreshLiveCards(true).catch(() => {});
-});
+}));
 // ==========================================================
 // PEOPLE (v5.3 OPS + REFRESH + DELETE)
 // ==========================================================
@@ -3188,7 +3190,7 @@ refreshLiveCards(true).catch(() => {});
 // ------------------------------
 // PEOPLE LIST (from a conversation)
 // ------------------------------
-bot.action(/^PEOPLE:(.+)$/, async (ctx) => {
+bot.action(/^PEOPLE:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const conv = await sbGetConversationById(convId);
@@ -3223,11 +3225,11 @@ return `──────────────────────\n• 
 const kb = [[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]];
 // Edit dashboard in place (single card flow)
 await smartRender(ctx, `${header}\n\n${body}`, Markup.inlineKeyboard(kb));
-});
+}));
 // ------------------------------
 // PERSON DETAIL
 // ------------------------------
-bot.action(/^PERSON:(.+)$/, async (ctx) => {
+bot.action(/^PERSON:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const personId = ctx.match[1];
 const p = await sbGetPerson(personId);
@@ -3255,11 +3257,11 @@ const kb = Markup.inlineKeyboard([
 ]);
 // Edit dashboard in place (single card flow)
 await smartRender(ctx, text, kb);
-});
+}));
 // ------------------------------
 // PERSON → CONVERSATIONS
 // ------------------------------
-bot.action(/^PERSONCONV:(.+)$/, async (ctx) => {
+bot.action(/^PERSONCONV:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const personId = ctx.match[1];
 const p = await sbGetPerson(personId);
@@ -3290,11 +3292,11 @@ const kb = convs.slice(0, 10).map((c) => [Markup.button.callback("Open",
 kb.push([Markup.button.callback("⬅ Back", `PERSON:${personId}`)]);
 // Edit dashboard in place (single card flow)
 await smartRender(ctx, `${header}\n\n${body}`, Markup.inlineKeyboard(kb));
-});
+}));
 // ------------------------------
 // PERSON → SUBMISSIONS
 // ------------------------------
-bot.action(/^PERSONSUB:(.+)$/, async (ctx) => {
+bot.action(/^PERSONSUB:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const personId = ctx.match[1];
 const p = await sbGetPerson(personId);
@@ -3326,9 +3328,9 @@ Markup.button.callback("Open", `SUB:${s.submission_id}`),
 kb.push([Markup.button.callback("⬅ Back", `PERSON:${personId}`)]);
 // Edit dashboard in place (single card flow)
 await smartRender(ctx, `${header}\n\n${body}`, Markup.inlineKeyboard(kb));
-});
+}));
 // ---------- SUBMISSION DETAIL CARD ----------
-bot.action(/^SUB:(.+)$/, async (ctx) => {
+bot.action(/^SUB:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const submissionId = ctx.match[1];
 const sub = await sbGetSubmission(submissionId);
@@ -3383,9 +3385,9 @@ type: "submission",
 card_key: `submission:${submissionId}`,
 ref_id: submissionId,
 });
-});
+}));
 // ---------- COACH DETAIL CARD ----------
-bot.action(/^COACH:(.+)$/, async (ctx) => {
+bot.action(/^COACH:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const coachId = ctx.match[1];
 const coach = await sbGetCoach(coachId);
@@ -3419,9 +3421,9 @@ type: "coach",
 card_key: `coach:${coachId}`,
 ref_id: coachId,
 });
-});
+}));
 // ---------- COACH CONVERSATIONS ----------
-bot.action(/^COACH:convs:(.+)$/, async (ctx) => {
+bot.action(/^COACH:convs:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const coachId = ctx.match[1];
 const coach = await sbGetCoach(coachId);
@@ -3442,9 +3444,9 @@ type: "coach_convs",
 card_key: `coach_convs:${coachId}`,
 ref_id: coachId,
 });
-});
+}));
 // ---------- CLIENTS SEARCH ----------
-bot.action("CLIENTS:search", async (ctx) => {
+bot.action("CLIENTS:search", safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 
 const text = `🔎 Search Clients\n\nSend a message with client name or email to search.\n\nExample:\njordan smith\njsmith@example.com`;
@@ -3454,7 +3456,7 @@ const kb = Markup.inlineKeyboard([
 ]);
 
 await smartRender(ctx, text, kb);
-});
+}));
 // ---------- FORMATTING HELPERS (v5.3) ----------
 // Sample refresh handlers and helpers omitted to avoid parsing issues.
 function tSafe(s, max = 92) {
@@ -3909,15 +3911,15 @@ registerLiveCard(msg, {
 });
 }
 
-bot.action("TRIAGE:open", async (ctx) => {
+bot.action("TRIAGE:open", safeAction(async (ctx) => {
 try {
 if (!isAdmin(ctx)) return;
 await triageOpen(ctx, "all", 1);
 } catch (err) {
-logError(ctx, err);
-await ctx.reply(`❌ Error loading triage: ${err.message}`);
+logError("TRIAGE:open", err);
+await ctx.reply(`❌ Error loading triage: ${err.message}`).catch(() => {});
 }
-});
+}));
 
 bot.action("HANDOFF:open", safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
@@ -3930,16 +3932,16 @@ const page = parseInt(ctx.match[1], 10) || 1;
 await handoffOpen(ctx, page);
 }));
 
-bot.action(/^TRIAGE:all:(\d+)$/, async (ctx) => {
+bot.action(/^TRIAGE:all:(\d+)$/, safeAction(async (ctx) => {
 try {
 if (!isAdmin(ctx)) return;
 const page = parseInt(ctx.match[1]) || 1;
 await triageOpen(ctx, "all", page);
 } catch (err) {
-logError(ctx, err);
-await ctx.reply(`❌ Error loading triage: ${err.message}`);
+logError("TRIAGE:all", err);
+await ctx.reply(`❌ Error loading triage: ${err.message}`).catch(() => {});
 }
-});
+}));
 // ---------- v5.4 SEARCH STATE & ENHANCED SEARCH ----------
 const SEARCH_STATE = new Map(); // chatId -> { awaiting: true, startedAt: timestamp }
 
@@ -3952,7 +3954,14 @@ SEARCH_STATE.set(chatId, { awaiting: true, startedAt: Date.now() });
 }
 
 function getSearchMode(chatId) {
-return SEARCH_STATE.get(chatId);
+const state = SEARCH_STATE.get(chatId);
+if (!state) return null;
+// Auto-expire search mode after 5 minutes
+if (Date.now() - state.startedAt > 5 * 60 * 1000) {
+SEARCH_STATE.delete(chatId);
+return null;
+}
+return state;
 }
 
 async function runSearch(chatId, query) {
@@ -4097,7 +4106,7 @@ return next();
 });
 
 // ---------- SEARCH HELP (keep) ----------
-bot.action("SEARCH:help", async (ctx) => {
+bot.action("SEARCH:help", safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 
 // v5.4: Activate search mode
@@ -4126,9 +4135,9 @@ const kb = Markup.inlineKeyboard([
 [Markup.button.callback("⬅ Dashboard", "DASH:back")],
 ]);
 await smartRender(ctx, text, kb);
-});
+}));
 // ---------- SEARCH RECENT ----------
-bot.action("SEARCH:recent", async (ctx) => {
+bot.action("SEARCH:recent", safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 
 const text = `🕘 RECENT ITEMS
@@ -4145,7 +4154,7 @@ const kb = Markup.inlineKeyboard([
 ]);
 
 await smartRender(ctx, text, kb);
-});
+}));
 // ---------- SEARCH HELP (v5.3 + History) ----------
 // ===============================
 // TODAY (v5.3) — FINAL (WITH COUNTS + LIVE REFRESH)
@@ -4257,7 +4266,7 @@ return 0;
 return Number(count) || 0;
 }
 // ---------- TODAY ----------
-bot.action("TODAY:open", async (ctx) => {
+bot.action("TODAY:open", safeAction(async (ctx) => {
 try {
 if (!isAdmin(ctx)) return;
 const filterSource = getAdminFilter(ctx) || "all";
@@ -4296,15 +4305,15 @@ card_key: `today:${filterSource}`,
 ref_id: filterSource,
 });
 } catch (err) {
-logError(ctx, err);
-await ctx.reply(`❌ Error loading today: ${err.message}`);
+logError("TODAY:open", err);
+await ctx.reply(`❌ Error loading today: ${err.message}`).catch(() => {});
 }
-});
+}));
 // ---------- POOLS ----------
 // ===============================
 // POOLS (v5.3 FINAL — Refresh Enabled)
 // ===============================
-bot.action("POOLS:open", async (ctx) => {
+bot.action("POOLS:open", safeAction(async (ctx) => {
 try {
 if (!isAdmin(ctx)) return;
 
@@ -4410,18 +4419,18 @@ card_key: `pools:${filterSource}`,
 ref_id: filterSource,
 });
 } catch (err) {
-logError(ctx, err);
-await ctx.reply(`❌ Error loading pools: ${err.message}`);
+logError("POOLS:open", err);
+await ctx.reply(`❌ Error loading pools: ${err.message}`).catch(() => {});
 }
-});
+}));
 // ==========================================================
 // METRICS CARD
 // ==========================================================
 async function showMetricsCard(ctx, window = "month") {
 if (!isAdmin(ctx)) return;
-
+try {
 const filterSource = getAdminFilter(ctx) || "all";
-const metrics = await sbMetricSummary({ source: filterSource, window });
+const metrics = await sbMetricSummary({ source: filterSource, window }).catch(() => ({}));
 
 const titleMap = {
 week: "📊 METRICS · LAST 7 DAYS",
@@ -4481,37 +4490,37 @@ card_key: `metrics:${filterSource}:${window}`,
 ref_id: `${filterSource}:${window}`,
 });
 return msg;
+} catch (err) {
+logError("showMetricsCard", err);
+await ctx.reply("❌ Error loading metrics. Try /dashboard to refresh.").catch(() => {});
+}
 }
 
-bot.action("METRICS:open", async (ctx) => {
+bot.action("METRICS:open", safeAction(async (ctx) => {
 return showMetricsCard(ctx, "month");
-});
+}));
 
-bot.action("METRICS:week", async (ctx) => {
+bot.action("METRICS:week", safeAction(async (ctx) => {
 return showMetricsCard(ctx, "week");
-});
+}));
 
-bot.action("METRICS:month", async (ctx) => {
+bot.action("METRICS:month", safeAction(async (ctx) => {
 return showMetricsCard(ctx, "month");
-});
+}));
 
-bot.action("METRICS:year", async (ctx) => {
+bot.action("METRICS:year", safeAction(async (ctx) => {
 return showMetricsCard(ctx, "year");
+}));
+
 // ==========================================================
 // LEADS & ANALYTICS
 // ==========================================================
-bot.action("LEADS:refresh", async (ctx) => {
-try {
+bot.action("LEADS:refresh", safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 await smartRender(ctx, await leadsText(), leadsKeyboard());
-} catch (err) {
-logError(ctx, err);
-await ctx.answerCbQuery(`Error: ${err.message}`);
-}
-});
+}));
 
-bot.action(/^LEADS:filter:(.+)$/, async (ctx) => {
-try {
+bot.action(/^LEADS:filter:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const status = ctx.match[1];
 const { data: leads, error } = await ops()
@@ -4530,23 +4539,12 @@ text += `• ${lead.full_name} (${lead.organization})\n  ${lead.email} | Score: 
 text += `No leads with status "${status}".\n`;
 }
 await smartRender(ctx, text, leadsKeyboard());
-} catch (err) {
-logError(ctx, err);
-await ctx.answerCbQuery(`Error: ${err.message}`);
-}
-});
+}));
 
-bot.action("ANALYTICS:refresh", async (ctx) => {
-try {
+bot.action("ANALYTICS:refresh", safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 await smartRender(ctx, await analyticsText(), analyticsKeyboard());
-} catch (err) {
-logError(ctx, err);
-await ctx.answerCbQuery(`Error: ${err.message}`);
-}
-});
-
-});
+}));
 // ==========================================================
 // CLIENTS + CLIENT CARD (v5.3 OPS CLEAN + POOLS)
 // ==========================================================
@@ -4594,7 +4592,7 @@ await ctx.answerCbQuery(`Error: ${err.message}`);
 // ------------------------------
 // CLIENTS HUB
 // ------------------------------
-bot.action("CLIENTS:open", async (ctx) => {
+bot.action("CLIENTS:open", safeAction(async (ctx) => {
 try {
 if (!isAdmin(ctx)) return;
 const stats = await sbClientSummary();
@@ -4629,15 +4627,15 @@ card_key: "clients:all",
 ref_id: "all",
 });
 } catch (err) {
-logError(ctx, err);
-await ctx.reply(`❌ Error loading clients: ${err.message}`);
+logError("CLIENTS:open", err);
+await ctx.reply(`❌ Error loading clients: ${err.message}`).catch(() => {});
 }
-});
+}));
 // ------------------------------
 // CLIENTS LISTS
 // buckets: needs_reply | active | completed | new_month | recent | history
 // ------------------------------
-bot.action(/^CLIENTS:list:(needs_reply|active|completed|new_month|recent|history):?(\d*)$/, async (ctx) => {
+bot.action(/^CLIENTS:list:(needs_reply|active|completed|new_month|recent|history):?(\d*)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const bucket = ctx.match[1];
 const page = parseInt(ctx.match[2]) || 1;
@@ -4694,11 +4692,11 @@ type: "clients_list",
 card_key: `clients_list:${bucket}:${page}`,
 ref_id: bucket,
 });
-});
+}));
 // ------------------------------
 // CLIENT CARD (includes 🌊 Pools)
 // ------------------------------
-bot.action(/^CLIENT:(.+)$/, async (ctx) => {
+bot.action(/^CLIENT:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 
 const clientId = ctx.match[1];
@@ -4782,11 +4780,11 @@ type: "client",
 card_key: `client:${c.client_id}`,
 ref_id: c.client_id,
 });
-});
+}));
 // ------------------------------
 // CLIENT → THREADS
 // ------------------------------
-bot.action(/^CLIENT:threads:(.+):?(\d*)$/, async (ctx) => {
+bot.action(/^CLIENT:threads:(.+):?(\d*)$/, safeAction(async (ctx) => {
 
 if (!isAdmin(ctx)) return;
 const clientId = ctx.match[1];
@@ -4842,11 +4840,11 @@ type: "client_threads",
 card_key: `client_threads:${clientId}:${page}`,
 ref_id: clientId,
 });
-});
+}));
 // ------------------------------
 // CLIENT → SUBMISSIONS
 // ------------------------------
-bot.action(/^CLIENT:subs:(.+):?(\d*)$/, async (ctx) => {
+bot.action(/^CLIENT:subs:(.+):?(\d*)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 
 const clientId = ctx.match[1];
@@ -4901,11 +4899,11 @@ type: "client_subs",
 card_key: `client_subs:${clientId}:${page}`,
 ref_id: clientId,
 });
-});
+}));
 // ------------------------------
 // CLIENT → CALLS
 // ------------------------------
-bot.action(/^CLIENT:calls:(.+)$/, async (ctx) => {
+bot.action(/^CLIENT:calls:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 
 const clientId = ctx.match[1];
@@ -4931,11 +4929,11 @@ type: "client_calls",
 card_key: `client_calls:${clientId}`,
 ref_id: clientId,
 });
-});
+}));
 // ------------------------------
 // CLIENT → PEOPLE
 // ------------------------------
-bot.action(/^CLIENT:people:(.+)$/, async (ctx) => {
+bot.action(/^CLIENT:people:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const clientId = ctx.match[1];
 const people = await sbListPeopleForClient(clientId, 12);
@@ -4960,11 +4958,11 @@ type: "client_people",
 card_key: `client_people:${clientId}`,
 ref_id: clientId,
 });
-});
+}));
 // ------------------------------
 // CLIENT → POOLS (optional screen)
 // ------------------------------
-bot.action(/^CLIENT:pools:(.+)$/, async (ctx) => {
+bot.action(/^CLIENT:pools:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const clientId = ctx.match[1];
 const c = await sbGetClientCard(clientId);
@@ -4991,7 +4989,7 @@ type: "client_pools",
 card_key: `client_pools:${clientId}`,
 ref_id: clientId,
 });
-});
+}));
 // ==========================================================
 // REFRESH ENGINE ADDITIONS (paste into refreshLiveCards)
 // ==========================================================
@@ -5267,7 +5265,7 @@ Markup.button.callback("🗑 Delete", `DELETECONFIRM:call:${c.id}`),
 ]);
 }
 // -------- Calls Hub --------
-bot.action(/^CALLS:hub:?(\d*)$/, async (ctx) => {
+bot.action(/^CALLS:hub:?(\d*)$/, safeAction(async (ctx) => {
 try {
 if (!isAdmin(ctx)) return;
 const page = parseInt(ctx.match[1]) || 1;
@@ -5303,12 +5301,12 @@ kb.push([Markup.button.callback("⬅ Dashboard", "DASH:back")]);
 const msg = await smartRender(ctx, `${viewTitle("calls")}\n${pageInfo}\n\n${body}`, Markup.inlineKeyboard(kb));
 return msg;
 } catch (err) {
-logError(ctx, err);
-await ctx.reply(`❌ Error loading calls: ${err.message}`);
+logError("CALLS:hub", err);
+await ctx.reply(`❌ Error loading calls: ${err.message}`).catch(() => {});
 }
-});
+}));
 // -------- Open Call Card --------
-bot.action(/^CALL:(.+)$/, async (ctx) => {
+bot.action(/^CALL:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const id = ctx.match[1];
 const c = await sbGetCall(id);
@@ -5327,9 +5325,9 @@ card_key: `call:${c.id}`,
 });
 }
 return msg;
-});
+}));
 // -------- Set Outcome --------
-bot.action(/^CALLSTATUS:(.+):(answered|no_answer|reschedule|canceled|completed)$/, async (ctx) => {
+bot.action(/^CALLSTATUS:(.+):(answered|no_answer|reschedule|canceled|completed)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const callId = ctx.match[1];
 const outcome = ctx.match[2];
@@ -5407,8 +5405,8 @@ conversation_id: call?.conversation_id || null,
 });
 await ctx.reply(
 `✅ Call marked ${outcome.replace("_", " ")}.${call?.conversation_id ? ` Conversation → ${nextPipeline}.` : ""}`
-);
-});
+).catch(() => {});
+}));
 // ---------- METRICS: YEAR SUMMARY (v5.3) — FULL REPLACEMENT + LIVE REFRESH REGISTRATION ----------
 // Includes:
 // ✅ Calls Answered (no ✅ emoji in label)
@@ -5482,7 +5480,7 @@ return Markup.inlineKeyboard([
 [Markup.button.callback("⬅ Dashboard", "DASH:back")],
 ]);
 }
-bot.action("METRICS:yearsummary", async (ctx) => {
+bot.action("METRICS:yearsummary", safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const filterSource = getAdminFilter(ctx);
 const y = await sbMetricSummary({ source: filterSource, window: "year" });
@@ -5492,12 +5490,12 @@ const msg = await smartRender(ctx, text, yearSummaryKeyboard());
 if (typeof registerLiveCard === "function") {
 registerLiveCard(msg, {
 type: "metrics_year",
-ref_id: filterSource, // store filter source so refresh can re-fetch
+ref_id: filterSource,
 card_key: `metrics_year:${filterSource}`,
 });
 }
 return msg;
-});
+}));
 // ---------- OPTIONAL: REFRESH BRANCH (PASTE INTO refreshLiveCards) ----------
 // You said you want every update to auto-refresh.
 // Add this branch inside refreshLiveCards(), alongside "conversation"/"submission"/"dashboard"
@@ -5744,7 +5742,7 @@ text += `\n${marker} V${d.version}\nSubject: ${d.subject || "—"}\n${shorten(d.
 return smartRender(ctx, text, draftsKeyboard(convId, selected?.version || null));
 }
 
-bot.action(/^DRAFTS:open:(.+)$/, async (ctx) => {
+bot.action(/^DRAFTS:open:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 try {
@@ -5770,12 +5768,23 @@ await sbSaveConversationDraftVersion(convId, 3, generated?.v3?.subject || conv.s
 // Show final result
 await renderDraftsCard(ctx, convId);
 } catch (err) {
-logError(ctx, err);
+logError("DRAFTS:open", err);
 await smartRender(ctx, `❌ Draft error: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
 }
-});
+}));
 
-bot.action(/^DRAFTS:view:(.+):(1|2|3)$/, async (ctx) => {
+// Redirect OPENCALL -> CALL (triage buttons emit OPENCALL:id)
+bot.action(/^OPENCALL:(.+)$/, safeAction(async (ctx) => {
+if (!isAdmin(ctx)) return;
+const id = ctx.match[1];
+const c = await sbGetCall(id);
+if (!c) return ctx.reply("Call not found.");
+const textHtml = buildCallCardTextHTML(c);
+const msg = await ctx.reply(textHtml, { parse_mode: "HTML", ...callKeyboard(c) });
+if (msg?.message_id) registerLiveCard(msg, { type: "call", ref_id: c.id, card_key: `call:${c.id}` });
+}));
+
+bot.action(/^DRAFTS:view:(.+):(1|2|3)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const version = parseInt(ctx.match[2], 10);
@@ -5797,12 +5806,12 @@ const buttons = [
 ];
 await smartRender(ctx, text, Markup.inlineKeyboard(buttons));
 } catch (err) {
-logError(ctx, err);
+logError("DRAFTS:view", err);
 await smartRender(ctx, `❌ Error: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `DRAFTS:open:${convId}`)]]));
 }
-});
+}));
 
-bot.action(/^DRAFTS:use:(.+):(1|2|3)$/, async (ctx) => {
+bot.action(/^DRAFTS:use:(.+):(1|2|3)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const version = Number(ctx.match[2]);
@@ -5823,12 +5832,12 @@ const buttons = [
 ];
 await smartRender(ctx, text, Markup.inlineKeyboard(buttons));
 } catch (err) {
-logError(ctx, err);
+logError("DRAFTS:use", err);
 await smartRender(ctx, `❌ Select draft failed: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
 }
-});
+}));
 
-bot.action(/^DRAFTS:regen:(.+)$/, async (ctx) => {
+bot.action(/^DRAFTS:regen:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 try {
@@ -5848,12 +5857,12 @@ await sbSaveConversationDraftVersion(convId, 2, generated?.v2?.subject || conv.s
 await sbSaveConversationDraftVersion(convId, 3, generated?.v3?.subject || conv.subject || "Re:", generated?.v3?.body || "", false);
 await renderDraftsCard(ctx, convId, "Regenerated drafts");
 } catch (err) {
-logError(ctx, err);
+logError("DRAFTS:regen", err);
 await smartRender(ctx, `❌ Regenerate failed: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
 }
-});
+}));
 
-bot.action(/^DRAFTS:edit:(.+)$/, async (ctx) => {
+bot.action(/^DRAFTS:edit:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 try {
@@ -5863,10 +5872,10 @@ const userId = String(ctx.from?.id || "");
 draftEditState.set(userId, { convId, version: Number(selected.version || 1) });
 await ctx.reply(`✏️ Send your edited reply now.\n\nFormat:\nLine 1 = Subject\nBlank line\nThen body\n\nIf you send only text, it will replace body and keep subject.`);
 } catch (err) {
-logError(ctx, err);
-await ctx.reply(`❌ Edit setup failed: ${err.message}`);
+logError("DRAFTS:edit", err);
+await ctx.reply(`❌ Edit setup failed: ${err.message}`).catch(() => {});
 }
-});
+}));
 // -------------------------------
 // send request → webhook (n8n / make)
 // -------------------------------
@@ -5950,7 +5959,7 @@ bodyText: res.bodyText || "",
 // ===============================
 // SEND BUTTON PRESSED (single send)
 // ===============================
-bot.action(/^SEND:(.+):([01])$/, async (ctx) => {
+bot.action(/^SEND:(.+):([01])$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const useDraft = Number(ctx.match[2]);
@@ -5984,11 +5993,11 @@ Markup.button.callback("📤 Send as Support", `CONFIRMSEND:${convId}:${useDraft
 ]);
 await smartRender(ctx, `📤 Send Draft\n\nChoose sending lane:\n\n(Outreach selected by default. Use Support only if CC is enabled manually.)`, kb);
 }
-});
+}));
 // ===============================
 // CONFIRM SEND SCREEN (single send)
 // ===============================
-bot.action(/^CONFIRMSEND:(.+):([01]):(support|outreach)$/, async (ctx) => {
+bot.action(/^CONFIRMSEND:(.+):([01]):(support|outreach)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const useDraft = Number(ctx.match[2]);
@@ -6012,12 +6021,12 @@ const kb = Markup.inlineKeyboard([
 [Markup.button.callback("Cancel", `OPENCARD:${convId}`)],
 ]);
 await smartRender(ctx, `⚠ Confirm send?\n\nMode: ${modeLabel}\nFrom: ${fromEmail}\nDraft: ${draftLabel}`, kb);
-});
+}));
 
 // ===============================
 // FINAL SEND EXECUTION (single send)
 // ===============================
-bot.action(/^DOSEND:(.+):([01]):(support|outreach)$/, async (ctx) => {
+bot.action(/^DOSEND:(.+):([01]):(support|outreach)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const useDraft = Number(ctx.match[2]);
@@ -6061,7 +6070,7 @@ result.ok ? conversationCardKeyboard(conv, msgCount) : Markup.inlineKeyboard([[M
 refreshQueue.add(`conversation:${convId}`);
 refreshLiveCards(true).catch(() => {});
 
-});
+}));
 // ==========================================================
 // UNIVERSAL DELETE (SOFT BY DEFAULT; HARD ONLY FOR is_test=true)
 // ==========================================================
@@ -6077,7 +6086,7 @@ coach_event: { table: "coach_events", pk: "id", soft: true },
 failure: { table: "failures", pk: "id", soft: true },
 };
 // confirm
-bot.action(/^DELETECONFIRM:([a-z_]+):(.+)$/, async (ctx) => {
+bot.action(/^DELETECONFIRM:([a-z_]+):(.+)$/, safeAction(async (ctx) => {
 
 if (!isAdmin(ctx)) return;
 const entityType = ctx.match[1];
@@ -6090,10 +6099,10 @@ Markup.inlineKeyboard([
 [Markup.button.callback("✅ Yes Delete", `DELETE:${entityType}:${stableId}`)],
 [Markup.button.callback("Cancel", "DASH:back")],
 ])
-);
-});
+).catch(() => {});
+}));
 // do delete
-bot.action(/^DELETE:([a-z_]+):(.+)$/, async (ctx) => {
+bot.action(/^DELETE:([a-z_]+):(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const entityType = ctx.match[1];
 const stableId = ctx.match[2];
@@ -6154,7 +6163,7 @@ if (entityType === "conversation") refreshQueue.add(`conversation:${stableId}`);
 if (entityType === "call") refreshQueue.add(`call:${stableId}`);
 if (entityType === "submission") refreshQueue.add(`submission:${stableId}`);
 refreshLiveCards(true).catch(() => {});
-});
+}));
 
 // ==========================================================
 // LIVE AUTO CARD REFRESH (v5.3 FINAL OPS ENGINE)
@@ -6391,11 +6400,28 @@ sbGetCoach(meta.ref_id),
 "DB query timed out"
 );
 if (!coach) continue;
+const filterSource = meta.filterSource || "all";
+const convs = await sbListConversationsByCoach({ coach_id: coach.coach_id, source: filterSource, limit: 10 }).catch(() => []);
+const coachText = `🧑‍🏫 COACH
+--
+Name: ${coach.coach_name || "—"}
+
+Program: ${coach.program || coach.school || "—"}
+
+Active Conversations: ${convs.length}
+
+--
+Created: ${coach.created_at || "—"}
+--`;
+const coachKb = Markup.inlineKeyboard([
+[Markup.button.callback("📬 Conversations", `COACH:convs:${coach.coach_id}`)],
+[Markup.button.callback("⬅ Back", "POOLS:open")],
+]);
 const edited = await safeEditMessageText(
 meta.chat_id,
 msgId,
-await buildCoachCard(coach),
-coachKeyboard(coach)
+coachText,
+coachKb
 );
 if (edited) editCount++;
 }
@@ -6404,6 +6430,7 @@ if (edited) editCount++;
 // ======================
 else if (meta.type === "triage") {
 const filterSource = meta.filterSource || "all";
+if (typeof triageText !== "function" || typeof triageKeyboard !== "function") continue;
 const edited = await safeEditMessageText(
 meta.chat_id,
 msgId,
@@ -6416,6 +6443,7 @@ if (edited) editCount++;
 // TODAY VIEW
 // ======================
 else if (meta.type === "today") {
+if (typeof todayText !== "function" || typeof todayKeyboard !== "function") continue;
 const edited = await safeEditMessageText(
 meta.chat_id,
 msgId,
@@ -6429,6 +6457,7 @@ if (edited) editCount++;
 // ======================
 else if (meta.type === "metrics") {
 const filterSource = meta.filterSource || "all";
+if (typeof metricsText !== "function" || typeof metricsKeyboard !== "function") continue;
 const edited = await safeEditMessageText(
 meta.chat_id,
 msgId,
