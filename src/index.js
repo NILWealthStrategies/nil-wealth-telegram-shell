@@ -7,7 +7,7 @@ const { v4: uuidv4 } = require("uuid");
 const { createClient } = require("@supabase/supabase-js");
 // ---------- VERSION ----------
 const CODE_VERSION =
-"Index.js V6.0";
+"Index.js V6.2";
 const BUILD_VERSION =
 process.env.BUILD_VERSION ||
 process.env.RENDER_GIT_COMMIT ||
@@ -1168,15 +1168,21 @@ return sorted.slice(0, limit);
 }
 // ---------- CALLS ----------
 async function sbListCalls({ limit = 8, offset = 0 } = {}) {
-  const { data, error } = await ops()
-    .from("calls")
-    .select(
-      "id, client_name, scheduled_at, outcome, updated_at, created_at"
-    )
-    .order("updated_at", { ascending: false })
-    .range(offset, offset + limit - 1);
-if (error) throw new Error(error.message);
-return data || [];
+const buildQuery = (withScheduledFor) => ops()
+  .from("calls")
+  .select(
+    withScheduledFor
+      ? "id, client_name, scheduled_for, outcome, updated_at, created_at"
+      : "id, client_name, scheduled_at, outcome, updated_at, created_at"
+  )
+  .order("updated_at", { ascending: false })
+  .range(offset, offset + limit - 1);
+const result = await dbSelectFirst([
+  () => buildQuery(true),
+  () => buildQuery(false),
+]);
+if (result?.error) throw new Error(result.error.message || result.error);
+return result?.data || [];
 }
 async function sbGetCall(callId) {
 const { data, error } = await ops()
@@ -1256,14 +1262,20 @@ if (error) throw new Error(error.message);
 return data || [];
 }
 async function sbListClientCalls(clientId, limit = 10) {
-const { data, error } = await ops()
+const buildQuery = (withScheduledFor) => ops()
 .from("calls")
-.select("id, client_name, client_email, best_phone, scheduled_at, reason, outcome, updated_at, created_at, conversation_id")
+.select(withScheduledFor
+  ? "id, client_name, client_email, best_phone, scheduled_for, reason, outcome, updated_at, created_at, conversation_id"
+  : "id, client_name, client_email, best_phone, scheduled_at, reason, outcome, updated_at, created_at, conversation_id")
 .eq("client_id", clientId)
 .order("updated_at", { ascending: false })
 .limit(limit);
-if (error) throw new Error(error.message);
-return data || [];
+const result = await dbSelectFirst([
+() => buildQuery(true),
+() => buildQuery(false),
+]);
+if (result?.error) throw new Error(result.error.message || result.error);
+return result?.data || [];
 }
 async function sbListClientThreads(clientId, limit = 10, offset = 0) {
 const { data, error } = await ops()
@@ -1445,24 +1457,29 @@ async function sbListCallsTriage({ source = "all", limit = 24, windowHours = 48 
 const now = new Date();
 const windowMs = windowHours * 3600 * 1000;
 const windowStart = new Date(now.getTime() - windowMs).toISOString();
-
+const buildQuery = (scheduleField, withSource) => {
 let q = ops()
 .from("calls")
 .select("*")
-.order("scheduled_at", { ascending: true })
+.order(scheduleField, { ascending: true })
 .limit(limit);
-
-if (source !== "all") {
+if (withSource && source !== "all") {
 q = q.eq("source", sourceSafe(source));
 }
-// Get calls scheduled within window or missing outcome
-q = q.or(`scheduled_at.gte.${windowStart},outcome.is.null`);
-const { data, error } = await q;
-if (error) {
-console.log("sbListCallsTriage error:", error);
+q = q.or(`${scheduleField}.gte.${windowStart},outcome.is.null`);
+return q;
+};
+const result = await dbSelectFirst([
+() => buildQuery("scheduled_for", true),
+() => buildQuery("scheduled_at", true),
+() => buildQuery("scheduled_for", false),
+() => buildQuery("scheduled_at", false),
+]);
+if (result?.error) {
+console.log("sbListCallsTriage error:", result.error);
 return [];
 }
-return data || [];
+return result?.data || [];
 }
 // ---------- METRICS (v5.3 aligned) ----------
 async function sbMetricSummary({ source = "all", window = "month" }) {
@@ -3623,6 +3640,9 @@ return null;
 }
 // ---------- calls helpers ----------
 const TRIAGE_CALL_WINDOW_HOURS = 48; // shows rescheduled calls within next 48h
+function tCallScheduledAt(call) {
+return call?.scheduled_for || call?.scheduled_at || null;
+}
 function tCallName(call) {
 // always full name
 return tSafe(call.client_full_name || call.contact_name || call.name || "—", 40);
@@ -3640,8 +3660,8 @@ if (String(call.status || "").toLowerCase() === "missed") return "❌";
 return "📱";
 }
 function tCallDueAt(call) {
-// Prefer next_action_at for follow-ups/outcome-needed; else scheduled_at
-return call.next_action_at || call.due_at || call.scheduled_at || call.attempted_at || null;
+// Prefer next_action_at for follow-ups/outcome-needed; else scheduled time
+return call.next_action_at || call.due_at || tCallScheduledAt(call) || call.attempted_at || null;
 
 }
 function tCallSortKey(call) {
@@ -3649,8 +3669,9 @@ function tCallSortKey(call) {
 const now = Date.now();
 const dueAt = tCallDueAt(call);
 const dueMs = dueAt ? new Date(dueAt).getTime() : Infinity;
-// "dueNow" if dueMs <= now OR (outcome missing and scheduled_at <= now)
-const scheduledMs = call.scheduled_at ? new Date(call.scheduled_at).getTime() : Infinity;
+// "dueNow" if dueMs <= now OR (outcome missing and scheduled time <= now)
+const scheduledIso = tCallScheduledAt(call);
+const scheduledMs = scheduledIso ? new Date(scheduledIso).getTime() : Infinity;
 const outcomeMissing = call.outcome == null;
 const dueNow = (Number.isFinite(dueMs) && dueMs <= now) || (outcomeMissing &&
 Number.isFinite(scheduledMs) && scheduledMs <= now);
@@ -3669,7 +3690,7 @@ const status = call.status ? String(call.status).toLowerCase() : null;
 if (emoji === "📘") {
 return (
 `${idx}) 📘 Rescheduled — ${who}\n` +
-` Next Call: ${tFmtTimeShort(call.scheduled_at)}`
+` Next Call: ${tFmtTimeShort(tCallScheduledAt(call))}`
 );
 }
 // No Answer / Missed -> follow-up due
@@ -3685,7 +3706,7 @@ tFmtTimeShort(attempted)} ago\n` +
 );
 }
 // Scheduled / Outcome Missing
-const sched = call.scheduled_at || call.due_at || null;
+const sched = tCallScheduledAt(call) || call.due_at || null;
 return (
 `${idx}) 📱 Scheduled Call — ${who}\n` +
 ` Time: ${tFmtTimeShort(sched)}\n` +
@@ -3712,10 +3733,24 @@ const pageSize = 10;
 const OVERDUE_THRESHOLD_HOURS = 24; // Items waiting > 24h are urgent
 
 // Fetch all items for all sections
-const handoffRaw = await sbListHandoffPending({ source: filterSource, limit: 24 });
-const needsRaw = await sbListConversations({ pipeline: "needs_reply", source: filterSource, role: roleFilter, limit: 48 });
-const callsRaw = await sbListCallsTriage({ source: filterSource, limit: 24, windowHours: TRIAGE_CALL_WINDOW_HOURS });
-const followupsRaw = await sbListCoachFollowupsDueNow({ source: filterSource, limit: 24 });
+const [handoffRaw, needsRaw, callsRaw, followupsRaw] = await Promise.all([
+  sbListHandoffPending({ source: filterSource, limit: 24 }).catch((err) => {
+    logError("triageOpen:handoff", err);
+    return [];
+  }),
+  sbListConversations({ pipeline: "needs_reply", source: filterSource, role: roleFilter, limit: 48 }).catch((err) => {
+    logError("triageOpen:needs_reply", err);
+    return [];
+  }),
+  sbListCallsTriage({ source: filterSource, limit: 24, windowHours: TRIAGE_CALL_WINDOW_HOURS }).catch((err) => {
+    logError("triageOpen:calls", err);
+    return [];
+  }),
+  sbListCoachFollowupsDueNow({ source: filterSource, limit: 24 }).catch((err) => {
+    logError("triageOpen:followups", err);
+    return [];
+  }),
+]);
 
 // Separate overdue needs_reply from regular needs_reply
 const seen = new Set();
@@ -3845,6 +3880,7 @@ registerLiveCard(msg, {
   type: "triage",
   card_key: `triage:${filterSource}:${safePage}`,
   ref_id: filterSource,
+  filterSource,
 });
 }
 
@@ -3852,7 +3888,10 @@ async function handoffOpen(ctx, activePage = 1) {
 const filterSource = getAdminFilter(ctx) || "all";
 const roleFilter = getAdminRoleFilter(ctx) || "all";
 const pageSize = 10;
-const raw = await sbListHandoffPending({ source: filterSource, limit: 80 });
+const raw = await sbListHandoffPending({ source: filterSource, limit: 80 }).catch((err) => {
+logError("handoffOpen", err);
+return [];
+});
 const items = roleFilter === "all"
   ? raw
   : (raw || []).filter((c) => conversationRoleForDisplay(c) === roleFilter);
