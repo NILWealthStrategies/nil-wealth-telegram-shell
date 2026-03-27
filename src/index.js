@@ -970,14 +970,15 @@ Pending Handoffs: ${rt.pending_handoff_conversations == null ? "n/a" : rt.pendin
 }
 // ---------- LISTS ----------
 async function sbListConversations({ pipeline, source = "all", role = "all", limit = 8 }) {
-const buildQuery = (withRole, withHandoff) => {
+const buildQuery = (withRole, withHandoff, withCardExtras = true) => {
   const handoffCols = withHandoff ? ', needs_support_handoff, needs_support_handoff_at, handoff_detected_reason' : '';
+  const cardCols = withCardExtras ? ', cc_support_suggested, gmail_url, mirror_conversation_id' : '';
   let q = ops()
     .from("conversations")
     .select(
       withRole
-        ? `id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at, cc_support_suggested, gmail_url, mirror_conversation_id, role, role_pending, role_confidence${handoffCols}`
-        : `id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at, cc_support_suggested, gmail_url, mirror_conversation_id${handoffCols}`
+        ? `id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at${cardCols}, role, role_pending, role_confidence${handoffCols}`
+        : `id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at${cardCols}${handoffCols}`
     )
     .order("updated_at", { ascending: false })
     .limit(limit * 2); // Fetch 2x limit for sorting
@@ -995,6 +996,8 @@ const result = await dbSelectFirst([
   () => buildQuery(false, true),
   () => buildQuery(true, false),  // fallback: handoff columns may not exist yet
   () => buildQuery(false, false), // fallback: no role, no handoff columns
+  () => buildQuery(true, false, false),  // fallback: role columns only, no card extras
+  () => buildQuery(false, false, false), // fallback: minimal queue-safe columns only
 ]);
 if (result?.error) throw new Error(result.error.message || result.error);
 const sorted = smartSortByPriority(result?.data || []);
@@ -2356,6 +2359,7 @@ const viewKey = ctx.match[1];
 const page = parseInt(ctx.match[2]) || 1;
 const filterSource = getAdminFilter(ctx);
 const roleFilter = getAdminRoleFilter(ctx);
+try {
 if (viewKey === "website_submissions") {
 const pageSize = 5;
 const offset = (page - 1) * pageSize;
@@ -2417,6 +2421,14 @@ const rows = viewKey === "urgent"
 await showConversationList(ctx, viewKey, rows, filterSource, roleFilter);
 // If you want queue lists to live-refresh too, update showConversationList
 // to return the sent message and register it there.
+} catch (err) {
+logError(`VIEW:${viewKey}`, err);
+await smartRender(
+ctx,
+`⚠️ Unable to load ${viewTitle(viewKey)} right now.\n\nThe queue is still operational; try again in a moment.`,
+Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "ALLQ:open")]])
+);
+}
 })
 );
 
@@ -2517,7 +2529,7 @@ const kb = Markup.inlineKeyboard([
 [Markup.button.callback("🏆 Coach", `ROLESELECT:${convId}:coach`)],
 [Markup.button.callback("💪 Trainer", `ROLESELECT:${convId}:trainer`)],
 [Markup.button.callback("❓ Other", `ROLESELECT:${convId}:other`)],
-[Markup.button.callback("⬅ Back", `OPENCARD:conversation:${convId}`)],
+[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)],
 ]);
 await ctx.editMessageText(
 `🔧 Select new role (currently: ${currentRole}):`,
@@ -2620,10 +2632,10 @@ await ctx.reply("❌ Error opening mirror. Try /dashboard to refresh.").catch(()
 // ---------- MIRRORS LIST (v5.4) ----------
 bot.action(/^MIRRORS:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
-const cardKey = ctx.match[1];
+const raw = String(ctx.match[1] || "");
 const mirrors = await getMirrors(cardKey);
-
-if (!mirrors || mirrors.length === 0) {
+if (raw.startsWith("sub:") || raw.startsWith("submission:")) {
+const sid = raw.startsWith("sub:") ? raw.slice(4) : raw.slice("submission:".length);
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("⬅ Back", `OPENCARD:${cardKey}`)],
 ]);
@@ -2635,7 +2647,9 @@ const buttons = [];
 
 for (const m of mirrors.slice(0, 10)) {
 const mk = m.mirror_card_key || m.card_key || "";
-const label = m.label || m.title || mk || "Mirror";
+
+const convId = raw.startsWith("conversation:") ? raw.slice("conversation:".length) : raw;
+const conv = await sbGetConversationById(convId);
 text += `• ${shorten(label, 50)}\n  ${mk}\n\n`;
 if (mk) {
 buttons.push([Markup.button.callback(shorten(label, 28), `OPENCARD:${mk}`)]);
