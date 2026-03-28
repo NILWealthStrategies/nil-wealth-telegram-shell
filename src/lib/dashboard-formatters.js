@@ -62,14 +62,14 @@ function buildDashboardText({
   capped,
   metrics,
 }) {
+  const staleBlock = staleWarning ? `${staleWarning}\n` : "";
   return `🏠 NIL WEALTH OPS DASHBOARD
 ${codeVersion} • Build: ${String(buildVersion).slice(0, 8)}
 
 📅 Today: ${today}
 ⏰ NY Time: ${time}
 🧮 Filter: ${filterLabel}
-${staleWarning ? `${staleWarning}\n` : ""}
-
+${staleBlock}
 🗂 ALL QUEUES
 ${capped.handoffCount?.displayCount > 0 ? `${formatCappedQueueLabel("📌 Loop in Support", capped.handoffCount)}\n` : ""}${formatCappedQueueLabel("‼️ Urgent", capped.urgentCount)}
 ${formatCappedQueueLabel("📝 Needs Reply", capped.needsReplyCount)}

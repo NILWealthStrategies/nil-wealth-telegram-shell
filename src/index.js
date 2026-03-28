@@ -459,6 +459,14 @@ if (stack && NODE_ENV !== "production") {
 console.error(stack);
 }
 }
+function shortErrorReason(err, fallback = "unknown") {
+const msg = String(err?.message || err?.details || err?.hint || fallback || "unknown").trim();
+if (!msg) return "unknown";
+return msg.length > 110 ? `${msg.slice(0, 107)}...` : msg;
+}
+function buildLoadWarning(label, err = null) {
+return `⚠️ Unable to load ${label} right now.\nReason: ${shortErrorReason(err)}\n\nThe queue is still operational; try again in a moment.`;
+}
 function newTraceId() {
 // Generate trace ID for event tracking (v5.4)
 return uuidv4();
@@ -1839,7 +1847,7 @@ callsCount: await sbCountCalls(),
 };
 const lastIngestAt = await sbGetLastOpsEventTimestamp();
 const staleWarning = (() => {
-if (!lastIngestAt) return "⚠️ Data may be stale · Last ingest: unknown";
+if (!lastIngestAt) return "⚠️ Data may be stale · Last ingest: none yet";
 const ts = new Date(lastIngestAt).getTime();
 if (!Number.isFinite(ts)) return "⚠️ Data may be stale · Last ingest timestamp invalid";
 const ageMinutes = Math.floor((Date.now() - ts) / 60000);
@@ -2210,7 +2218,7 @@ if (countErr) {
 logError("VIEW:website_submissions count", countErr);
 return smartRender(
 ctx,
-"⚠️ Unable to load submission queue count right now.",
+buildLoadWarning("submission queue count", countErr),
 Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "ALLQ:open")]])
 );
 }
@@ -2272,7 +2280,7 @@ await showConversationList(ctx, viewKey, rows, filterSource, roleFilter);
 logError(`VIEW:${viewKey}`, err);
 await smartRender(
 ctx,
-`⚠️ Unable to load ${viewTitle(viewKey)} right now.\n\nThe queue is still operational; try again in a moment.`,
+buildLoadWarning(viewTitle(viewKey), err),
 Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "ALLQ:open")]])
 );
 }
@@ -4412,7 +4420,7 @@ if (allClientsErr) {
 logError("CLIENTS:list count", allClientsErr);
 return smartRender(
 ctx,
-"⚠️ Unable to load client counts right now.",
+buildLoadWarning("client counts", allClientsErr),
 Markup.inlineKeyboard([[Markup.button.callback("⬅ Clients", "CLIENTS:open")]])
 );
 }
@@ -4484,8 +4492,7 @@ const phone = c.primary_phone_e164 || "—";
 const state = c.state || "—";
 const poolsArr = Array.isArray(c.pools) ? c.pools : [];
 const poolsBlock = poolsArr.length
-? `\n🌊 Pools\n` +
-poolsArr.slice(0, 3).map((p) => {
+? poolsArr.slice(0, 3).map((p) => {
 const label = p.pool_label || "—";
 const coachName = p.coach_name || "—";
 const coachId = p.coach_id || "—";
@@ -4512,27 +4519,24 @@ Last Activity: ${c.last_activity_at || "—"}
 Last Inbound: ${c.last_inbound_at || "—"}
 
 ──────────────────────
-
 📬 CONTACT
 Email: ${email}
 Phone: ${phone}
 State: ${state}
-${poolsBlock ? `\n──────────────────────\n\n${poolsBlock}` : ""}
-──────────────────────
+${poolsBlock ? `\n──────────────────────\n🌊 POOLS\n${poolsBlock}` : ""}
 
+──────────────────────
 📊 ACTIVITY
 Threads: ${c.threads_total || 0}  📝 Needs Reply: ${c.threads_needs_reply || 0}
 Submissions: ${c.submissions_total || 0}
 Calls Open: ${c.calls_open || 0}
 
 ──────────────────────
-
 🧾 COVERAGE
 ${covLine}
 
 ──────────────────────
 `;
-`🧠 Identity\nPeople Linked: ${c.people_count || 0}`;
 const hasPools = poolsArr.length > 0;
 const kbRows = [
 [Markup.button.callback("🧵 Threads", `CLIENT:threads:${c.client_id}`),
@@ -4569,7 +4573,7 @@ if (allThreadsErr) {
 logError("CLIENT:threads count", allThreadsErr);
 return smartRender(
 ctx,
-"⚠️ Unable to load thread counts right now.",
+buildLoadWarning("thread counts", allThreadsErr),
 Markup.inlineKeyboard([[Markup.button.callback("⬅ Client", `CLIENT:${clientId}`)]])
 );
 }
@@ -4596,7 +4600,7 @@ const subj = t.subject || "—";
 const prev = t.preview || "—";
 return `${offset + idx + 1}. ${label}${lane}\n${subj}\n${prev}\nLast inbound: ${last}`;
 }).join("\n\n")
-: "No threads yet.\n\n(If they only submitted the website form, threads will appear when a reply comes in.)";
+: "No threads yet.\n(If they only submitted the website form, threads will appear when a reply comes in.)";
 // Just navigation, no individual open buttons
 const kb = [];
 
@@ -4637,7 +4641,7 @@ if (allSubsErr) {
 logError("CLIENT:subs count", allSubsErr);
 return smartRender(
 ctx,
-"⚠️ Unable to load submission counts right now.",
+buildLoadWarning("submission counts", allSubsErr),
 Markup.inlineKeyboard([[Markup.button.callback("⬅ Client", `CLIENT:${clientId}`)]])
 );
 }
@@ -4899,7 +4903,7 @@ if (countErr) {
 logError("CALLS:hub count", countErr);
 return smartRender(
 ctx,
-"⚠️ Unable to load call counts right now.",
+buildLoadWarning("call counts", countErr),
 Markup.inlineKeyboard([[Markup.button.callback("⬅ Dashboard", "DASH:back")]])
 );
 }
