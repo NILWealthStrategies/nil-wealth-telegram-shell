@@ -5,6 +5,87 @@ const express = require("express");
 const crypto = require("crypto");
 const { v4: uuidv4 } = require("uuid");
 const { createClient } = require("@supabase/supabase-js");
+const {
+  conversationRoleForDisplay,
+  idShort,
+  isInstantlySource,
+  isProgramLane,
+  normalizeEmail,
+  normalizeRole,
+  roleDefaultLane,
+  roleDefaultNextAction,
+  roleFilterLabel,
+  roleLabel,
+  roleTag,
+  safeStr,
+  shorten,
+  sourceSafe,
+} = require("./lib/core-utils");
+const {
+  fmtWhen,
+  parseIsoOrNull,
+  tFmtDateShort,
+  tFmtDateTimeShort,
+  tFmtMin,
+  tFmtTimeShort,
+  tSafe,
+  tShortProgram,
+} = require("./lib/format-utils");
+const {
+  buildCallCardTextHTML,
+  callNeedsAction,
+  callStatusLabel,
+  callSummaryLine,
+} = require("./lib/call-formatters");
+const {
+  buildConversationCardText,
+  convoSummaryLine,
+  formatInstantlyTimelineLine,
+  formatMessageLineFull,
+} = require("./lib/conversation-formatters");
+const {
+  allQueuesText,
+  buildDashboardText,
+  buildOpsHealthText,
+  buildYearSummaryText,
+} = require("./lib/dashboard-formatters");
+const {
+  buildSubmissionCard,
+  coverageLabel,
+  emailStatusIcon,
+  smsStatusIcon,
+} = require("./lib/submission-formatters");
+const {
+  TRIAGE_CALL_WINDOW_HOURS,
+  tCallBtnLabel,
+  tCallContext,
+  tCallDueAt,
+  tCallLine,
+  tCallName,
+  tCallOpenAction,
+  tCallScheduledAt,
+  tCallSortKey,
+  tCallTypeEmoji,
+  tComputeWaitingMinutes,
+  tConvoBtnLabel,
+  tConvoBtnLabelTriage,
+  tConvoLine,
+  tDisplayName,
+  tFollowupBtnLabel,
+  tFollowupLine,
+  tFollowupTargetAction,
+  tIsCoachThread,
+} = require("./lib/triage-formatters");
+const {
+  capQueueCount,
+  headerLine,
+  laneLabel,
+  sanitizeDisplayText,
+  slaBadge,
+  smartSortByPriority,
+  urgentCountdown,
+  viewTitle,
+} = require("./lib/view-utils");
 // ---------- VERSION ----------
 const CODE_VERSION =
 "Index.js V6.2";
@@ -43,10 +124,12 @@ const SUPPORT_FROM_EMAIL =
 process.env.SUPPORT_FROM_EMAIL || "support@mynilwealthstrategies.com";
 const OUTREACH_FROM_EMAIL = process.env.OUTREACH_FROM_EMAIL || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const NODE_ENV = process.env.NODE_ENV || "development";
 const OUTBOX_POLL_MS = Number(process.env.OUTBOX_POLL_MS || 7000);
 // live cards
 const LIVE_CARD_TTL_MINUTES = Number(process.env.LIVE_CARD_TTL_MINUTES || 360);
 const REFRESH_MIN_INTERVAL_MS = 1200;
+const MAX_QUEUE_DISPLAY = 500;
 const ENABLE_TELEGRAM_BOT =
 String(process.env.ENABLE_TELEGRAM_BOT || "true").toLowerCase() !== "false";
 const ENABLE_TELEGRAM_LIVE_REFRESH =
@@ -63,11 +146,34 @@ throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
 // ---------- CLIENTS ----------
 const bot = new Telegraf(BOT_TOKEN);
 const app = express();
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "1mb" }));
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 auth: { persistSession: false },
 });
 const ops = () => supabase.schema("nil");
+
+const _tgSendMessage = bot.telegram.sendMessage.bind(bot.telegram);
+bot.telegram.sendMessage = async (...args) => {
+  try {
+    return await _tgSendMessage(...args);
+  } catch (err) {
+    console.error("[ERROR] telegram.sendMessage:", err?.message || String(err));
+    return null;
+  }
+};
+
+const _tgEditMessageText = bot.telegram.editMessageText.bind(bot.telegram);
+bot.telegram.editMessageText = async (...args) => {
+  try {
+    return await _tgEditMessageText(...args);
+  } catch (err) {
+    const msg = String(err?.description || err?.message || "");
+    if (!msg.includes("message is not modified")) {
+      console.error("[ERROR] telegram.editMessageText:", msg || String(err));
+    }
+    return null;
+  }
+};
 // ---------- IN-MEMORY FILTER STORAGE ----------
 const userFilters = new Map(); // userId -> filter value ("all" | "programs" | "support")
 const userRoleFilters = new Map(); // userId -> role filter ("all" | "parent" | "athlete" | "coach" | "trainer" | "other")
@@ -337,132 +443,6 @@ const userId = String(ctx.from?.id || "");
 userRoleFilters.set(userId, v);
 } catch (_) {}
 }
-function safeStr(v) {
-if (v === null || v === undefined) return "";
-return String(v);
-}
-function shorten(s, n = 160) {
-if (!s) return "";
-const t = String(s).replace(/\s+/g, " ").trim();
-return t.length <= n ? t : t.slice(0, n - 1) + "…";
-}
-function idShort(id) {
-const s = safeStr(id);
-return s.length <= 8 ? s : s.slice(0, 8);
-}
-function sourceSafe(src) {
-return src === "support" ? "support" : "programs";
-}
-// ---------- ROLE HELPERS ----------
-const ROLE_LABELS = {
-parent: "Parent",
-athlete: "Athlete",
-coach: "Coach",
-trainer: "Trainer",
-other: "Other",
-};
-const ROLE_VALUES = new Set(Object.keys(ROLE_LABELS));
-function normalizeRole(value) {
-if (!value) return null;
-const v = String(value).trim().toLowerCase();
-return ROLE_VALUES.has(v) ? v : null;
-}
-function roleLabel(role) {
-const r = normalizeRole(role) || "parent";
-return ROLE_LABELS[r] || "Parent";
-}
-function roleTag(role) {
-return `[${roleLabel(role)}]`;
-}
-function roleFilterLabel(role) {
-return role === "all" ? "All Roles" : roleLabel(role);
-}
-function normalizeEmail(email) {
-if (!email) return null;
-return String(email).trim().toLowerCase();
-}
-function conversationRoleForDisplay(conv) {
-const explicit = normalizeRole(conv?.role);
-if (explicit) return explicit;
-const kind = String(conv?.conversation_kind || "").toLowerCase();
-if (kind === "outreach") return "coach";
-// Use tIsCoachThread logic for better detection
-const hasCoach = !!(conv?.coach_name || conv?.coach_full_name);
-const hasClient = !!(conv?.contact_name || conv?.client_full_name || conv?.first_name || conv?.last_name);
-if (hasCoach && !hasClient) return "coach";
-// Check if contact_email is the only contact field (likely coach email)
-if (hasCoach && conv?.contact_email && !conv?.contact_name && !conv?.client_full_name) return "coach";
-return "parent";
-}
-function conversationIdentityText(conv) {
-// Get name without "Coach" prefix to avoid duplication
-const coach = conv?.coach_name || conv?.coach_full_name || null;
-const client = conv?.contact_name || conv?.client_full_name || null;
-const email = conv?.contact_email || conv?.email || null;
-
-let name;
-if (client) {
-name = client;
-} else if (coach) {
-// Strip "Coach" prefix if present to avoid duplication with role tag
-name = String(coach).replace(/^Coach\s+/i, '').trim() || coach;
-} else if (email) {
-name = email;
-} else {
-name = "—";
-}
-return `${roleTag(conversationRoleForDisplay(conv))} ${name}`;
-}
-// ---------- ROLE-AWARE LANE ROUTING ----------
-function roleDefaultLane(role) {
-const r = normalizeRole(role) || "parent";
-switch (r) {
-case "coach":
-case "trainer":
-return "outreach";
-case "other":
-return "triage";
-case "parent":
-case "athlete":
-case null:
-default:
-return "support";
-}
-}
-function roleConflictBadge(conv) {
-const conflict = conv?.role_pending;
-const confidence = conv?.role_confidence;
-if (conflict && confidence === "low") {
-return `⚠️ Conflict: [${roleLabel(conflict)}] pending`;
-}
-return null;
-}
-// ---------- NEXT ACTION TYPE DEFAULTS ----------
-function roleDefaultNextAction(role, intentAnswer) {
-const r = normalizeRole(role) || "parent";
-const i = String(intentAnswer || "").trim().toLowerCase();
-if (r === "parent" && ["my athlete", "family coverage", "myself"].includes(i)) {
-return "send_sh_page";
-}
-if (r === "athlete" && i === "have my parent contacted") {
-return "parent_contact_request";
-}
-if ((r === "coach" || r === "trainer") && i === "share this with my athletes/clients") {
-return "send_parent_guide_to_program";
-}
-if (r === "other") {
-return "manual_review";
-}
-return null;
-}
-/**
-
-* ✅ v5.3 FIX: standardize lane emoji here (single source of truth).
-* This replaces the prior invisible-char " Support" issue.
-*/
-function laneLabel(source) {
-return source === "support" ? "󰼡 Support" : "🏈 Programs";
-}
 // ---------- v5.4 UTILITY FUNCTIONS ----------
 function compact(v) {
 // Safe string display: converts null/undefined to "—"
@@ -475,7 +455,7 @@ function logError(context, err) {
 const msg = err?.message || String(err);
 const stack = err?.stack || "";
 console.error(`[ERROR] ${context}:`, msg);
-if (stack && process.env.NODE_ENV !== "production") {
+if (stack && NODE_ENV !== "production") {
 console.error(stack);
 }
 }
@@ -594,6 +574,10 @@ payload: evt.payload || null,
 });
 return crypto.createHash("sha256").update(raw).digest("hex");
 }
+function deriveInstantlyReplyIdempotencyKey({ leadId, timestamp }) {
+  const raw = `instantly_reply|${safeStr(leadId) || "unknown"}|${safeStr(timestamp) || "unknown"}`;
+  return crypto.createHash("sha256").update(raw).digest("hex");
+}
 async function sbInsertOpsEvent(evt) {
 // requires nil.ops_events (append-only) with unique constraint recommended:
 // unique(event_type, idempotency_key)
@@ -672,6 +656,17 @@ const txt = await resp.text().catch(() => "");
 throw new Error(`/ops/ingest ${resp.status}: ${txt || "unknown"}`);
 }
 }
+async function writeDeadLetterSafe(reason, payload) {
+  try {
+    await ops().from("dead_letters").insert({
+      received_at: new Date().toISOString(),
+      error: safeStr(reason) || "unknown_dead_letter_reason",
+      payload: payload || null,
+    });
+  } catch (err) {
+    console.error("[dead_letters insert error]", err?.message || String(err));
+  }
+}
 let outboxWorkerRunning = false;
 let lastOutboxTickAt = null;
 async function runOutboxSenderTick() {
@@ -713,53 +708,6 @@ return data || [];
 logError("getMirrors", err);
 return [];
 }
-}
-// ---------- SLA / URGENT ----------
-function minsUntilUrgent(updatedAtIso) {
-if (!updatedAtIso) return URGENT_AFTER_MINUTES;
-const updated = new Date(updatedAtIso).getTime();
-const now = Date.now();
-const ageMins = Math.floor((now - updated) / 60000);
-return URGENT_AFTER_MINUTES - ageMins;
-}
-function slaBadge(updatedAtIso) {
-
-const m = minsUntilUrgent(updatedAtIso);
-if (m <= 0) return "🔴 Overdue";
-if (m <= 60) return "🟠 Due soon";
-return "🟢 On track";
-}
-function urgentCountdown(updatedAtIso) {
-const m = minsUntilUrgent(updatedAtIso);
-const mmAbs = Math.abs(m);
-const h = Math.floor(mmAbs / 60);
-const mm = mmAbs % 60;
-if (m <= 0) return `‼️ Urgent now`;
-return `⏳ ${h}h ${mm}m left`;
-}
-// ---------- SMART SORTING (v5.4) ----------
-// Sorts items by: 1) Due-now first, 2) Priority tier, 3) Most recent
-function smartSortByPriority(rows = []) {
-if (!Array.isArray(rows) || rows.length === 0) return rows;
-return [...rows].sort((a, b) => {
-const now = Date.now();
-// Parse due dates
-const aDue = a.next_action_at ? new Date(a.next_action_at).getTime() : Infinity;
-const bDue = b.next_action_at ? new Date(b.next_action_at).getTime() : Infinity;
-// Due-now items come first
-const aDueNow = aDue <= now;
-const bDueNow = bDue <= now;
-if (aDueNow && !bDueNow) return -1;
-if (bDueNow && !aDueNow) return 1;
-// Priority tier (lower number = higher priority)
-const aPri = typeof a.priority_tier === 'number' ? a.priority_tier : 9;
-const bPri = typeof b.priority_tier === 'number' ? b.priority_tier : 9;
-if (aPri !== bPri) return aPri - bPri;
-// Most recent activity
-const aTime = a.updated_at ? new Date(a.updated_at).getTime() : 0;
-const bTime = b.updated_at ? new Date(b.updated_at).getTime() : 0;
-return bTime - aTime;
-});
 }
 // ---------- COUNTS ----------
 async function sbCountConversations({ pipeline, source, role }) {
@@ -948,26 +896,6 @@ async function buildOpsHealthSummary() {
   };
 }
 
-function buildOpsHealthText(summary) {
-  const cfg = summary?.config || {};
-  const rt = summary?.runtime || {};
-  const b = (v) => (v ? "yes" : "no");
-  return `🩺 OPS HEALTH
---
-Config
-MAKE_SEND_WEBHOOK_URL: ${b(cfg.make_send_webhook_configured)}
-CC_SUPPORT_WEBHOOK_URL: ${b(cfg.cc_support_webhook_configured)}
-HANDOFF_WEBHOOK_URL: ${b(cfg.handoff_webhook_configured)}
-OPENAI_API_KEY: ${b(cfg.openai_api_key_configured)}
-SUPPORT_FROM_EMAIL: ${b(cfg.support_from_email_configured)}
-OUTREACH_FROM_EMAIL: ${b(cfg.outreach_from_email_configured)}
-
-Runtime
-Last Outbox Tick: ${rt.last_outbox_tick_at || "never"}
-Dead Letter Backlog: ${rt.dead_letter_backlog == null ? "n/a" : rt.dead_letter_backlog}
-Pending Handoffs: ${rt.pending_handoff_conversations == null ? "n/a" : rt.pending_handoff_conversations}
---`;
-}
 // ---------- LISTS ----------
 async function sbListConversations({ pipeline, source = "all", role = "all", limit = 8 }) {
 const buildQuery = (withRole, withHandoff, withCardExtras = true) => {
@@ -1062,12 +990,32 @@ return count || 0;
 async function sbListMessages(conversation_id, { offset = 0, limit = 6 } = {}) {
 const { data, error } = await ops()
 .from("messages")
-.select("id, direction, from_email, to_email, subject, body, preview, created_at")
+.select("id, direction, sender, from_email, to_email, subject, body, preview, created_at")
 .eq("conversation_id", conversation_id)
 .order("created_at", { ascending: false })
 .range(offset, offset + limit - 1);
 if (error) throw new Error(error.message);
 return data || [];
+}
+async function sbListCcSupportEvents(conversation_id, { limit = 100 } = {}) {
+  try {
+    const { data, error } = await ops()
+      .from("ops_events")
+      .select("id, created_at, event_type, payload")
+      .eq("entity_type", "conversation")
+      .eq("entity_id", conversation_id)
+      .eq("event_type", "cc_support_sent")
+      .order("created_at", { ascending: true })
+      .limit(limit);
+    if (error) {
+      logError("sbListCcSupportEvents", error);
+      return [];
+    }
+    return data || [];
+  } catch (err) {
+    logError("sbListCcSupportEvents", err);
+    return [];
+  }
 }
 // ---------- SUBMISSIONS ----------
 async function sbListSubmissions({ limit = 8, offset = 0 } = {}) {
@@ -1384,9 +1332,20 @@ const withConv = 0; // No conversation_id column
 const newMonth = rows.filter(p => p.created_at >= monthAgo).length;
 
 // Get pipeline stats from conversations - get all since we can't link directly
-const { data: convs } = await ops()
+const { data: convs, error: convErr } = await ops()
 .from("conversations")
 .select("id, pipeline");
+if (convErr) {
+console.log("sbClientSummary conversations error:", convErr);
+return {
+total: rows.length,
+newMonth,
+withConversations: withConv,
+needsReply: 0,
+active: 0,
+completed: 0,
+};
+}
 const needsReply = (convs || []).filter(c => c.pipeline === "needs_reply").length;
 const active = (convs || []).filter(c => c.pipeline === "active").length;
 const completed = (convs || []).filter(c => c.pipeline === "completed").length;
@@ -1673,49 +1632,24 @@ eapp_visits_year: 0,
 
 return rows;
 }
-function viewTitle(key) {
-const map = {
-handoff: "📌 Loop in Support",
-urgent: "‼️ Urgent",
-needs_reply: "📝 Needs Reply",
-actions_waiting: "⏳ Waiting",
-active: "💬 Active",
-followups: "📚 Follow-Ups",
-forwarded: "📨 Forwarded",
-website_submissions: "🧾 Submissions",
-completed: "✅ Completed",
-thread: "🧵 Thread (Full)",
-metrics: "📊 Metrics",
-year_summary: "🎉 Year Summary",
-calls: "📱 Calls",
-today: "📅 Today",
-triage: "⚡️ Triage",
-all_queues: "🗂 All Queues",
-clients: "👥 Clients",
-pools: "🌊 Pools",
-};
-return map[key] || key;
-}
-function headerLine(key, filterLabel = "all") {
-return `${viewTitle(key)} · ${filterLabel}`;
-}
 // ---------- SMART RENDER (v5.3 SAFE) ----------
-function sanitizeDisplayText(text) {
-if (typeof text !== "string") return text;
-let safe = text
-.replace(/═{6,}/g, "═════")
-.replace(/─{6,}/g, "─────");
-
-if (safe.includes("NIL WEALTH OPS DASHBOARD")) {
-safe = safe
-.split("\n")
-.filter((line) => {
-const t = line.trim();
-return t !== "═════" && t !== "─────";
-})
-.join("\n");
+async function sbGetLastOpsEventTimestamp() {
+try {
+const { data, error } = await ops()
+.from("ops_events")
+.select("created_at")
+.order("created_at", { ascending: false })
+.limit(1)
+.maybeSingle();
+if (error) {
+console.warn("sbGetLastOpsEventTimestamp error:", error.message);
+return null;
 }
-return safe;
+return data?.created_at || null;
+} catch (err) {
+console.warn("sbGetLastOpsEventTimestamp exception:", err.message);
+return null;
+}
 }
 
 async function smartRender(ctx, text, keyboard) {
@@ -1903,34 +1837,40 @@ completedCount: await sbCountConversations({ pipeline: "completed", source: filt
 submissionsCount: await sbCountSubmissions(),
 callsCount: await sbCountCalls(),
 };
+const lastIngestAt = await sbGetLastOpsEventTimestamp();
+const staleWarning = (() => {
+if (!lastIngestAt) return "⚠️ Data may be stale · Last ingest: unknown";
+const ts = new Date(lastIngestAt).getTime();
+if (!Number.isFinite(ts)) return "⚠️ Data may be stale · Last ingest timestamp invalid";
+const ageMinutes = Math.floor((Date.now() - ts) / 60000);
+if (ageMinutes > 30) {
+return `⚠️ Data may be stale · Last ingest: ${tFmtDateTimeShort(lastIngestAt)}`;
+}
+return "";
+})();
+const capped = {
+handoffCount: capQueueCount(counts.handoffCount, MAX_QUEUE_DISPLAY),
+urgentCount: capQueueCount(counts.urgentCount, MAX_QUEUE_DISPLAY),
+needsReplyCount: capQueueCount(counts.needsReplyCount, MAX_QUEUE_DISPLAY),
+waitingCount: capQueueCount(counts.waitingCount, MAX_QUEUE_DISPLAY),
+activeCount: capQueueCount(counts.activeCount, MAX_QUEUE_DISPLAY),
+forwardedCount: capQueueCount(counts.forwardedCount, MAX_QUEUE_DISPLAY),
+submissionsCount: capQueueCount(counts.submissionsCount, MAX_QUEUE_DISPLAY),
+followCount: capQueueCount(counts.followCount, MAX_QUEUE_DISPLAY),
+callsCount: capQueueCount(counts.callsCount, MAX_QUEUE_DISPLAY),
+completedCount: capQueueCount(counts.completedCount, MAX_QUEUE_DISPLAY),
+};
 const m = await sbMetricSummary({ source: filterSource, window: "all" }).catch(() => ({}));
-return `🏠 NIL WEALTH OPS DASHBOARD
-${CODE_VERSION} • Build: ${String(BUILD_VERSION).slice(0, 8)}
-
-📅 Today: ${new Intl.DateTimeFormat("en-US",{ timeZone: "America/New_York" }).format(new Date())}
-⏰ NY Time: ${time}
-🧮 Filter: ${filterLabel}
-
-🗂 ALL QUEUES
-${counts.handoffCount > 0 ? `📌 Loop in Support: ${counts.handoffCount}\n` : ""}‼️ Urgent: ${counts.urgentCount}
-📝 Needs Reply: ${counts.needsReplyCount}
-⏳ Waiting: ${counts.waitingCount}
-💬 Active: ${counts.activeCount}
-📨 Forwarded: ${counts.forwardedCount}
-🧾 Submissions: ${counts.submissionsCount}
-📚 Follow-Ups: ${counts.followCount}
-📱 Calls: ${counts.callsCount}
-✅ Completed: ${counts.completedCount}
-
-📊 METRICS
-Total Parent Guide Opens: ${m.programLinkOpens}
-Total Coverage Exploration: ${m.coverageExploration}
-Total Enroll Portal Visits: ${m.enrollClicks}
-Total eApp Visits: ${m.eappVisits}
-Total Threads: ${m.threadsCreated}
-Total Calls Answered: ${m.callsAnswered}
-
-Use buttons below.`;
+return buildDashboardText({
+codeVersion: CODE_VERSION,
+buildVersion: BUILD_VERSION,
+today: new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York" }).format(new Date()),
+time,
+filterLabel,
+staleWarning,
+capped,
+metrics: m,
+});
 }
 // ✅ EXACT v5.1 dashboard keyboard: filters row + nav row + metrics row (ONLY 3 rows)
 function dashboardKeyboardV50() {
@@ -1959,21 +1899,6 @@ Markup.button.callback("👥 Clients", "CLIENTS:open"),
 // ======================================================
 // ALL QUEUES (v5.5 OPS CLEAN + LIVE REFRESH)
 // ======================================================
-// ---------- ALL QUEUES TEXT ----------
-async function allQueuesText(filterSource = "all", roleFilter = "all") {
-const filterLabel =
-filterSource === "support"
-? "🧑‍🧒 Support"
-: filterSource === "programs"
-? "🏈 Programs"
-: "🌐 All";
-const laneHint =
-filterSource === "programs"
-? "Programs lane shows Instantly threads, handoffs, follow-ups, pools, and client activity."
-: "Tap a queue below to open it.";
-return `${headerLine("all_queues", filterLabel)} · ${roleFilterLabel(roleFilter)}
-${laneHint}`;
-}
 // ---------- ALL QUEUES KEYBOARD ----------
 function allQueuesKeyboard(filterSource = "all") {
 if (filterSource === "programs") {
@@ -2049,24 +1974,6 @@ Markup.button.callback("🌊 Pools", "POOLS:open"),
 // ======================================================
 // CONVERSATION SUMMARY LIST
 // ======================================================
-// ---------- SUMMARY LINE ----------
-function convoSummaryLine(conv) {
-const lane = laneLabel(sourceSafe(conv.source));
-const sla = slaBadge(conv.updated_at);
-const until = urgentCountdown(conv.updated_at);
-const subj = shorten(conv.subject || "(no subject)", 50);
-const prev = shorten(conv.preview || "", 70);
-const identity = conversationIdentityText(conv);
-const contact = conv.contact_email || conv.coach_email || "—";
-const pipeline = conv.pipeline || "—";
-
-return `─────
-• ${identity} • ${lane} • ID: ${idShort(conv.id)}
-  📧 ${subj}
-  ${prev}
-  👤 ${contact} • Pipeline: ${pipeline}
-  ${sla} • ${until}`;
-}
 // ---------- SHOW LIST ----------
 async function showConversationList(ctx, viewKey, rows, filterSource, roleFilter = "all") {
 const filterLabel =
@@ -2077,14 +1984,19 @@ filterSource === "support"
 : "🌐 All";
 const header = `${headerLine(viewKey, filterLabel)} · ${roleFilterLabel(roleFilter)}`;
 
-const body =
-rows.length
-? rows.map(convoSummaryLine).join("\n") + "\n─────"
+const safeRows = Array.isArray(rows) ? rows : [];
+const cappedRows = safeRows.slice(0, MAX_QUEUE_DISPLAY);
+const overflowNote = safeRows.length > MAX_QUEUE_DISPLAY
+? `\n⚠️ Showing ${MAX_QUEUE_DISPLAY} of ${safeRows.length} total items.`
+: "";
+
+const body = cappedRows.length
+? cappedRows.map((conv) => convoSummaryLine(conv, URGENT_AFTER_MINUTES)).join("\n") + "\n─────"
 : "No items.";
 // buttons - just back navigation, no individual open buttons
 const kb = [[Markup.button.callback("⬅ Back", "ALLQ:open")]];
 const msg = await smartRender(ctx,
-`${header}\n\n${body}`,
+`${header}${overflowNote}\n\n${body}`,
 Markup.inlineKeyboard(kb)
 );
 // ==================================================
@@ -2103,62 +2015,28 @@ return msg;
 // ---------- CONVERSATION CARD (v5.3 CLEAN + OPS SAFE) ----------
 async function buildConversationCard(conv) {
 const msgCount = await sbCountMessages(conv.id).catch(() => 0);
-const lane = laneLabel(sourceSafe(conv.source));
-const sla = slaBadge(conv.updated_at);
-const until = urgentCountdown(conv.updated_at);
-const ccOn = conv.cc_support_suggested === true;
-const gmail = conv.gmail_url ? `\n  Gmail: ${conv.gmail_url}` : "";
-const pipelineRaw = conv.pipeline || "—";
-const pipelineLabel = (() => {
-  switch(pipelineRaw) {
-    case "urgent": return "‼️ Urgent";
-    case "needs_reply": return "⏳ Needs Reply";
-    case "active": return "💬 Active";
-    case "completed": return "✅ Completed";
-    case "forwarded": return "➡️ Forwarded";
-    default: return pipelineRaw;
-  }
+const latest = await sbListMessages(conv.id, { offset: 0, limit: 1 }).catch(() => []);
+const latestMessage = Array.isArray(latest) && latest.length ? latest[0] : null;
+const lastDirection = latestMessage?.direction === "outbound" ? "outbound" : latestMessage?.direction === "inbound" ? "inbound" : "—";
+const lastAgeMinutes = (() => {
+const t = latestMessage?.created_at ? new Date(latestMessage.created_at).getTime() : null;
+if (!t || !Number.isFinite(t)) return null;
+return Math.max(0, Math.floor((Date.now() - t) / 60000));
 })();
-const coach = conv.coach_name || "—";
-const contact = conv.contact_email || "—";
-const subj = conv.subject || "—";
-const prev = shorten(conv.preview || "", 400);
-const identity = conversationIdentityText(conv);
-const roleInfo = (() => {
-// Use conversationRoleForDisplay for consistent role logic with triage
-const r = conversationRoleForDisplay(conv);
-let info = `Role: ${roleLabel(r)}`;
-const conflictBadge = roleConflictBadge(conv);
-if (conflictBadge) {
-info += `\n  ${conflictBadge}`;
+const lastAgeText = lastAgeMinutes == null ? "—" : tFmtMin(lastAgeMinutes) || `${lastAgeMinutes}m`;
+const instantlyThreadSummary = isInstantlySource(conv)
+? `Thread Summary: ${msgCount} msgs • Last: ${lastDirection} • ${lastAgeText} ago`
+: null;
+const { text, isInstantlyInbound } = buildConversationCardText(conv, {
+msgCount,
+latestMessage,
+instantlyThreadSummary,
+urgentAfterMinutes: URGENT_AFTER_MINUTES,
+});
+return { text, msgCount, isInstantlyInbound };
 }
-return info;
-})();
-const handoffBadge = (conv.needs_support_handoff === true && !conv.cc_support_suggested)
-  ? `🚨 HANDOFF DETECTED${conv.handoff_detected_reason ? ` — ${conv.handoff_detected_reason}` : ""}\nTap "📌 Loop in Support" to take over from Instantly.\n--\n`
-  : "";
-const text = `💬 CONVERSATION
---
-${handoffBadge}ID: ${idShort(conv.id)} • ${lane}
-Identity: ${identity}
-${roleInfo}
-
-Status: ${pipelineLabel}
-Coach: ${coach}
-Contact: ${contact}
-
-📧 Subject: ${subj}
-
-Preview: ${prev}
-
---
-Updated: ${tFmtDateTimeShort(conv.updated_at)}
-💬 Messages: ${msgCount}
-${sla} • ${until}
-CC: ${ccOn ? "📇 Enabled" : "Off"}${gmail}`;
-return { text, msgCount };
-}
-function conversationCardKeyboard(conv, msgCount = null) {
+function conversationCardKeyboard(conv, msgCount = null, options = {}) {
+const isInstantlyInbound = options?.isInstantlyInbound === true;
 const id = conv.id;
 // Mirror button only if present
 const mirrorRow = conv.mirror_conversation_id
@@ -2178,12 +2056,20 @@ if (msgCount === 0) return "🧵 Thread (none)";
 if (msgCount === 1) return "🧵 Thread (1 msg)";
 return `🧵 Thread (${msgCount} msgs)`;
 })();
+if (isInstantlyInbound) {
+const rows = [
+[Markup.button.callback("🧵 View Thread", `THREAD:${id}:0`)],
+[Markup.button.callback("📌 CC Support", `CC:${id}`)],
+];
+rows.push([Markup.button.callback("⬅ Dashboard", "DASH:back")]);
+return Markup.inlineKeyboard(rows);
+}
 // Instantly AI manages outreach replies — Telegram is read-only viewer + support handoff point
-const isInstantlyManaged = conv.source === "programs" && !conv.cc_support_suggested;
+const isInstantlyManaged = isInstantlySource(conv);
 const loopBtnLabel = conv.needs_support_handoff ? "🚨 Loop in Support NOW" : "📌 Loop in Support";
 
 if (isInstantlyManaged) {
-  // Outreach thread: Instantly owns the lane, but admins can still trigger a manual follow-up.
+    // Instantly-owned thread: Telegram provides visibility + CC Support only.
   return Markup.inlineKeyboard([
     [Markup.button.callback(threadLabel, `THREAD:${id}:0`)],
     [
@@ -2193,11 +2079,8 @@ if (isInstantlyManaged) {
     [
       ...roleConflictRow,
       ...mirrorRow,
-      Markup.button.callback("🗑 Delete", `DELETECONFIRM:conversation:${id}`),
     ],
     [Markup.button.callback("🔧 Set Role", `SETROLE:${id}`)],
-    [Markup.button.callback("✍️ Drafts V1/V2/V3", `DRAFTS:open:${id}`)],
-    [Markup.button.callback("📚 Follow-Up", `CONFIRMSEND:${id}:1:outreach`)],
     [Markup.button.callback("⬅ Dashboard", "DASH:back")],
   ]);
 }
@@ -2212,7 +2095,6 @@ return Markup.inlineKeyboard([
   [
     ...roleConflictRow,
     ...mirrorRow,
-    Markup.button.callback("🗑 Delete", `DELETECONFIRM:conversation:${id}`),
   ],
   [Markup.button.callback("🔧 Set Role", `SETROLE:${id}`)],
   [Markup.button.callback("✍️ Drafts V1/V2/V3", `DRAFTS:open:${id}`)],
@@ -2221,50 +2103,7 @@ return Markup.inlineKeyboard([
 ]);
 }
 // ---------- SUBMISSION CARD ----------
-function coverageLabel(payload) {
-const a = payload?.coverage_accident === true;
-const h = payload?.coverage_hospital_indemnity === true;
-if (a && h) return "Accident + Hospital Indemnity";
-if (a) return "Accident";
-if (h) return "Hospital Indemnity";
-return "—";
-}
-function emailStatusIcon(sent) {
-return sent ? "✅" : "⏳";
-}
-function smsStatusIcon(sent) {
-return sent ? "✅" : "⏳";
-}
-function buildSubmissionCard(sub) {
-const p = sub.submission_payload || {};
-const name = `${p.first_name || ""} ${p.last_name || ""}`.trim() || "—";
-const role = sub.your_role || p.your_role || p.role || "parent";
-const intent = sub.intent_answer || p.intent_answer || "—";
-const heard = sub.how_heard_about || p.how_heard_about || "—";
-const emailSent = sub.email_sent === true || sub.enrollment_email_sent === true;
-const smsSent = sub.sms_sent === true || sub.enrollment_sms_sent === true;
-return `🧾 SUBMISSION
---
-ID: ${idShort(sub.submission_id)}
 
-Name: ${name}
-Email: ${p.email || "—"}
-Phone: ${p.phone_e164 || p.phone || "—"}
-Athlete: ${p.athlete_name || "—"}
-State: ${p.state || "—"}
-Role: ${roleLabel(role)}
-
-Intent: ${intent}
-How Heard: ${heard}
-Coverage: ${coverageLabel(p)}
-Referral: ${p.referral_source || p.referral || "—"}
-
---
-Sent Email: ${emailStatusIcon(emailSent)}
-Sent SMS: ${smsStatusIcon(smsSent)}
-
-Received: ${tFmtDateTimeShort(sub.created_at)}`;
-}
 function submissionKeyboard(sub) {
 return Markup.inlineKeyboard([
 [Markup.button.callback("🗑 Delete",
@@ -2367,6 +2206,14 @@ const offset = (page - 1) * pageSize;
 const { data: allSubs, error: countErr } = await ops()
 .from("submissions")
 .select("submission_id", { count: "exact", head: false });
+if (countErr) {
+logError("VIEW:website_submissions count", countErr);
+return smartRender(
+ctx,
+"⚠️ Unable to load submission queue count right now.",
+Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "ALLQ:open")]])
+);
+}
 const totalCount = allSubs?.length || 0;
 const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
 const currentPage = Math.min(page, totalPages);
@@ -2455,15 +2302,23 @@ if (!conv) {
 await ctx.reply("❌ Conversation not found.");
 return;
 }
-const { text, msgCount } = await buildConversationCard(conv);
-const kb = conversationCardKeyboard(conv, msgCount);
+const { text, msgCount, isInstantlyInbound } = await buildConversationCard(conv);
+const kb = conversationCardKeyboard(conv, msgCount, { isInstantlyInbound });
 // Edit dashboard in place (single card flow)
-await smartRender(ctx, text, kb);
+const msg = await smartRender(ctx, text, kb);
+if (msg?.message_id) {
+registerLiveCard(msg, {
+type: "conversation",
+card_key: `conversation:${conv.id}`,
+ref_id: conv.id,
+});
+}
 }));
 
 // ---------- CONFIRM ROLE (CONFLICT RESOLUTION) ----------
 bot.action(/^CONFIRMROLE:([^:]+):(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
+try {
 const convId = ctx.match[1];
 const confirmedRole = normalizeRole(ctx.match[2]);
 if (!confirmedRole) return ctx.reply("❌ Invalid role.");
@@ -2509,9 +2364,13 @@ refreshQueue.add("triage:all");
 refreshQueue.add("dashboard:all");
 
 const updated = await sbGetConversationById(convId);
-const { text, msgCount } = await buildConversationCard(updated);
-const kb = conversationCardKeyboard(updated, msgCount);
+const { text, msgCount, isInstantlyInbound } = await buildConversationCard(updated);
+const kb = conversationCardKeyboard(updated, msgCount, { isInstantlyInbound });
 await smartRender(ctx, `✅ Role confirmed.\n\n${text}`, kb);
+} catch (err) {
+logError("CONFIRMROLE", err);
+await ctx.reply(`❌ Error confirming role: ${err.message}`).catch(() => {});
+}
 }));
 
 // ---------- SET ROLE (ADMIN) ----------
@@ -2531,10 +2390,7 @@ const kb = Markup.inlineKeyboard([
 [Markup.button.callback("❓ Other", `ROLESELECT:${convId}:other`)],
 [Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)],
 ]);
-await ctx.editMessageText(
-`🔧 Select new role (currently: ${currentRole}):`,
-kb
-);
+await smartRender(ctx, `🔧 Select new role (currently: ${currentRole}):`, kb);
 } catch (err) {
 logError("SETROLE", err);
 await ctx.reply(`❌ Error: ${err.message}`).catch(() => {});
@@ -2597,8 +2453,8 @@ refreshQueue.add("triage:all");
 refreshQueue.add("dashboard:all");
 
 const updated = await sbGetConversationById(convId);
-const { text, msgCount } = await buildConversationCard(updated);
-const kb = conversationCardKeyboard(updated, msgCount);
+const { text, msgCount, isInstantlyInbound } = await buildConversationCard(updated);
+const kb = conversationCardKeyboard(updated, msgCount, { isInstantlyInbound });
 await smartRender(ctx, `✅ Role set to ${roleLabel(selectedRole)}.\n\n${text}`, kb);
 } catch (err) {
 logError("ROLESELECT", err);
@@ -2620,8 +2476,8 @@ if (!mirror) {
 await ctx.answerCbQuery("Mirror conversation not found.");
 return;
 }
-const { text, msgCount } = await buildConversationCard(mirror);
-const kb = conversationCardKeyboard(mirror, msgCount);
+const { text, msgCount, isInstantlyInbound } = await buildConversationCard(mirror);
+const kb = conversationCardKeyboard(mirror, msgCount, { isInstantlyInbound });
 // Edit dashboard in place (single card flow)
 await smartRender(ctx, text, kb);
 } catch (err) {
@@ -2677,41 +2533,9 @@ return smartRender(ctx, text, Markup.inlineKeyboard(buttons));
 // - headerLine(...)
 // - laneLabel(...), sourceSafe(...)
 // - sbGetConversationById(convId)
-// - sbCountMessages(convId)
-// - sbListMessages(convId, { offset, limit }) // must match THREAD_ORDER expectation
-// - sbDeleteMessageById(messageId) // safe delete (hard only if is_test=true, else soft)
-// - sbInsertOpsEvent({...})
-// - registerLiveCard(msg, meta)
-// - safeEditMessageText(chat_id, message_id, text, extra)
-// - Markup
-//
-// IMPORTANT:
-// Set THREAD_ORDER to match your sbListMessages ORDER BY.
-// ==========================================================
 const THREAD_ORDER = "newest_first"; // "newest_first" | "oldest_first"
 // ---------- THREAD VIEW HELPERS ----------
 
-function formatMessageLineFull(m) {
-const dir = m.direction === "outbound" ? "➡ OUT" : "⬅ IN";
-const from = m.from_email ? `From: ${m.from_email}\n` : "";
-const to = m.to_email ? `To: ${m.to_email}\n` : "";
-const subj = m.subject ? `Subject: ${m.subject}\n` : "";
-const body = shorten(m.body || m.preview || "", 1200);
-const ts = m.created_at || "";
-return `${dir}\n${from}${to}${subj}${body}\n${ts}`;
-}
-function threadDebugBlock(conv) {
-const tk = conv?.thread_key ? `ThreadKey: ${conv.thread_key}\n` : "";
-const gt = conv?.gmail_thread_id ? `GmailThreadID: ${conv.gmail_thread_id}\n` : "";
-const mid = conv?.message_id_header ? `Message-ID: ${shorten(conv.message_id_header,
-80)}\n` : "";
-const irt = conv?.in_reply_to ? `In-Reply-To: ${shorten(conv.in_reply_to, 80)}\n` : "";
-const refs = conv?.references ? `Refs: ${shorten(conv.references, 120)}\n` : "";
-const from = conv?.inbound_from_email ? `InboundFrom: ${conv.inbound_from_email}\n` : "";
-return (tk || gt || mid || irt || refs || from)
-? `\n🧷 Threading\n${tk}${gt}${mid}${irt}${refs}${from}`.trimEnd()
-: "";
-}
 function computeLatestOffset(total, limit) {
 if (THREAD_ORDER === "newest_first") return 0;
 return Math.max(0, total - limit);
@@ -2736,11 +2560,29 @@ const header =
 `${conv.subject || "Thread"}\n` +
 `${laneLabel(sourceSafe(conv.source))}\n` +
 `💬 Messages: ${total}\n` +
-(total > 0 ? `Showing: ${shownFrom}-${shownTo}` : `Showing: 0-0`) +
-`\n\n${threadDebugBlock(conv)}`;
-const body = msgs?.length
+(total > 0 ? `Showing: ${shownFrom}-${shownTo}` : `Showing: 0-0`);
+const isInstantlyThread = isInstantlySource(conv);
+let body;
+if (isInstantlyThread) {
+const timelineMsgs = await sbListMessages(convId, { offset: 0, limit: MAX_QUEUE_DISPLAY }).catch(() => []);
+const ccEvents = await sbListCcSupportEvents(convId, { limit: MAX_QUEUE_DISPLAY }).catch(() => []);
+const timeline = [
+...(timelineMsgs || []).map((m) => ({ ...m, timeline_type: "message" })),
+...(ccEvents || []).map((e) => ({ ...e, timeline_type: "event" })),
+]
+.sort((a, b) => {
+const at = a?.created_at ? new Date(a.created_at).getTime() : 0;
+const bt = b?.created_at ? new Date(b.created_at).getTime() : 0;
+return at - bt;
+});
+body = timeline.length
+? timeline.map((entry) => formatInstantlyTimelineLine(entry, conv)).join("\n\n--------------------\n\n")
+: "(No messages yet)";
+} else {
+body = msgs?.length
 ? msgs.map(formatMessageLineFull).join("\n\n--------------------\n\n")
 : "(No messages yet)";
+}
 // Pagination controls
 const prevOffset = Math.max(0, offset - limit);
 const nextOffset = offset + limit;
@@ -2748,9 +2590,23 @@ const hasPrev = offset > 0;
 const hasNext = nextOffset < total;
 // Latest jump
 const latestOffset = computeLatestOffset(total, limit);
-// Delete newest (test)
-const newestMsgId = pickNewestMessageIdOnPage(msgs);
 const kbRows = [];
+if (isInstantlyThread) {
+if (conv?.mirror_conversation_id) {
+kbRows.push([Markup.button.callback("🪞 Open Mirror", `OPENMIRROR:${conv.id}`)]);
+}
+kbRows.push([Markup.button.callback("⬅ Back to Card", `OPENCARD:${convId}`)]);
+kbRows.push([Markup.button.callback("⬅ Dashboard", "DASH:back")]);
+return {
+ok: true,
+conv,
+total,
+msgs,
+text: `${header}\n\n${body}`,
+keyboard: Markup.inlineKeyboard(kbRows),
+latestOffset,
+};
+}
 // paging row
 const paging = [];
 if (hasPrev) paging.push(Markup.button.callback("◀ Older",
@@ -2767,11 +2623,6 @@ if (conv?.mirror_conversation_id) {
 kbRows.push([Markup.button.callback("🪞 Open Mirror", `OPENMIRROR:${conv.id}`)]);
 
 }
-// delete newest row (optional)
-if (newestMsgId) {
-kbRows.push([Markup.button.callback("🗑 Delete Newest (test)",
-`THREADDEL:${convId}:${offset}:${newestMsgId}`)]);
-}
 // nav rows
 kbRows.push([Markup.button.callback("⬅ Back to Card", `OPENCARD:${convId}`)]);
 kbRows.push([Markup.button.callback("⬅ Dashboard", "DASH:back")]);
@@ -2783,7 +2634,6 @@ msgs,
 text: `${header}\n\n${body}`,
 keyboard: Markup.inlineKeyboard(kbRows),
 latestOffset,
-newestMsgId,
 };
 }
 // ---------- THREAD VIEW (paged) ----------
@@ -2804,79 +2654,7 @@ logError("THREAD", err);
 await ctx.reply("❌ Thread error. Try /dashboard.").catch(() => {});
 }
 }));
-// ---------- THREAD DELETE NEWEST (TEST ONLY) ----------
-bot.action(/^THREADDEL:(.+):(\d+):(.+)$/, safeAction(async (ctx) => {
-if (!isAdmin(ctx)) return;
-const convId = ctx.match[1];
-const offset = Number(ctx.match[2] || 0);
-const messageId = ctx.match[3];
-await ctx.reply(
-`⚠ Delete newest message?\n\nMessageID: ${shorten(messageId, 18)}\n(Will hard-delete
-only if is_test=true; otherwise soft-delete.)`,
-Markup.inlineKeyboard([
-[Markup.button.callback("✅ Yes Delete",
-`THREADDELDO:${convId}:${offset}:${messageId}`)],
-[Markup.button.callback("Cancel", `THREAD:${convId}:${offset}`)],
-])
-);
-}));
-bot.action(/^THREADDELDO:(.+):(\d+):(.+)$/, safeAction(async (ctx) => {
-if (!isAdmin(ctx)) return;
-const convId = ctx.match[1];
-const offset = Number(ctx.match[2] || 0);
-const messageId = ctx.match[3];
-try {
-await sbDeleteMessageById(messageId);
-await sbInsertOpsEvent({
-schema_version: "5.3",
-event_type: "message.deleted",
-source: "telegram",
-direction: "inbound",
-entity_type: "message",
-entity_id: messageId,
-payload: { convId, offset, messageId, reason: "thread_delete_newest" },
-});
-await ctx.reply("🗑 Deleted.").catch(() => {});
-
-// ✅ Refresh thread + parent card (stable key)
-refreshQueue.add(`thread:${convId}`);
-refreshQueue.add(`conversation:${convId}`);
-refreshLiveCards(true).catch(() => {});
-} catch (e) {
-await ctx.reply(`Delete failed: ${String(e.message || e)}`).catch(() => {});
-}
-}));
-// ==========================================================
-// REFRESH ENGINE ADDITION (paste into refreshLiveCards loop)
-// Sample refresh handler for thread_view (removed to avoid parsing issues)
-// ==========================================================
-// ===============================
-// 📇 CC SUPPORT (v5.3 OPS CLEAN)
-// ===============================
-//
-// Replaces the old "toggle" behavior.
-// New behavior:
-// 1) CC button opens a confirm screen (shows what will happen)
-// 2) Confirm triggers an outbound webhook to n8n/Make to:
-// - send bridge message from outreach lane
-
-// - send the forwardable support message from SUPPORT_FROM_EMAIL
-// - create/link mirror thread (support-side conversation)
-// 3) Bot writes OPS ledger event(s) and updates conversation flags
-// 4) Bot queues refresh for the conversation card
-//
-// ENV expected:
-// - CC_SUPPORT_WEBHOOK_URL (your n8n webhook that performs the CC workflow)
-// - SUPPORT_FROM_EMAIL already exists
-//
-// Requires existing helpers:
-// - isAdmin(ctx)
-// - sbGetConversationById(id)
-// - sbInsertOpsEvent({...})
-// - makeCardKey(entityType, stableId) OR use `conversation:${id}`
-// - refreshQueue.add(card_key) + refreshLiveCards(true)
-// - buildConversationCard(conv) + conversationCardKeyboard(conv)
-// - sourceSafe(...)
+// ---------- CC SUPPORT ----------
 function makeTraceId() {
 return uuidv4();
 }
@@ -2885,61 +2663,92 @@ function makeCcIdempotencyKey(convId) {
 return crypto.createHash("sha256").update(`cc_support|${convId}`).digest("hex");
 }
 function isProgramLaneConversation(conv) {
-// Adjust these lane/source values to match your exact schema.
-// The rule you gave: CC support should only be from program side.
+const lane = String(conv?.lane || "").trim().toLowerCase();
+if (lane) return lane === "program";
+// Fallback for older rows where lane may be missing
 const s = sourceSafe(conv?.source);
 return s === "programs";
+}
+async function sbGetRecentCcSupportSent(conversationId, withinHours = 24) {
+  try {
+    const sinceIso = new Date(Date.now() - withinHours * 60 * 60 * 1000).toISOString();
+    const { data, error } = await ops()
+      .from("ops_events")
+      .select("id, created_at, event_type, entity_id, payload")
+      .eq("event_type", "cc_support_sent")
+      .eq("entity_id", conversationId)
+      .gte("created_at", sinceIso)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) {
+      logError("sbGetRecentCcSupportSent", error);
+      return null;
+    }
+    return data || null;
+  } catch (err) {
+    logError("sbGetRecentCcSupportSent", err);
+    return null;
+  }
+}
+function buildCcSupportDispatchPayload(
+  conv,
+  { bridge_draft = 2, support_draft = 2, bridge_message = null, support_message = null } = {}
+) {
+  const trace_id = makeTraceId();
+  const idempotency_key = makeCcIdempotencyKey(conv.id);
+  const payload = {
+    schema_version: "5.3",
+    event_type: "cc_support.requested",
+    source: "telegram",
+    direction: "outbound",
+    trace_id,
+    idempotency_key,
+    entity_type: "conversation",
+    entity_id: conv.id,
+    conversation_id: conv.id,
+    thread_key: conv.thread_key,
+    coach_id: conv.coach_id || null,
+    coach_name: conv.coach_name || null,
+    contact_email: conv.contact_email || null,
+    bridge_draft: Number(bridge_draft),
+    support_draft: Number(support_draft),
+    bridge_message: bridge_message
+      ? {
+          subject: bridge_message.subject || "",
+          body: bridge_message.body || "",
+        }
+      : null,
+    support_message: support_message
+      ? {
+          subject: support_message.subject || "",
+          body: support_message.body || "",
+        }
+      : null,
+    gmail_thread_id: conv.gmail_thread_id || null,
+    message_id_header: conv.message_id_header || null,
+    in_reply_to: conv.in_reply_to || null,
+    references: conv.references || null,
+    mirror_conversation_id: conv.mirror_conversation_id || null,
+    payload: {
+      lane_source: sourceSafe(conv.source),
+      lane: conv.lane || null,
+      subject: conv.subject || "",
+      cc_support_suggested: true,
+    },
+  };
+  return { payload, trace_id, idempotency_key };
 }
 async function requestCcSupportWorkflow(
 conv,
 { bridge_draft = 2, support_draft = 2, bridge_message = null, support_message = null } = {}
 ) {
-const trace_id = makeTraceId();
-const idempotency_key = makeCcIdempotencyKey(conv.id);
-const payload = {
-schema_version: "5.3",
-event_type: "cc_support.requested",
-source: "telegram",
-direction: "outbound",
-trace_id,
-
-idempotency_key,
-entity_type: "conversation",
-entity_id: conv.id,
-conversation_id: conv.id,
-thread_key: conv.thread_key,
-coach_id: conv.coach_id || null,
-coach_name: conv.coach_name || null,
-contact_email: conv.contact_email || null,
-// Draft choices (your UI will show “V2 selected” etc.)
-bridge_draft: Number(bridge_draft),
-support_draft: Number(support_draft),
-bridge_message: bridge_message
-? {
-subject: bridge_message.subject || "",
-body: bridge_message.body || "",
-}
-: null,
-support_message: support_message
-? {
-subject: support_message.subject || "",
-body: support_message.body || "",
-}
-: null,
-// Threading fields for downstream correctness
-gmail_thread_id: conv.gmail_thread_id || null,
-message_id_header: conv.message_id_header || null,
-in_reply_to: conv.in_reply_to || null,
-references: conv.references || null,
-// Mirror linking (downstream can create & return mirror id)
-mirror_conversation_id: conv.mirror_conversation_id || null,
-// All other context
-payload: {
-lane_source: sourceSafe(conv.source),
-subject: conv.subject || "",
-cc_support_suggested: true,
-},
-};
+const { payload, trace_id, idempotency_key } = buildCcSupportDispatchPayload(conv, {
+bridge_draft,
+support_draft,
+bridge_message,
+support_message,
+});
 const validation = validateOutboundPayload(payload, {
   requireConversationId: true,
   requireThreadKey: true,
@@ -2957,13 +2766,26 @@ error: "invalid_outbound_payload",
 bodyText: validation.errors.join(","),
 trace_id: payload.trace_id,
 idempotency_key: payload.idempotency_key,
+payload,
 };
 }
+await sbInsertOpsEventSafe({
+schema_version: "5.3",
+event_type: "cc_support.dispatch_requested",
+source: "telegram",
+direction: "outbound",
+trace_id,
+idempotency_key,
+entity_type: "conversation",
+entity_id: conv.id,
+payload,
+});
 const result = await postJsonWebhook(CC_SUPPORT_WEBHOOK_URL, payload);
 return {
 ...result,
 trace_id,
 idempotency_key,
+payload,
 };
 
 }
@@ -3014,7 +2836,7 @@ if (!conv) return smartRender(ctx, "❌ Conversation not found.", Markup.inlineK
 if (!isProgramLaneConversation(conv)) {
   return smartRender(
     ctx,
-    "📇 CC Support is only available from the Program/Outreach side (not Support lane).",
+    "📇 CC Support is only available for program lane conversations.",
     Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
   );
 }
@@ -3035,9 +2857,23 @@ ctx,
 Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
 );
 try {
-const generated = await generateCCDrafts(conv);
+const generated = await withTimeout(
+generateCCDrafts(conv),
+15000,
+"CC draft generation timed out"
+);
 ccDraftsCache.set(convId, generated);
 } catch (err) {
+if (String(err?.message || "").toLowerCase().includes("timed out")) {
+return smartRender(
+ctx,
+"⏱ Draft generation timed out.",
+Markup.inlineKeyboard([
+[Markup.button.callback("🔁 Retry", `CCREGEN:${convId}`)],
+[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)],
+])
+);
+}
 return smartRender(ctx, `❌ Failed to generate CC drafts: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
 }
 }
@@ -3109,10 +2945,24 @@ ctx,
 Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
 );
 try {
-const generated = await generateCCDrafts(conv);
+const generated = await withTimeout(
+generateCCDrafts(conv),
+15000,
+"CC draft generation timed out"
+);
 ccDraftsCache.set(convId, generated);
 await renderCCCard(ctx, convId, 2, 2);
 } catch (err) {
+if (String(err?.message || "").toLowerCase().includes("timed out")) {
+return smartRender(
+ctx,
+"⏱ Draft generation timed out.",
+Markup.inlineKeyboard([
+[Markup.button.callback("🔁 Retry", `CCREGEN:${convId}`)],
+[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)],
+])
+);
+}
 return smartRender(ctx, `❌ Failed to generate CC drafts: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
 }
 }));
@@ -3126,7 +2976,7 @@ const conv = await sbGetConversationById(convId);
 const drafts = ccDraftsCache.get(convId);
 if (!conv) return smartRender(ctx, "❌ Conversation not found.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
 if (!isProgramLaneConversation(conv)) {
-return smartRender(ctx, "📇 CC Support is only available from the Program/Outreach side.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
+return smartRender(ctx, "📇 CC Support is only available for program lane conversations.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
 }
 if (!drafts) {
 return smartRender(ctx, "❌ CC drafts expired. Re-open CC Support and regenerate if needed.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `CC:${convId}`)]]));
@@ -3135,6 +2985,18 @@ const bridgeMessage = drafts.bridge?.[`v${bridgeDraft}`] || null;
 const supportMessage = drafts.support?.[`v${supportDraft}`] || null;
 if (!bridgeMessage || !supportMessage) {
 return smartRender(ctx, "❌ Selected CC draft content is missing. Re-open CC Support and try again.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `CC:${convId}`)]]));
+}
+const recentCcSent = await sbGetRecentCcSupportSent(convId, 24);
+if (recentCcSent) {
+const sentAt = tFmtDateTimeShort(recentCcSent.created_at);
+return smartRender(
+ctx,
+`⚠ CC support was already sent for this conversation today.\nLast send: ${sentAt}\n\nSend again only if you intend to override duplicate protection.`,
+Markup.inlineKeyboard([
+[Markup.button.callback("✅ Override and Send", `CCFORCE:${convId}:${bridgeDraft}:${supportDraft}`)],
+[Markup.button.callback("⬅ Back", `CC:${convId}`)],
+])
+);
 }
 // Set suggested flag immediately + clear handoff (so UI reflects intent)
 const { error: ccError } = await ops()
@@ -3168,25 +3030,31 @@ support_draft: supportDraft,
 bridge_message: bridgeMessage,
 support_message: supportMessage,
 });
-// OPS ledger: dispatch
-await sbInsertOpsEvent({
+if (result.ok) {
+await sbInsertOpsEventSafe({
 schema_version: "5.3",
-event_type: "cc_support.dispatch_requested",
+event_type: "cc_support_sent",
 source: "telegram",
 direction: "outbound",
 entity_type: "conversation",
 entity_id: convId,
 trace_id: result.trace_id,
-idempotency_key: result.idempotency_key,
-payload: { bridgeDraft, supportDraft, result },
+idempotency_key: `${result.idempotency_key}:sent`,
+payload: {
+bridgeDraft,
+supportDraft,
+sent_at: new Date().toISOString(),
+status: result.status,
+},
 });
+}
 
 // Clear cache
 ccDraftsCache.delete(convId);
 
 // Refresh to get updated cc_support_suggested flag
 const updatedConv = await sbGetConversationById(convId);
-const { text: cardText, msgCount } = await buildConversationCard(updatedConv);
+const { text: cardText, msgCount, isInstantlyInbound } = await buildConversationCard(updatedConv);
 const errorHint = !result.ok
 ? `\n\nReason: ${shorten(result.error || result.bodyText || "unknown_error", 220)}`
 : "";
@@ -3196,28 +3064,98 @@ const successText = result.ok ?
 await smartRender(
 ctx,
 successText,
-result.ok ? conversationCardKeyboard(updatedConv, msgCount) : Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
+result.ok ? conversationCardKeyboard(updatedConv, msgCount, { isInstantlyInbound }) : Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
 );
 
 // Refresh the conversation card instantly
 refreshQueue.add(`conversation:${convId}`);
 refreshLiveCards(true).catch(() => {});
 }));
-// ==========================================================
-// PEOPLE (v5.3 OPS + REFRESH + DELETE)
-// ==========================================================
-// NOTE: Requires these helpers to exist in your codebase:
-// - sbGetConversationById(id)
-// - sbGetPerson(id)
-// - sbListPeopleByIdentity({ client_id, normalized_email, normalized_phone, limit })
-// - sbListConversationsByPersonId(personId, limit) // for PERSONCONV
-// - sbListSubmissionsByPersonId(personId, limit) // for PERSONSUB
-// - idShort(str)
 
-// - isAdmin(ctx)
-// - registerLiveCard(msg, meta)
-// - viewTitle(viewKey) OR remove it if you don’t use it
-// - delete system routes: DELETECONFIRM:person:<id>
+bot.action(/^CCFORCE:(.+):(\d):(\d)$/, safeAction(async (ctx) => {
+if (!isAdmin(ctx)) return;
+const convId = ctx.match[1];
+const bridgeDraft = Number(ctx.match[2] || 2);
+const supportDraft = Number(ctx.match[3] || 2);
+const conv = await sbGetConversationById(convId);
+const drafts = ccDraftsCache.get(convId);
+if (!conv) return smartRender(ctx, "❌ Conversation not found.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
+if (!isProgramLaneConversation(conv)) {
+return smartRender(ctx, "📇 CC Support is only available for program lane conversations.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
+}
+if (!drafts) {
+return smartRender(ctx, "❌ CC drafts expired. Re-open CC Support and regenerate if needed.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `CC:${convId}`)]]));
+}
+const bridgeMessage = drafts.bridge?.[`v${bridgeDraft}`] || null;
+const supportMessage = drafts.support?.[`v${supportDraft}`] || null;
+if (!bridgeMessage || !supportMessage) {
+return smartRender(ctx, "❌ Selected CC draft content is missing. Re-open CC Support and try again.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `CC:${convId}`)]]));
+}
+const { error: ccError } = await ops()
+.from("conversations")
+.update({
+cc_support_suggested: true,
+needs_support_handoff: false,
+needs_support_handoff_at: null,
+updated_at: new Date().toISOString(),
+})
+.eq("id", convId);
+if (ccError) {
+console.warn("Failed to set cc_support_suggested:", ccError.message);
+}
+await sbInsertOpsEventSafe({
+schema_version: "5.3",
+event_type: "cc_support.confirmed",
+source: "telegram",
+direction: "inbound",
+entity_type: "conversation",
+entity_id: convId,
+payload: { bridgeDraft, supportDraft, override: true },
+});
+const result = await requestCcSupportWorkflow(conv, {
+bridge_draft: bridgeDraft,
+support_draft: supportDraft,
+bridge_message: bridgeMessage,
+support_message: supportMessage,
+});
+if (result.ok) {
+await sbInsertOpsEventSafe({
+schema_version: "5.3",
+event_type: "cc_support_sent",
+source: "telegram",
+direction: "outbound",
+entity_type: "conversation",
+entity_id: convId,
+trace_id: result.trace_id,
+idempotency_key: `${result.idempotency_key}:sent:override`,
+payload: {
+bridgeDraft,
+supportDraft,
+override: true,
+sent_at: new Date().toISOString(),
+status: result.status,
+},
+});
+}
+ccDraftsCache.delete(convId);
+const updatedConv = await sbGetConversationById(convId);
+const { text: cardText, msgCount, isInstantlyInbound } = await buildConversationCard(updatedConv);
+const errorHint = !result.ok
+? `\n\nReason: ${shorten(result.error || result.bodyText || "unknown_error", 220)}`
+: "";
+const successText = result.ok
+? `📇 CC Support override queued.\n\n${cardText}`
+: `❌ CC override failed (${result.status || "?"})${errorHint}`;
+await smartRender(
+ctx,
+successText,
+result.ok ? conversationCardKeyboard(updatedConv, msgCount, { isInstantlyInbound }) : Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
+);
+refreshQueue.add(`conversation:${convId}`);
+refreshLiveCards(true).catch(() => {});
+}));
+// ==========================================================
+// ---------- PEOPLE ----------
 // ------------------------------
 // PEOPLE LIST (from a conversation)
 // ------------------------------
@@ -3488,255 +3426,6 @@ const kb = Markup.inlineKeyboard([
 
 await smartRender(ctx, text, kb);
 }));
-// ---------- FORMATTING HELPERS (v5.3) ----------
-// Sample refresh handlers and helpers omitted to avoid parsing issues.
-function tSafe(s, max = 92) {
-const t = String(s || "").replace(/\s+/g, " ").trim();
-if (!t) return "—";
-return t.length > max ? t.slice(0, max - 1) + "…" : t;
-}
-function tShortProgram(p) {
-const s = String(p || "—").trim();
-return s.length > 44 ? s.slice(0, 41) + "…" : s;
-}
-function tFmtMin(m) {
-const n = Number(m);
-if (!Number.isFinite(n) || n < 0) return null;
-if (n < 60) return `${Math.round(n)}m`;
-const h = Math.floor(n / 60);
-const r = n % 60;
-return r ? `${h}h ${r}m` : `${h}h`;
-}
-function tFmtDateShort(dt) {
-if (!dt) return "—";
-try {
-const d = new Date(dt);
-if (isNaN(d.getTime())) return "—";
-
-return d.toLocaleDateString("en-US", { month: "short", day: "2-digit" });
-} catch (_) {
-return "—";
-}
-}
-function tFmtTimeShort(dt) {
-if (!dt) return "—";
-try {
-const d = new Date(dt);
-if (isNaN(d.getTime())) return "—";
-return d.toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" });
-} catch (_) {
-return "—";
-}
-}
-function tFmtDateTimeShort(dt) {
-if (!dt) return "—";
-try {
-const d = new Date(dt);
-if (isNaN(d.getTime())) return "—";
-return d.toLocaleString("en-US", {
-year: "numeric",
-month: "short",
-day: "2-digit",
-hour: "numeric",
-minute: "2-digit",
-});
-} catch (_) {
-return "—";
-}
-}
-// ---------- conversation triage helpers ----------
-function tComputeWaitingMinutes(c) {
-if (Number.isFinite(Number(c.waiting_minutes))) return Number(c.waiting_minutes);
-const t =
-c.last_inbound_at ? new Date(c.last_inbound_at).getTime()
-: c.updated_at ? new Date(c.updated_at).getTime()
-: null;
-if (!t || !Number.isFinite(t)) return null;
-return Math.max(0, Math.round((Date.now() - t) / 60000));
-}
-function tIsCoachThread(c) {
-if (typeof c.is_coach_thread === "boolean") return c.is_coach_thread;
-if (c.entity_type) return String(c.entity_type).toLowerCase() === "coach";
-const hasCoach = !!(c.coach_full_name || c.coach_name);
-const hasClient = !!(c.client_full_name || c.contact_name || c.first_name || c.last_name);
-return hasCoach && !hasClient;
-}
-function tDisplayName(c) {
-const coach = c.coach_full_name || c.coach_name || null;
-const client =
-c.client_full_name ||
-c.contact_name ||
-((c.first_name || c.last_name) ? `${c.first_name || ""} ${c.last_name || ""}`.trim() : null);
-
-const tag = roleTag(conversationRoleForDisplay(c));
-// Strip "Coach" prefix from coach name to avoid duplication with role tag
-if (tIsCoachThread(c) && coach) {
-const cleanCoachName = String(coach).replace(/^Coach\s+/i, '').trim() || coach;
-return `${tag} ${tSafe(cleanCoachName, 40)}`;
-}
-if (client) return `${tag} ${tSafe(client, 40)}`;
-if (coach) {
-const cleanCoachName = String(coach).replace(/^Coach\s+/i, '').trim() || coach;
-return `${tag} ${tSafe(cleanCoachName, 40)}`;
-}
-return `${tag} —`;
-}
-function tConvoLine(c, idx) {
-const name = tDisplayName(c);
-const program = c.program_name || c.program || c.school || "";
-const snippet = c.last_message_snippet || c.inbound_snippet || c.snippet || "";
-const waitingMin = tComputeWaitingMinutes(c);
-const waiting = waitingMin != null ? tFmtMin(waitingMin) : null;
-const programBit = program ? ` (${tShortProgram(program)})` : "";
-const waitBit = waiting ? `\n Waiting: ${waiting}` : "";
-const msgBit = snippet ? `\n “${tSafe(snippet, 92)}”` : "";
-return `${idx}) ⏳ ${name}${programBit}${waitBit}${msgBit}`;
-}
-function tConvoBtnLabel(c) {
-const name = tDisplayName(c);
-const program = c.program_name || c.program || c.school || "";
-const progShort = program ? ` (${tSafe(program, 18)})` : "";
-return `Open · ${tSafe(name, 22)}${progShort}`;
-}
-// Triage button labels: source emoji + full name
-function tConvoBtnLabelTriage(c) {
-// Get full name
-const coach = c.coach_full_name || c.coach_name || null;
-const client = c.client_full_name || c.contact_name || 
-  ((c.first_name || c.last_name) ? `${c.first_name || ""} ${c.last_name || ""}`.trim() : null);
-
-// Source emoji (programs vs support)
-const sourceEmoji = sourceSafe(c.source) === "programs" ? "🏈" : "🧑‍🧒";
-
-let displayName;
-if (tIsCoachThread(c) && coach) {
-  displayName = coach;
-} else if (client) {
-  displayName = client;
-} else if (coach) {
-  displayName = coach;
-} else {
-  displayName = "—";
-}
-
-return `${sourceEmoji} ${tSafe(displayName, 24)}`;
-}
-// ---------- follow-up helpers ----------
-function tFollowupLine(f, idx) {
-const coach = tSafe(f.coach_full_name || f.coach_name || "—", 40);
-const program = tShortProgram(f.program_name || f.program || f.school || "—");
-const dueAt = f.due_at || f.followup_next_action_at || f.next_action_at;
-const last = f.last_contact_at || f.last_contacted_at || null;
-const reason = f.reason ? tSafe(f.reason, 84) : null;
-const activityBit =
-typeof f.guide_opens_year === "number" || typeof f.enroll_clicks_year === "number"
-? `\n Activity: Guide ${f.guide_opens_year || 0} | Enroll ${f.enroll_clicks_year || 0}`
-: "";
-return (
-`${idx}) 📚 Coach Follow-Up Due — Coach ${coach} (${program})\n` +
-` Due: ${tFmtDateShort(dueAt)} | Last Contact: ${tFmtDateShort(last)}` +
-
-(reason ? `\n Reason: ${reason}` : "") +
-activityBit
-);
-}
-function tFollowupBtnLabel(f) {
-const coach = tSafe(f.coach_full_name || f.coach_name || "Coach", 22);
-const program = f.program_name || f.program || f.school || "";
-const progShort = program ? ` (${tSafe(program, 18)})` : "";
-return `Open · Coach ${coach}${progShort}`;
-}
-function tFollowupTargetAction(f) {
-const convId = f.coach_comm_conversation_id || f.conversation_id || null;
-if (convId) return `OPENCARD:${convId}`;
-if (f.coach_id) return `COACH:${f.coach_id}`;
-return null;
-}
-// ---------- calls helpers ----------
-const TRIAGE_CALL_WINDOW_HOURS = 48; // shows rescheduled calls within next 48h
-function tCallScheduledAt(call) {
-return call?.scheduled_for || call?.scheduled_at || null;
-}
-function tCallName(call) {
-// always full name
-return tSafe(call.client_full_name || call.contact_name || call.name || "—", 40);
-}
-function tCallContext(call) {
-const state = call.state ? ` (${call.state})` : "";
-return `${tCallName(call)}${state}`;
-}
-function tCallTypeEmoji(call) {
-// call.outcome can be: null | "answered" | "rescheduled" | "no_answer" | "canceled"
-// call.status can be: "missed" etc. We normalize to your desired emojis in the line text.
-if (String(call.outcome || "").toLowerCase() === "rescheduled") return "📘";
-if (String(call.outcome || "").toLowerCase() === "no_answer") return "❌";
-if (String(call.status || "").toLowerCase() === "missed") return "❌";
-return "📱";
-}
-function tCallDueAt(call) {
-// Prefer next_action_at for follow-ups/outcome-needed; else scheduled time
-return call.next_action_at || call.due_at || tCallScheduledAt(call) || call.attempted_at || null;
-
-}
-function tCallSortKey(call) {
-// due-now first, then earlier dueAt, then earlier scheduledAt
-const now = Date.now();
-const dueAt = tCallDueAt(call);
-const dueMs = dueAt ? new Date(dueAt).getTime() : Infinity;
-// "dueNow" if dueMs <= now OR (outcome missing and scheduled time <= now)
-const scheduledIso = tCallScheduledAt(call);
-const scheduledMs = scheduledIso ? new Date(scheduledIso).getTime() : Infinity;
-const outcomeMissing = call.outcome == null;
-const dueNow = (Number.isFinite(dueMs) && dueMs <= now) || (outcomeMissing &&
-Number.isFinite(scheduledMs) && scheduledMs <= now);
-return {
-dueNow: dueNow ? 0 : 1,
-dueMs: Number.isFinite(dueMs) ? dueMs : Infinity,
-schedMs: Number.isFinite(scheduledMs) ? scheduledMs : Infinity,
-};
-}
-function tCallLine(call, idx) {
-const emoji = tCallTypeEmoji(call);
-const who = tCallContext(call);
-const outcome = call.outcome ? String(call.outcome).toLowerCase() : null;
-const status = call.status ? String(call.status).toLowerCase() : null;
-// Rescheduled
-if (emoji === "📘") {
-return (
-`${idx}) 📘 Rescheduled — ${who}\n` +
-` Next Call: ${tFmtTimeShort(tCallScheduledAt(call))}`
-);
-}
-// No Answer / Missed -> follow-up due
-if (emoji === "❌") {
-const attempted = call.attempted_at || call.updated_at || null;
-const followupDue = call.next_action_at || null;
-return (
-`${idx}) ❌ No Answer — ${who}\n` +
-
-` Attempted: ${tFmtMin(call.waiting_minutes || call.minutes_since_attempt || 0) ||
-tFmtTimeShort(attempted)} ago\n` +
-` Follow-Up Due: ${tFmtDateShort(followupDue)}`
-);
-}
-// Scheduled / Outcome Missing
-const sched = tCallScheduledAt(call) || call.due_at || null;
-return (
-`${idx}) 📱 Scheduled Call — ${who}\n` +
-` Time: ${tFmtTimeShort(sched)}\n` +
-` Status: Outcome Needed`
-);
-}
-function tCallBtnLabel(call) {
-const who = tCallContext(call);
-return `Open · ${tSafe(who, 28)} (Call)`;
-}
-function tCallOpenAction(call) {
-// adjust if your bot uses CALL:<id> or OPENCARD:<id>
-const id = call.call_id || call.id;
-if (!id) return null;
-return `OPENCALL:${id}`;
-}
 // ===============================
 // TRIAGE HANDLER
 // ===============================
@@ -4040,19 +3729,27 @@ return smartSortByPriority(data).slice(0, 25);
 const fallbackQueries = [
 // Conversations
 async () => {
-const { data } = await ops()
+const { data, error } = await ops()
 .from("conversations")
 .select("id, subject, preview, updated_at, next_action_at, priority_tier, source, pipeline")
 .or(`subject.ilike.%${q}%,preview.ilike.%${q}%,contact_email.ilike.%${q}%`)
 .limit(15);
+if (error) {
+logError("runSearch.conversations", error);
+return [];
+}
 return (data || []).map(r => ({ ...r, entity_type: "conversation", card_key: `conversation:${r.id}` }));
 },
 // Submissions
 async () => {
-const { data } = await ops()
+const { data, error } = await ops()
 .from("submissions")
 .select("submission_id, submission_payload, created_at")
 .limit(15);
+if (error) {
+logError("runSearch.submissions", error);
+return [];
+}
 const filtered = (data || []).filter(s => {
 const p = s.submission_payload || {};
 const searchable = [p.first_name, p.last_name, p.email, p.phone, p.state].join(" ").toLowerCase();
@@ -4062,11 +3759,15 @@ return filtered.map(r => ({ ...r, entity_type: "submission", card_key: `submissi
 },
 // People
 async () => {
-const { data } = await ops()
+const { data, error } = await ops()
 .from("people")
 .select("id, name, email, role, created_at")
 .or(`name.ilike.%${q}%,email.ilike.%${q}%`)
 .limit(15);
+if (error) {
+logError("runSearch.people", error);
+return [];
+}
 return (data || []).map(r => ({ ...r, entity_type: "person", card_key: `person:${r.id}` }));
 },
 ];
@@ -4121,6 +3822,17 @@ const editState = draftEditState.get(userId);
 if (editState) {
 const raw = String(ctx.message?.text || "").trim();
 if (!raw) return next();
+const editConv = await sbGetConversationById(editState.convId);
+if (!editConv) {
+draftEditState.delete(userId);
+await ctx.reply("❌ Conversation not found. Open card again.");
+return;
+}
+if (isInstantlySource(editConv)) {
+draftEditState.delete(userId);
+await ctx.reply("⚠ Draft editing is disabled for Instantly-managed conversations. Use CC Support from the conversation card.");
+return;
+}
 const selected = await sbGetSelectedDraftBody(editState.convId, "conversation");
 if (!selected) {
 draftEditState.delete(userId);
@@ -4638,9 +4350,6 @@ await smartRender(ctx, await analyticsText(), analyticsKeyboard());
 // directly)
 // - Markup from telegraf
 //
-// Delete is handled by your universal delete system:
-// - DELETECONFIRM:client:<client_id> (add client to ENTITY_MAP when you create table)
-//
 // ==========================================================
 // ------------------------------
 // CLIENTS HUB
@@ -4696,9 +4405,17 @@ const pageSize = 5;
 const offset = (page - 1) * pageSize;
 
 // Get total count for this bucket
-const { data: allClients } = await ops()
+const { data: allClients, error: allClientsErr } = await ops()
 .from("people")
 .select("client_id", { count: "exact", head: false });
+if (allClientsErr) {
+logError("CLIENTS:list count", allClientsErr);
+return smartRender(
+ctx,
+"⚠️ Unable to load client counts right now.",
+Markup.inlineKeyboard([[Markup.button.callback("⬅ Clients", "CLIENTS:open")]])
+);
+}
 const totalCount = allClients?.length || 0;
 const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
 const currentPage = Math.min(page, totalPages);
@@ -4825,7 +4542,6 @@ Markup.button.callback("🧾 Submissions", `CLIENT:subs:${c.client_id}`)],
 if (hasPools) kbRows.push([Markup.button.callback("🌊 Pools",
 `CLIENT:pools:${c.client_id}`)]);
 kbRows.push([Markup.button.callback("🔎 Search", "CLIENTS:search")]);
-kbRows.push([Markup.button.callback("🗑 Delete", `DELETECONFIRM:client:${c.client_id}`)]);
 kbRows.push([Markup.button.callback("⬅ Clients", "CLIENTS:open")]);
 const msg = await ctx.reply(text, Markup.inlineKeyboard(kbRows));
 registerLiveCard(msg, {
@@ -4846,9 +4562,17 @@ const pageSize = 5;
 const offset = (page - 1) * pageSize;
 
 // Get total count
-const { data: allThreads } = await ops()
+const { data: allThreads, error: allThreadsErr } = await ops()
 .from("conversations")
 .select("id", { count: "exact", head: false });
+if (allThreadsErr) {
+logError("CLIENT:threads count", allThreadsErr);
+return smartRender(
+ctx,
+"⚠️ Unable to load thread counts right now.",
+Markup.inlineKeyboard([[Markup.button.callback("⬅ Client", `CLIENT:${clientId}`)]])
+);
+}
 const totalCount = allThreads?.length || 0;
 const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
 const currentPage = Math.min(page, totalPages);
@@ -4906,9 +4630,17 @@ const pageSize = 5;
 const offset = (page - 1) * pageSize;
 
 // Get total count
-const { data: allSubs } = await ops()
+const { data: allSubs, error: allSubsErr } = await ops()
 .from("submissions")
 .select("submission_id", { count: "exact", head: false });
+if (allSubsErr) {
+logError("CLIENT:subs count", allSubsErr);
+return smartRender(
+ctx,
+"⚠️ Unable to load submission counts right now.",
+Markup.inlineKeyboard([[Markup.button.callback("⬅ Client", `CLIENT:${clientId}`)]])
+);
+}
 const totalCount = allSubs?.length || 0;
 const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
 const currentPage = Math.min(page, totalPages);
@@ -5133,173 +4865,7 @@ ref_id: clientId,
 // `Last Inbound: ${c.last_inbound_at || "—"}\n\n` +
 // `────────────────\n\n` +
 // `📬 Contact\n` +
-// `Email: ${email}\n` +
-// `Phone: ${phone}\n` +
-// `State: ${state}\n` +
-// `${poolsBlock ? `\n────────────────\n\n${poolsBlock}` : ""}\n` +
-// `────────────────\n\n` +
-// `📊 Activity\n` +
-// `Threads: ${c.threads_total || 0} ⏳ Needs Reply: ${c.threads_needs_reply || 0}\n` +
-// `Submissions: ${c.submissions_total || 0}\n` +
-// `Calls Open: ${c.calls_open || 0}\n\n` +
-// `────────────────\n\n` +
-// `🧾 Coverage\n${covLine}\n\n` +
-// `────────────────\n\n` +
-// `🧠 Identity\nPeople Linked: ${c.people_count || 0}`;
-// const hasPools = poolsArr.length > 0;
-// const kbRows = [
-// [Markup.button.callback("🧵 Threads", `CLIENT:threads:${c.client_id}`),
-// Markup.button.callback("🧾 Submissions", `CLIENT:subs:${c.client_id}`)],
-// [Markup.button.callback("📱 Calls", `CLIENT:calls:${c.client_id}`),
-// Markup.button.callback("👥 People", `CLIENT:people:${c.client_id}`)],
-// ];
-// if (hasPools) kbRows.push([Markup.button.callback("🌊 Pools",
-// `CLIENT:pools:${c.client_id}`)]);
-// kbRows.push([Markup.button.callback("🔎 Search", "CLIENTS:search")]);
-// kbRows.push([Markup.button.callback("🗑 Delete",
-// `DELETECONFIRM:client:${c.client_id}`)]);
-// kbRows.push([Markup.button.callback("⬅ Clients", "CLIENTS:open")]);
-// const msg = await ctx.reply(text, Markup.inlineKeyboard(kbRows));
-// registerLiveCard(msg, {
-// type: "client",
-// card_key: `client:${c.client_id}`,
-// ref_id: c.client_id,
-// });
-// }
-
 // ---------- CALLS ----------
-// ---------- CALLS (v5.3) — FINAL UPDATED BLOCK ----------
-// Includes:
-// ✅ Email clickable (mailto:)
-// ✅ Phone clickable (tel:)
-// ✅ Phone uses BEST PHONE (Calendly answer) and removes duplicate phone line
-// elsewhere
-// ✅ 🔴 Needs Action if >15 min past scheduled_for and no outcome
-// ✅ Outcomes: answered | no_answer | reschedule | canceled | completed
-// ✅ Live refresh registration for call cards (type="call")
-// ✅ Targeted refreshQueue updates + refreshLiveCards(true)
-//
-// IMPORTANT:
-// - Because call cards use HTML links, call card send/edit must use parse_mode: "HTML".
-// - If your refreshLiveCards edits call cards, make sure it uses parse_mode: "HTML" too.
-const CALL_NEEDS_ACTION_MINUTES = 15;
-function parseIsoOrNull(v) {
-const d = v ? new Date(v) : null;
-return d && !isNaN(d.getTime()) ? d : null;
-}
-function fmtWhen(iso) {
-const d = parseIsoOrNull(iso);
-if (!d) return "—";
-return d.toLocaleString();
-}
-function callNeedsAction(call) {
-if (!call) return false;
-if (call.outcome) return false;
-const base = parseIsoOrNull(call.scheduled_for) || parseIsoOrNull(call.created_at);
-if (!base) return false;
-const dueAt = new Date(base.getTime() + CALL_NEEDS_ACTION_MINUTES * 60 * 1000);
-return Date.now() > dueAt.getTime();
-}
-function callStatusLabel(call) {
-if (!call) return "";
-if (call.outcome === "answered") return "✅ Answered";
-
-if (call.outcome === "completed") return "✅ Completed";
-if (call.outcome === "no_answer") return "❌ No Answer";
-if (call.outcome === "reschedule") return "📘 Rescheduled";
-if (call.outcome === "canceled") return "🚫 Canceled";
-if (callNeedsAction(call)) return "🔴 Needs Action";
-return "Scheduled";
-}
-// Hub stays plain-text (simple, fast)
-function callSummaryLine(c) {
-const status = callStatusLabel(c);
-const email = c.client_email || c.email || "—";
-const phone =
-c.best_phone ||
-c.calendly_payload?.best_phone ||
-c.client_phone_e164 ||
-c.phone_e164 ||
-"—";
-const role = c.role || c.client_role || "—";
-const when = fmtWhen(c.scheduled_for);
-const name = c.client_name || "—";
-return `──────────────────────
-📱 ${name} • ID: ${idShort(c.id)}
-  Status: ${status} • Role: ${role}
-  📧 ${email}
-  📞 ${phone}
-  🕐 Scheduled: ${when}`;
-}
-// Call detail card uses HTML for tel:/mailto:
-function buildCallCardTextHTML(c) {
-const status = callStatusLabel(c);
-const esc = (s) =>
-String(s || "")
-.replaceAll("&", "&amp;")
-.replaceAll("<", "&lt;")
-.replaceAll(">", "&gt;");
-// Email (clickable)
-const rawEmail = c.client_email || c.email || "";
-const emailLine = rawEmail
-? `<a href="mailto:${esc(rawEmail)}">${esc(rawEmail)}</a>`
-: "—";
-// Phone (BEST PHONE ONLY — clickable)
-const rawPhone =
-c.best_phone ||
-c.calendly_payload?.best_phone ||
-c.client_phone_e164 ||
-
-c.phone_e164 ||
-"";
-const phoneLine = rawPhone
-? `<a href="tel:${esc(rawPhone)}">${esc(rawPhone)}</a>`
-: "—";
-const role = esc(c.role || c.client_role || "—");
-const when = esc(fmtWhen(c.scheduled_for));
-const updatedAt = esc(tFmtDateTimeShort(c.updated_at || c.created_at));
-// Calendly reasoning fields (flexible mapping)
-const sportLevel = esc(
-c.sport_level ||
-c.sport ||
-c.level ||
-c.calendly_payload?.sport_level ||
-"—"
-);
-const help = esc(
-c.help_question ||
-c.reason ||
-c.calendly_payload?.q_help ||
-c.calendly_payload?.reason ||
-"—"
-);
-const notes = esc(c.notes || c.calendly_payload?.notes || "—");
-const convId = c.conversation_id ? esc(idShort(c.conversation_id)) : "—";
-return (
-`📱 <b>CALL</b>
---
-ID: ${esc(idShort(c.id))}
-
-<b>Client</b>
-Email: ${emailLine}
-Phone: ${phoneLine}
-Role: ${role}
-
-<b>When</b>
-Scheduled: ${when}
-Status: <b>${esc(status)}</b>
-Updated: ${updatedAt}
-
-<b>Reason (Calendly)</b>
-Sport/Level: ${sportLevel}
-Help: ${help}
-Notes: ${notes}
-
---
-<b>Linked</b>
-Conversation: ${convId}`
-);
-}
 function callKeyboard(c) {
 return Markup.inlineKeyboard([
 [
@@ -5329,6 +4895,14 @@ const offset = (page - 1) * pageSize;
 const { data: allCalls, error: countErr } = await ops()
 .from("calls")
 .select("id", { count: "exact", head: false });
+if (countErr) {
+logError("CALLS:hub count", countErr);
+return smartRender(
+ctx,
+"⚠️ Unable to load call counts right now.",
+Markup.inlineKeyboard([[Markup.button.callback("⬅ Dashboard", "DASH:back")]])
+);
+}
 const totalCount = allCalls?.length || 0;
 const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
 const currentPage = Math.min(page, totalPages);
@@ -5460,73 +5034,7 @@ await ctx.reply(
 `✅ Call marked ${outcome.replace("_", " ")}.${call?.conversation_id ? ` Conversation → ${nextPipeline}.` : ""}`
 ).catch(() => {});
 }));
-// ---------- METRICS: YEAR SUMMARY (v5.3) — FULL REPLACEMENT + LIVE REFRESH REGISTRATION ----------
-// Includes:
-// ✅ Calls Answered (no ✅ emoji in label)
-// ✅ Monthly breakdown chart (Guide/Explr/Enroll/eApp/Threads/Calls) Jan..Dec
-// ✅ Highlights (best week/month/month ever)
-// ✅ Trends are MONTH-TO-MONTH momentum (last completed month vs previous month)
-
-// ✅ Registers as a LIVE CARD so your global refresh engine can auto-refresh it
-//
-// NOTE: This registers the live card. For true auto-refresh, your refreshLiveCards()
-// must include a branch to handle meta.type === "metrics_year" and re-render it.
-// If you don't add that branch yet, the card will still display correctly; it just won't auto-update.
-function buildYearSummaryText(y, filterSource) {
-const n = (v) => (typeof v === "number" && isFinite(v) ? v : 0);
-const avg = (total) => Math.round(n(total) / 12);
-const trendEmoji = (v) =>
-v === "up" ? "📈 Up-Trend" : v === "down" ? "📉 Down-Trend" : "➖ Flat";
-const months = Array.isArray(y.monthlyBreakdown) ? y.monthlyBreakdown : [];
-const byLabel = new Map(
-months.map((m) => [String(m.label || m.month || "").toLowerCase(), m])
-);
-const order = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const pick = (mon) => byLabel.get(mon.toLowerCase()) || {};
-const monthLine = order
-.map((mon) => `${mon} ${String(n(pick(mon).enrollClicks)).padStart(2, " ")}`)
-.join("  ");
-const bestWeek = y.bestWeek
-? `🏆 Best Week: ${y.bestWeek.label || "—"} (Enroll ${n(y.bestWeek.enrollClicks)}, Threads ${n(y.bestWeek.threads)})`
-: "🏆 Best Week: —";
-const bestMonth = y.bestMonth
-? `⭐ Best Month: ${y.bestMonth.label || "—"} (Enroll ${n(y.bestMonth.enrollClicks)}, Threads ${n(y.bestMonth.threads)})`
-: "⭐ Best Month: —";
-const bestMonthEver = y.bestMonthEver
-? `👑 Best Month Ever: ${y.bestMonthEver.label || "—"} (Enroll ${n(y.bestMonthEver.enrollClicks)}, Threads ${n(y.bestMonthEver.threads)})`
-: "👑 Best Month Ever: —";
-const t = y.trend || {};
-return (
-`🎉 YEAR SUMMARY • ${filterSource}
---
-TOTALS
-
-` +
-`• Total Parent Guides Opened: ${n(y.programLinkOpens)} (Avg ${avg(y.programLinkOpens)}/mo)\n` +
-`• Coverage Exploration: ${n(y.coverageExploration)} (Avg ${avg(y.coverageExploration)}/mo)\n` +
-`• Enroll Clicks: ${n(y.enrollClicks)} (Avg ${avg(y.enrollClicks)}/mo)\n` +
-`• eApp Visits: ${n(y.eappVisits)} (Avg ${avg(y.eappVisits)}/mo)\n` +
-`• Threads (Replies): ${n(y.threadsCreated)} (Avg ${avg(y.threadsCreated)}/mo)\n` +
-`• Calls Answered: ${n(y.callsAnswered)} (Avg ${avg(y.callsAnswered)}/mo)\n\n` +
-`--
-MONTHLY BREAKDOWN (Total Clicks)\n\n` +
-`${monthLine}\n\n` +
-`--
-HIGHLIGHTS\n\n` +
-`${bestWeek}\n` +
-`${bestMonth}\n` +
-`${bestMonthEver}\n\n` +
-`--
-TRENDS (vs last month)\n\n` +
-`• Parent Guides: ${trendEmoji(t.opens)}\n` +
-`• Exploration: ${trendEmoji(t.exploration)}\n` +
-`• Enroll Clicks: ${trendEmoji(t.enrollClicks)}\n` +
-`• eApp Visits: ${trendEmoji(t.eappVisits)}\n` +
-`• Threads (Replies): ${trendEmoji(t.threads)}\n` +
-`• Calls Answered: ${trendEmoji(t.callsAnswered)}\n` +
-`--`
-);
-}
+// ---------- METRICS: YEAR SUMMARY ----------
 function yearSummaryKeyboard() {
 return Markup.inlineKeyboard([
 [Markup.button.callback("📊 Metrics", "METRICS:open")],
@@ -5799,6 +5307,12 @@ bot.action(/^DRAFTS:open:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 try {
+const conv = await sbGetConversationById(convId);
+if (!conv) {
+await smartRender(ctx, `❌ Conversation not found.`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
+return;
+}
+if (await blockInstantlyManagedAction(ctx, conv, convId, "Draft generation")) return;
 const drafts = await sbListConversationDrafts(convId);
 if (!drafts.length) {
 // Show loading state immediately
@@ -5808,11 +5322,6 @@ ctx,
 Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
 );
 // Do slow generation
-const conv = await sbGetConversationById(convId);
-if (!conv) {
-await smartRender(ctx, `❌ Conversation not found.`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
-return;
-}
 const generated = await generateConversationDrafts(conv);
 await sbSaveConversationDraftVersion(convId, 1, generated?.v1?.subject || conv.subject || "Re:", generated?.v1?.body || "", true);
 await sbSaveConversationDraftVersion(convId, 2, generated?.v2?.subject || conv.subject || "Re:", generated?.v2?.body || "", false);
@@ -5842,6 +5351,11 @@ if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const version = parseInt(ctx.match[2], 10);
 try {
+const conv = await sbGetConversationById(convId);
+if (!conv) {
+return smartRender(ctx, `❌ Conversation not found.`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
+}
+if (await blockInstantlyManagedAction(ctx, conv, convId, "Draft viewing")) return;
 const drafts = await sbListConversationDrafts(convId);
 const draft = drafts.find((d) => d.version === version);
 if (!draft) {
@@ -5869,6 +5383,11 @@ if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const version = Number(ctx.match[2]);
 try {
+const conv = await sbGetConversationById(convId);
+if (!conv) {
+return smartRender(ctx, `❌ Conversation not found.`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
+}
+if (await blockInstantlyManagedAction(ctx, conv, convId, "Draft selection")) return;
 await sbSelectConversationDraft(convId, version);
 // Show the draft view with updated selection
 const drafts = await sbListConversationDrafts(convId);
@@ -5899,6 +5418,7 @@ if (!conv) {
 await smartRender(ctx, "❌ Conversation not found.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
 return;
 }
+if (await blockInstantlyManagedAction(ctx, conv, convId, "Draft regeneration")) return;
 // Show loading state
 await smartRender(
 ctx,  `✍️ Reply Drafts (V1/V2/V3)\nConversation: ${idShort(convId)}\n\n⏳ Regenerating drafts, please wait...`,
@@ -5919,6 +5439,12 @@ bot.action(/^DRAFTS:edit:(.+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 try {
+const conv = await sbGetConversationById(convId);
+if (!conv) {
+await smartRender(ctx, "❌ Conversation not found.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
+return;
+}
+if (await blockInstantlyManagedAction(ctx, conv, convId, "Draft editing")) return;
 const selected = await sbGetSelectedDraftBody(convId, "conversation");
 if (!selected) return ctx.reply("No selected draft. Choose V1/V2/V3 first.");
 const userId = String(ctx.from?.id || "");
@@ -6009,6 +5535,16 @@ bodyText: res.bodyText || "",
 };
 }
 
+async function blockInstantlyManagedAction(ctx, conv, convId, actionLabel = "This action") {
+if (!isInstantlySource(conv)) return false;
+await smartRender(
+ctx,
+`⚠ ${actionLabel} is disabled for Instantly-managed conversations.\n\nUse 📌 CC Support from the conversation card.`,
+Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
+);
+return true;
+}
+
 // ===============================
 // SEND BUTTON PRESSED (single send)
 // ===============================
@@ -6018,6 +5554,7 @@ const convId = ctx.match[1];
 const useDraft = Number(ctx.match[2]);
 const conv = await sbGetConversationById(convId);
 if (!conv) return smartRender(ctx, "❌ Conversation not found.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
+if (await blockInstantlyManagedAction(ctx, conv, convId, "Manual send")) return;
 
 // Determine send mode(s) based on conversation state
 const isSupport = conv.source === "support";
@@ -6057,6 +5594,7 @@ const useDraft = Number(ctx.match[2]);
 const mode = ctx.match[3];
 const conv = await sbGetConversationById(convId);
 if (!conv) return smartRender(ctx, "❌ Conversation not found.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
+if (await blockInstantlyManagedAction(ctx, conv, convId, "Manual send")) return;
 
 const fromEmail = await resolveFromEmail(conv, mode);
 if (mode === "outreach" && !fromEmail) {
@@ -6086,6 +5624,7 @@ const useDraft = Number(ctx.match[2]);
 const mode = ctx.match[3];
 const conv = await sbGetConversationById(convId);
 if (!conv) return smartRender(ctx, "❌ Conversation not found.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
+if (await blockInstantlyManagedAction(ctx, conv, convId, "Manual send")) return;
 // Pull the selected conversation draft body (kind="conversation")
 const selected = await sbGetSelectedDraftBody(convId, "conversation");
 const subjectOverride = selected?.subject || conv.subject || "";
@@ -6109,7 +5648,7 @@ trace_id: result.trace_id,
 idempotency_key: result.idempotency_key,
 payload: { mode, useDraft, result },
 });
-const { text: cardText, msgCount } = await buildConversationCard(conv);
+const { text: cardText, msgCount, isInstantlyInbound } = await buildConversationCard(conv);
 const errorHint = !result.ok
 ? `\n\nReason: ${shorten(result.error || result.bodyText || "unknown_error", 220)}`
 : "";
@@ -6117,7 +5656,7 @@ const successText = result.ok ? `✅ Send queued.\n\n${cardText}` : `❌ Send fa
 await smartRender(
 ctx,
 successText,
-result.ok ? conversationCardKeyboard(conv, msgCount) : Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
+result.ok ? conversationCardKeyboard(conv, msgCount, { isInstantlyInbound }) : Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
 );
 // Instant refresh
 refreshQueue.add(`conversation:${convId}`);
@@ -6378,12 +5917,12 @@ sbGetConversationById(meta.ref_id),
 "DB query timed out"
 );
 if (!conv) continue;
-const { text, msgCount } = await buildConversationCard(conv);
+const { text, msgCount, isInstantlyInbound } = await buildConversationCard(conv);
 const edited = await safeEditMessageText(
 meta.chat_id,
 msgId,
 text,
-conversationCardKeyboard(conv, msgCount)
+conversationCardKeyboard(conv, msgCount, { isInstantlyInbound })
 );
 if (edited) editCount++;
 }
@@ -6662,11 +6201,11 @@ const b = req.body || {};
 const nowIso = new Date().toISOString();
 // ---- normalize canonical envelope ----
 const schema_version = b.schema_version || "5.3";
-const event_type = String(b.event_type || "unknown.event");
+let event_type = String(b.event_type || "unknown.event");
 const source = String(b.source || "unknown");
 const direction = String(b.direction || "inbound");
 const trace_id = String(b.trace_id || uuidv4());
-const idempotency_key = b.idempotency_key ? String(b.idempotency_key) : null;
+let idempotency_key = b.idempotency_key ? String(b.idempotency_key) : null;
 const entity_type = b.entity_type ? String(b.entity_type) : null;
 const entity_id = b.entity_id ? String(b.entity_id) : null;
 const submission_id =
@@ -6677,7 +6216,26 @@ null;
 const client_email = b.client?.email || b.client_email || null;
 const client_phone_e164 = b.client?.phone_e164 || b.client_phone_e164 || null;
 
-const payload = b.payload || b;
+let payload = b.payload || b;
+
+// Legacy compatibility: map older email_reply events into Instantly receipt handling.
+if (event_type === "email_reply") {
+  const legacyCoachReply = safeStr(payload?.coach_reply_body || payload?.coachReplyBody || payload?.reply_body || payload?.replyBody || b.reply_body || b.replyBody || "");
+  const legacyAiReply = safeStr(payload?.ai_reply_body || payload?.aiReplyBody || b.ai_reply_body || b.aiReplyBody || "");
+  payload = {
+    ...payload,
+    coach_reply_body: legacyCoachReply,
+    ai_reply_body: legacyAiReply,
+    legacy_event_type: "email_reply",
+  };
+  event_type = "instantly_reply_sent";
+}
+
+if (!idempotency_key && (event_type === "instantly_reply_sent" || event_type === "instantly_email_sent")) {
+  const idemLeadId = payload?.lead_id || payload?.leadId || b.lead_id || b.leadId || "";
+  const idemTs = payload?.timestamp || payload?.created_at || b.timestamp || nowIso;
+  idempotency_key = deriveInstantlyReplyIdempotencyKey({ leadId: idemLeadId, timestamp: idemTs });
+}
 // ---- 1) insert ledger with dedupe handling ----
 const inserted = await sbInsertOpsEventSafe({
 schema_version,
@@ -6742,6 +6300,430 @@ nowIso,
 refreshQueue.add(makeCardKey("submission", submission_id));
 refreshQueue.add("dashboard:all");
 refreshQueue.add("allq:all");
+}
+// INSTANTLY REPLY RECEIPT (AI already replied)
+if (event_type === "instantly_reply_sent") {
+  const lead_email_raw = payload?.lead_email || payload?.leadEmail || b.lead_email || b.leadEmail || null;
+  const lead_name = payload?.lead_name || payload?.leadName || b.lead_name || b.leadName || null;
+  const coach_reply_body = safeStr(payload?.coach_reply_body || payload?.coachReplyBody || b.coach_reply_body || b.coachReplyBody || "");
+  const ai_reply_body = safeStr(payload?.ai_reply_body || payload?.aiReplyBody || b.ai_reply_body || b.aiReplyBody || "");
+  const campaign_id = payload?.campaign_id || payload?.campaignId || b.campaign_id || b.campaignId || null;
+  const lead_id = payload?.lead_id || payload?.leadId || b.lead_id || b.leadId || null;
+  const reply_ts_raw = payload?.timestamp || payload?.created_at || b.timestamp || nowIso;
+  const replyTsIso = (() => {
+    const d = new Date(reply_ts_raw);
+    return Number.isFinite(d.getTime()) ? d.toISOString() : nowIso;
+  })();
+  const lead_email = normalizeEmail(lead_email_raw);
+
+  if (lead_email) {
+    let existingConv = null;
+    try {
+      const lookup = await dbSelectFirst([
+        () => ops()
+          .from("conversations")
+          .select("id, thread_key, lane, source")
+          .eq("normalized_email", lead_email)
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        () => ops()
+          .from("conversations")
+          .select("id, thread_key, source")
+          .eq("normalized_email", lead_email)
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        () => ops()
+          .from("conversations")
+          .select("id, thread_key, lane, source")
+          .ilike("contact_email", lead_email)
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        () => ops()
+          .from("conversations")
+          .select("id, thread_key, source")
+          .ilike("contact_email", lead_email)
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+      ]);
+      existingConv = lookup?.data || null;
+    } catch (lookupErr) {
+      logError("instantly_reply_sent.lookup_conversation", lookupErr);
+      existingConv = null;
+    }
+
+    const previewSource = ai_reply_body || coach_reply_body;
+    const convPreview = shorten(previewSource, 240);
+    const baseThreadKey = existingConv?.thread_key || `instantly:${safeStr(lead_id) || hashStable(lead_email)}`;
+    let conversationId = existingConv?.id || null;
+
+    if (conversationId) {
+      const updatePatch = {
+        updated_at: nowIso,
+        source: "instantly",
+        pipeline: "active",
+        status: "active",
+        contact_email: lead_email,
+        normalized_email: lead_email,
+        preview: convPreview,
+      };
+      if (lead_name) updatePatch.coach_name = lead_name;
+      if (!existingConv?.lane) updatePatch.lane = "program";
+
+      try {
+        const { error: updErr } = await ops()
+          .from("conversations")
+          .update(updatePatch)
+          .eq("id", conversationId);
+        if (updErr && isMissingColumnError(updErr)) {
+          const fallbackPatch = { ...updatePatch };
+          delete fallbackPatch.lane;
+          delete fallbackPatch.status;
+          delete fallbackPatch.normalized_email;
+          const { error: fallbackErr } = await ops()
+            .from("conversations")
+            .update(fallbackPatch)
+            .eq("id", conversationId);
+          if (fallbackErr) throw fallbackErr;
+        } else if (updErr) {
+          throw updErr;
+        }
+      } catch (updErr) {
+        logError("instantly_reply_sent.update_conversation", updErr);
+      }
+    } else {
+      const insertRow = {
+        thread_key: baseThreadKey,
+        source: "instantly",
+        lane: "program",
+        pipeline: "active",
+        status: "active",
+        contact_email: lead_email,
+        normalized_email: lead_email,
+        coach_name: lead_name || null,
+        subject: campaign_id ? `Instantly Reply (${campaign_id})` : "Instantly Reply",
+        preview: convPreview,
+        created_at: nowIso,
+        updated_at: nowIso,
+      };
+      try {
+        const { data: insertedConv, error: insErr } = await ops()
+          .from("conversations")
+          .insert(insertRow)
+          .select("id")
+          .maybeSingle();
+        if (insErr && isMissingColumnError(insErr)) {
+          const fallbackRow = { ...insertRow };
+          delete fallbackRow.lane;
+          delete fallbackRow.status;
+          delete fallbackRow.normalized_email;
+          const { data: fallbackConv, error: fallbackErr } = await ops()
+            .from("conversations")
+            .insert(fallbackRow)
+            .select("id")
+            .maybeSingle();
+          if (fallbackErr) throw fallbackErr;
+          conversationId = fallbackConv?.id || null;
+        } else if (insErr) {
+          throw insErr;
+        } else {
+          conversationId = insertedConv?.id || null;
+        }
+      } catch (insErr) {
+        logError("instantly_reply_sent.insert_conversation", insErr);
+      }
+    }
+
+    if (conversationId) {
+      if (coach_reply_body) {
+        try {
+          const coachMsg = {
+            conversation_id: conversationId,
+            direction: "inbound",
+            body: coach_reply_body,
+            preview: shorten(coach_reply_body, 200),
+            source_ref: lead_id || null,
+            created_at: replyTsIso,
+          };
+          const { error: coachMsgErr } = await ops().from("messages").insert(coachMsg);
+          if (coachMsgErr && isMissingColumnError(coachMsgErr)) {
+            const fallbackCoachMsg = { ...coachMsg };
+            delete fallbackCoachMsg.source_ref;
+            const { error: fallbackCoachErr } = await ops().from("messages").insert(fallbackCoachMsg);
+            if (fallbackCoachErr) throw fallbackCoachErr;
+          } else if (coachMsgErr) {
+            throw coachMsgErr;
+          }
+        } catch (err) {
+          logError("instantly_reply_sent.insert_coach_message", err);
+        }
+      }
+
+      if (ai_reply_body) {
+        try {
+          const aiMsg = {
+            conversation_id: conversationId,
+            direction: "outbound",
+            body: ai_reply_body,
+            preview: shorten(ai_reply_body, 200),
+            sender: "instantly_ai",
+            source_ref: lead_id || null,
+            created_at: replyTsIso,
+          };
+          const { error: aiMsgErr } = await ops().from("messages").insert(aiMsg);
+          if (aiMsgErr && isMissingColumnError(aiMsgErr)) {
+            const fallbackAiMsg = { ...aiMsg };
+            delete fallbackAiMsg.sender;
+            delete fallbackAiMsg.source_ref;
+            const { error: fallbackAiErr } = await ops().from("messages").insert(fallbackAiMsg);
+            if (fallbackAiErr) throw fallbackAiErr;
+          } else if (aiMsgErr) {
+            throw aiMsgErr;
+          }
+        } catch (err) {
+          logError("instantly_reply_sent.insert_ai_message", err);
+        }
+      }
+
+      await sbInsertOpsEventSafe({
+        schema_version: "5.3",
+        event_type: "instantly_reply_handled",
+        source: "instantly",
+        direction: "inbound",
+        trace_id,
+        idempotency_key: `${idempotency_key || "instantly_reply_sent"}:handled`,
+        entity_type: "conversation",
+        entity_id: conversationId,
+        client_email: lead_email,
+        payload: {
+          campaign_id: campaign_id || null,
+          lead_id: lead_id || null,
+          lead_name: lead_name || null,
+          timestamp: replyTsIso,
+        },
+      }).catch((ledgerErr) => logError("instantly_reply_sent.ledger", ledgerErr));
+
+      const coachPreview = shorten(coach_reply_body || "—", 200);
+      const aiPreview = shorten(ai_reply_body || "—", 200);
+      const who = lead_name || lead_email;
+      const laneProgram = isProgramLane({ lane: existingConv?.lane || "program", source: "instantly" });
+      const text = `💬 Instantly Reply Receipt
+--
+${who}
+
+Coach said:
+${coachPreview}
+
+AI replied:
+${aiPreview}
+
+Ref: Campaign ${campaign_id || "—"} • Lead ${lead_id || "—"}`;
+
+      const kb = laneProgram
+        ? Markup.inlineKeyboard([[Markup.button.callback("📌 CC Support", `CC:${conversationId}`)]])
+        : undefined;
+
+      const notifyAdminIds = ADMIN_IDS.length ? ADMIN_IDS : [];
+      for (const adminId of notifyAdminIds) {
+        try {
+          const msg = await bot.telegram.sendMessage(adminId, text, kb || undefined);
+          if (msg?.message_id) {
+            registerLiveCard(msg, {
+              type: "conversation",
+              card_key: `conversation:${conversationId}`,
+              ref_id: conversationId,
+            });
+          }
+        } catch (notifyErr) {
+          logError("instantly_reply_sent.notify_admin", notifyErr);
+        }
+      }
+
+      refreshQueue.add(makeCardKey("conversation", conversationId));
+      refreshQueue.add("triage:all");
+      refreshQueue.add("dashboard:all");
+      refreshQueue.add("allq:all");
+    } else {
+      console.warn("[WARN] instantly_reply_sent skipped message/notify: no conversation id resolved", {
+        lead_email,
+        lead_id: lead_id || null,
+      });
+    }
+  } else {
+    console.warn("[WARN] instantly_reply_sent missing lead_email; skipping conversation upsert", {
+      lead_id: lead_id || null,
+      campaign_id: campaign_id || null,
+    });
+  }
+}
+// INSTANTLY OUTBOUND OUTREACH RECEIPT (silent log)
+if (event_type === "instantly_email_sent") {
+  const lead_email_raw = payload?.lead_email || payload?.leadEmail || b.lead_email || b.leadEmail || null;
+  const lead_name = payload?.lead_name || payload?.leadName || b.lead_name || b.leadName || null;
+  const campaign_id = payload?.campaign_id || payload?.campaignId || b.campaign_id || b.campaignId || null;
+  const lead_id = payload?.lead_id || payload?.leadId || b.lead_id || b.leadId || null;
+  const email_subject = payload?.email_subject || payload?.emailSubject || b.email_subject || b.emailSubject || "Instantly Outreach";
+  const sent_ts_raw = payload?.timestamp || payload?.created_at || b.timestamp || nowIso;
+  const sentTsIso = (() => {
+    const d = new Date(sent_ts_raw);
+    return Number.isFinite(d.getTime()) ? d.toISOString() : nowIso;
+  })();
+  const lead_email = normalizeEmail(lead_email_raw);
+
+  if (lead_email) {
+    let existingConv = null;
+    try {
+      const lookup = await dbSelectFirst([
+        () => ops()
+          .from("conversations")
+          .select("id, thread_key, lane, source")
+          .eq("normalized_email", lead_email)
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        () => ops()
+          .from("conversations")
+          .select("id, thread_key, source")
+          .eq("normalized_email", lead_email)
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        () => ops()
+          .from("conversations")
+          .select("id, thread_key, lane, source")
+          .ilike("contact_email", lead_email)
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        () => ops()
+          .from("conversations")
+          .select("id, thread_key, source")
+          .ilike("contact_email", lead_email)
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+      ]);
+      existingConv = lookup?.data || null;
+    } catch (lookupErr) {
+      logError("instantly_email_sent.lookup_conversation", lookupErr);
+      existingConv = null;
+    }
+
+    const baseThreadKey = existingConv?.thread_key || `instantly:${safeStr(lead_id) || hashStable(lead_email)}`;
+    let conversationId = existingConv?.id || null;
+
+    if (conversationId) {
+      const updatePatch = {
+        updated_at: nowIso,
+        source: "instantly",
+        pipeline: "actions_waiting",
+        status: "waiting",
+        contact_email: lead_email,
+        normalized_email: lead_email,
+        subject: safeStr(email_subject) || "Instantly Outreach",
+        preview: "Outreach sent by Instantly AI",
+      };
+      if (lead_name) updatePatch.coach_name = lead_name;
+      if (!existingConv?.lane) updatePatch.lane = "program";
+
+      try {
+        const { error: updErr } = await ops()
+          .from("conversations")
+          .update(updatePatch)
+          .eq("id", conversationId);
+        if (updErr && isMissingColumnError(updErr)) {
+          const fallbackPatch = { ...updatePatch };
+          delete fallbackPatch.lane;
+          delete fallbackPatch.status;
+          delete fallbackPatch.normalized_email;
+          const { error: fallbackErr } = await ops()
+            .from("conversations")
+            .update(fallbackPatch)
+            .eq("id", conversationId);
+          if (fallbackErr) throw fallbackErr;
+        } else if (updErr) {
+          throw updErr;
+        }
+      } catch (updErr) {
+        logError("instantly_email_sent.update_conversation", updErr);
+      }
+    } else {
+      const insertRow = {
+        thread_key: baseThreadKey,
+        source: "instantly",
+        lane: "program",
+        pipeline: "actions_waiting",
+        status: "waiting",
+        contact_email: lead_email,
+        normalized_email: lead_email,
+        coach_name: lead_name || null,
+        subject: safeStr(email_subject) || "Instantly Outreach",
+        preview: "Outreach sent by Instantly AI",
+        created_at: sentTsIso,
+        updated_at: nowIso,
+      };
+
+      try {
+        const { data: insertedConv, error: insErr } = await ops()
+          .from("conversations")
+          .insert(insertRow)
+          .select("id")
+          .maybeSingle();
+        if (insErr && isMissingColumnError(insErr)) {
+          const fallbackRow = { ...insertRow };
+          delete fallbackRow.lane;
+          delete fallbackRow.status;
+          delete fallbackRow.normalized_email;
+          const { data: fallbackConv, error: fallbackErr } = await ops()
+            .from("conversations")
+            .insert(fallbackRow)
+            .select("id")
+            .maybeSingle();
+          if (fallbackErr) throw fallbackErr;
+          conversationId = fallbackConv?.id || null;
+        } else if (insErr) {
+          throw insErr;
+        } else {
+          conversationId = insertedConv?.id || null;
+        }
+      } catch (insErr) {
+        logError("instantly_email_sent.insert_conversation", insErr);
+      }
+    }
+
+    if (conversationId) {
+      await sbInsertOpsEventSafe({
+        schema_version: "5.3",
+        event_type: "outreach_sent",
+        source: "instantly",
+        direction: "inbound",
+        trace_id,
+        idempotency_key: `${idempotency_key || "instantly_email_sent"}:outreach_sent`,
+        entity_type: "conversation",
+        entity_id: conversationId,
+        client_email: lead_email,
+        payload: {
+          campaign_id: campaign_id || null,
+          lead_id: lead_id || null,
+          lead_name: lead_name || null,
+          email_subject: safeStr(email_subject) || null,
+          timestamp: sentTsIso,
+        },
+      }).catch((ledgerErr) => logError("instantly_email_sent.ledger", ledgerErr));
+
+      refreshQueue.add(makeCardKey("conversation", conversationId));
+      refreshQueue.add("dashboard:all");
+      refreshQueue.add("allq:all");
+    }
+  } else {
+    console.warn("[WARN] instantly_email_sent missing lead_email; skipping conversation upsert", {
+      lead_id: lead_id || null,
+      campaign_id: campaign_id || null,
+    });
+  }
 }
 // CONVERSATIONS / MESSAGES (inbound/outbound)
 if (event_type === EVENT_TYPES.CONVERSATION_UPDATED || event_type === EVENT_TYPES.MESSAGE_INGESTED) {
@@ -6821,12 +6803,60 @@ app.post("/webhook/metric", async (req, res) => {
   try {
     const secret = req.header("x-nil-secret");
 
-    if (!secret || secret !== process.env.BASE_WEBHOOK_SECRET) {
+    if (!secret || secret !== BASE_WEBHOOK_SECRET) {
       return res.status(401).json({ ok: false, error: "unauthorized" });
     }
 
     const { coach_id, kind, link, meta } = req.body || {};
     if (!kind) return res.status(400).json({ ok: false, error: "missing kind" });
+
+    const parseTrackingParams = (rawLink, queryObj = {}) => {
+      const out = {
+        coach_id: null,
+        campaign_id: null,
+      };
+      const readFromSearch = (sp) => {
+        out.coach_id = sp.get("coach_id") || sp.get("coachId") || out.coach_id;
+        out.campaign_id = sp.get("campaign_id") || sp.get("campaignId") || out.campaign_id;
+      };
+
+      try {
+        const linkStr = String(rawLink || "").trim();
+        if (linkStr) {
+          const parsed = new URL(linkStr);
+          readFromSearch(parsed.searchParams);
+        }
+      } catch (_) {
+        // Ignore invalid URL and continue with request query/body fallbacks
+      }
+
+      const q = queryObj || {};
+      out.coach_id = out.coach_id || q.coach_id || q.coachId || null;
+      out.campaign_id = out.campaign_id || q.campaign_id || q.campaignId || null;
+
+      return out;
+    };
+
+    const inferClickSource = (referrerRaw) => {
+      const r = String(referrerRaw || "").trim().toLowerCase();
+      if (!r) return "direct";
+      if (
+        r.includes("mail") ||
+        r.includes("gmail") ||
+        r.includes("outlook") ||
+        r.includes("yahoo") ||
+        r.includes("proton")
+      ) {
+        return "email";
+      }
+      return "direct";
+    };
+
+    const tracking = parseTrackingParams(link, req.query || {});
+    const resolvedCoachId = tracking.coach_id || coach_id || null;
+    const resolvedCampaignId = tracking.campaign_id || req.body?.campaign_id || req.body?.campaignId || null;
+    const referrer = req.header("referer") || req.header("referrer") || meta?.referrer || req.body?.referrer || "";
+    const clickSource = inferClickSource(referrer);
 
     // Insert into schema `nil`
     const { error } = await supabase
@@ -6834,7 +6864,9 @@ app.post("/webhook/metric", async (req, res) => {
       .from("click_events")
       .insert([
         {
-          coach_id: coach_id ?? null,
+          coach_id: resolvedCoachId ?? null,
+          campaign_id: resolvedCampaignId ?? null,
+          click_source: clickSource,
           kind,
           link: link ?? null,
           meta: meta ?? {},
@@ -6846,7 +6878,60 @@ app.post("/webhook/metric", async (req, res) => {
       return res.status(500).json({ ok: false, error: error.message });
     }
 
-    return res.status(200).json({ ok: true });
+    let coachUpserted = false;
+    if (resolvedCoachId) {
+      const nowIso = new Date().toISOString();
+      try {
+        const { data: existingCoach, error: coachLookupErr } = await ops()
+          .from("coaches")
+          .select("coach_id, click_count")
+          .eq("coach_id", resolvedCoachId)
+          .maybeSingle();
+
+        if (coachLookupErr && !isMissingColumnError(coachLookupErr)) {
+          throw coachLookupErr;
+        }
+
+        if (existingCoach?.coach_id) {
+          const nextCount = Number(existingCoach.click_count || 0) + 1;
+          const { error: coachUpdateErr } = await ops()
+            .from("coaches")
+            .update({
+              click_count: nextCount,
+              last_click_at: nowIso,
+              updated_at: nowIso,
+            })
+            .eq("coach_id", resolvedCoachId);
+          if (coachUpdateErr && !isMissingColumnError(coachUpdateErr)) {
+            throw coachUpdateErr;
+          }
+        } else {
+          const { error: coachInsertErr } = await ops()
+            .from("coaches")
+            .insert({
+              coach_id: resolvedCoachId,
+              click_count: 1,
+              last_click_at: nowIso,
+              created_at: nowIso,
+              updated_at: nowIso,
+            });
+          if (coachInsertErr && !isMissingColumnError(coachInsertErr)) {
+            throw coachInsertErr;
+          }
+        }
+        coachUpserted = true;
+      } catch (coachErr) {
+        console.error("[coaches upsert error]", coachErr?.message || String(coachErr));
+      }
+    }
+
+    return res.status(200).json({
+      ok: true,
+      coach_id: resolvedCoachId,
+      campaign_id: resolvedCampaignId,
+      click_source: clickSource,
+      coach_upserted: coachUpserted,
+    });
   } catch (e) {
     console.error("[webhook/metric error]", String(e));
     return res.status(500).json({ ok: false, error: String(e) });
@@ -6975,19 +7060,52 @@ app.get("/api/nil-outbox/claim", async (req, res) => {
     }
 
     const limit = Math.min(Number(req.query.limit) || 10, 100);
+    const maxAgeMs = 48 * 60 * 60 * 1000;
+    const nowMs = Date.now();
 
     const { data: claimedRows, error } = await ops()
       .from("n8n_outbox")
-      .select("outbox_id, submission_id, idempotency_key, payload, attempt_count")
+      .select("outbox_id, submission_id, idempotency_key, payload, attempt_count, created_at")
       .eq("status", "queued")
       .order("next_attempt_at", { ascending: true })
       .limit(limit);
 
     if (error) throw error;
 
+    const rows = claimedRows || [];
+    const expiredRows = [];
+    const claimableRows = [];
+
+    for (const row of rows) {
+      const createdMs = row?.created_at ? new Date(row.created_at).getTime() : null;
+      const isExpired = Number.isFinite(createdMs) ? (nowMs - createdMs) > maxAgeMs : false;
+      if (isExpired) {
+        expiredRows.push(row);
+      } else {
+        claimableRows.push(row);
+      }
+    }
+
+    if (expiredRows.length > 0) {
+      const expiredIds = expiredRows.map((r) => r.outbox_id).filter(Boolean);
+      if (expiredIds.length > 0) {
+        const { error: expireErr } = await ops()
+          .from("n8n_outbox")
+          .update({
+            status: "expired",
+            last_error: "expired_unclaimed_48h",
+            updated_at: new Date().toISOString(),
+          })
+          .in("outbox_id", expiredIds);
+        if (expireErr) {
+          console.error("[api/nil-outbox/claim expire]", expireErr.message);
+        }
+      }
+    }
+
     // Update claimed rows to 'sending'
-    if (claimedRows && claimedRows.length > 0) {
-      const outboxIds = claimedRows.map((r) => r.outbox_id);
+    if (claimableRows.length > 0) {
+      const outboxIds = claimableRows.map((r) => r.outbox_id);
       const { error: updateError } = await ops()
         .from("n8n_outbox")
         .update({
@@ -7001,8 +7119,9 @@ app.get("/api/nil-outbox/claim", async (req, res) => {
 
     return res.status(200).json({
       ok: true,
-      rows: claimedRows || [],
-      count: claimedRows?.length || 0,
+      rows: claimableRows,
+      count: claimableRows.length,
+      expired_count: expiredRows.length,
     });
   } catch (error) {
     console.error("[api/nil-outbox/claim]", error);
@@ -7022,7 +7141,7 @@ app.post("/api/nil-outbox/result", async (req, res) => {
     }
 
     const body = req.body || {};
-    const { submission_id, status, last_error } = body;
+    const { submission_id, status, last_error, success, message_id, error: result_error } = body;
 
     if (!submission_id || !["sent", "failed"].includes(status)) {
       return res.status(400).json({
@@ -7031,14 +7150,64 @@ app.post("/api/nil-outbox/result", async (req, res) => {
       });
     }
 
+    const hasSuccessBoolean = typeof success === "boolean";
+    const hasMessageId = !!safeStr(message_id).trim();
+    const hasErrorString = !!safeStr(result_error || last_error).trim();
+    const validResultPayload = hasSuccessBoolean && (hasMessageId || hasErrorString);
+    if (!validResultPayload) {
+      const reason = "invalid_outbox_result_payload: requires success(boolean) + message_id or error";
+      await writeDeadLetterSafe(reason, {
+        endpoint: "/api/nil-outbox/result",
+        body,
+      });
+      return res.status(400).json({
+        ok: false,
+        error: reason,
+      });
+    }
+
+    const normalizedStatus = success === true ? "sent" : "failed";
+    if (normalizedStatus !== status) {
+      return res.status(400).json({
+        ok: false,
+        error: "status does not match success flag",
+      });
+    }
+
     const now = new Date().toISOString();
     const updatePatch = {
       status,
-      last_error: last_error || null,
+      last_error: (result_error || last_error) || null,
+      message_id: hasMessageId ? String(message_id) : null,
     };
 
     if (status === "sent") {
       updatePatch.sent_at = now;
+      updatePatch.retry_count = 0;
+    }
+
+    if (status === "failed") {
+      const { data: existingOutbox, error: existingErr } = await ops()
+        .from("n8n_outbox")
+        .select("retry_count")
+        .eq("submission_id", submission_id)
+        .maybeSingle();
+      if (existingErr) throw existingErr;
+
+      const nextRetryCount = Number(existingOutbox?.retry_count || 0) + 1;
+      updatePatch.retry_count = nextRetryCount;
+
+      if (nextRetryCount > 3) {
+        updatePatch.status = "dead";
+        updatePatch.dead_at = now;
+        await writeDeadLetterSafe("n8n_outbox_retry_exhausted", {
+          submission_id,
+          retry_count: nextRetryCount,
+          status,
+          last_error: updatePatch.last_error,
+          message_id: updatePatch.message_id,
+        });
+      }
     }
 
     // Update outbox
@@ -7051,8 +7220,8 @@ app.post("/api/nil-outbox/result", async (req, res) => {
 
     // Update submissions
     const submissionPatch = {
-      n8n_status: status,
-      n8n_last_error: last_error || null,
+      n8n_status: updatePatch.status || status,
+      n8n_last_error: (result_error || last_error) || null,
     };
 
     if (status === "sent") {
@@ -7070,7 +7239,8 @@ app.post("/api/nil-outbox/result", async (req, res) => {
     return res.status(200).json({
       ok: true,
       submission_id,
-      status,
+      status: updatePatch.status || status,
+      retry_count: updatePatch.retry_count ?? null,
     });
   } catch (error) {
     console.error("[api/nil-outbox/result]", error);
@@ -7139,6 +7309,31 @@ if (ENABLE_TELEGRAM_BOT) {
 // for ALL bot actions and commands, preventing timeouts and freezes
 
 bot.use(async (ctx, next) => {
+// Harden raw Telegram calls used throughout handlers
+if (ctx && typeof ctx.reply === "function" && !ctx.__safeReplyWrapped) {
+const originalReply = ctx.reply.bind(ctx);
+ctx.reply = async (...args) => {
+try {
+return await originalReply(...args);
+} catch (err) {
+logError("ctx.reply", err);
+return null;
+}
+};
+ctx.__safeReplyWrapped = true;
+}
+if (ctx && typeof ctx.editMessageText === "function" && !ctx.__safeEditWrapped) {
+const originalEditMessageText = ctx.editMessageText.bind(ctx);
+ctx.editMessageText = async (...args) => {
+try {
+return await originalEditMessageText(...args);
+} catch (err) {
+logError("ctx.editMessageText", err);
+return null;
+}
+};
+ctx.__safeEditWrapped = true;
+}
 // Auto-answer callback query to prevent loading spinner timeout
 if (ctx.update?.callback_query?.id) {
 ctx.answerCbQuery().catch((err) => {
