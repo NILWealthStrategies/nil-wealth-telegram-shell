@@ -87,11 +87,12 @@ Use buttons below.`;
 }
 
 function buildYearSummaryText(y, filterSource) {
+  const d = y && typeof y === "object" ? y : {};
   const n = (v) => (typeof v === "number" && isFinite(v) ? v : 0);
   const avg = (total) => Math.round(n(total) / 12);
   const trendEmoji = (v) =>
     v === "up" ? "📈 Up-Trend" : v === "down" ? "📉 Down-Trend" : "➖ Flat";
-  const months = Array.isArray(y.monthlyBreakdown) ? y.monthlyBreakdown : [];
+  const months = Array.isArray(d.monthlyBreakdown) ? d.monthlyBreakdown : [];
   const byLabel = new Map(
     months.map((m) => [String(m.label || m.month || "").toLowerCase(), m])
   );
@@ -100,28 +101,28 @@ function buildYearSummaryText(y, filterSource) {
   const monthLine = order
     .map((mon) => `${mon} ${String(n(pick(mon).enrollClicks)).padStart(2, " ")}`)
     .join("  ");
-  const bestWeek = y.bestWeek
-    ? `🏆 Best Week: ${y.bestWeek.label || "—"} (Enroll ${n(y.bestWeek.enrollClicks)}, Threads ${n(y.bestWeek.threads)})`
+  const bestWeek = d.bestWeek
+    ? `🏆 Best Week: ${d.bestWeek.label || "—"} (Enroll ${n(d.bestWeek.enrollClicks)}, Threads ${n(d.bestWeek.threads)})`
     : "🏆 Best Week: —";
-  const bestMonth = y.bestMonth
-    ? `⭐ Best Month: ${y.bestMonth.label || "—"} (Enroll ${n(y.bestMonth.enrollClicks)}, Threads ${n(y.bestMonth.threads)})`
+  const bestMonth = d.bestMonth
+    ? `⭐ Best Month: ${d.bestMonth.label || "—"} (Enroll ${n(d.bestMonth.enrollClicks)}, Threads ${n(d.bestMonth.threads)})`
     : "⭐ Best Month: —";
-  const bestMonthEver = y.bestMonthEver
-    ? `👑 Best Month Ever: ${y.bestMonthEver.label || "—"} (Enroll ${n(y.bestMonthEver.enrollClicks)}, Threads ${n(y.bestMonthEver.threads)})`
+  const bestMonthEver = d.bestMonthEver
+    ? `👑 Best Month Ever: ${d.bestMonthEver.label || "—"} (Enroll ${n(d.bestMonthEver.enrollClicks)}, Threads ${n(d.bestMonthEver.threads)})`
     : "👑 Best Month Ever: —";
-  const t = y.trend || {};
+  const t = d.trend || {};
   return (
-    `🎉 YEAR SUMMARY • ${filterSource}
+    `🎉 YEAR SUMMARY • ${filterSource || "all"}
 --
 TOTALS
 
 ` +
-    `• Total Parent Guides Opened: ${n(y.programLinkOpens)} (Avg ${avg(y.programLinkOpens)}/mo)\n` +
-    `• Coverage Exploration: ${n(y.coverageExploration)} (Avg ${avg(y.coverageExploration)}/mo)\n` +
-    `• Enroll Clicks: ${n(y.enrollClicks)} (Avg ${avg(y.enrollClicks)}/mo)\n` +
-    `• eApp Visits: ${n(y.eappVisits)} (Avg ${avg(y.eappVisits)}/mo)\n` +
-    `• Threads (Replies): ${n(y.threadsCreated)} (Avg ${avg(y.threadsCreated)}/mo)\n` +
-    `• Calls Answered: ${n(y.callsAnswered)} (Avg ${avg(y.callsAnswered)}/mo)\n\n` +
+    `• Total Parent Guides Opened: ${n(d.programLinkOpens)} (Avg ${avg(d.programLinkOpens)}/mo)\n` +
+    `• Coverage Exploration: ${n(d.coverageExploration)} (Avg ${avg(d.coverageExploration)}/mo)\n` +
+    `• Enroll Clicks: ${n(d.enrollClicks)} (Avg ${avg(d.enrollClicks)}/mo)\n` +
+    `• eApp Visits: ${n(d.eappVisits)} (Avg ${avg(d.eappVisits)}/mo)\n` +
+    `• Threads (Replies): ${n(d.threadsCreated)} (Avg ${avg(d.threadsCreated)}/mo)\n` +
+    `• Calls Answered: ${n(d.callsAnswered)} (Avg ${avg(d.callsAnswered)}/mo)\n\n` +
     `--
 MONTHLY BREAKDOWN (Total Clicks)\n\n` +
     `${monthLine}\n\n` +

@@ -5048,7 +5048,10 @@ return Markup.inlineKeyboard([
 bot.action("METRICS:yearsummary", safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const filterSource = getAdminFilter(ctx);
-const y = await sbMetricSummary({ source: filterSource, window: "year" });
+const y = await sbMetricSummary({ source: filterSource, window: "year" }).catch((err) => {
+logError("METRICS:yearsummary", err);
+return {};
+});
 const text = buildYearSummaryText(y, filterSource);
 const msg = await smartRender(ctx, text, yearSummaryKeyboard());
 // ✅ Live refresh registration (auto-updating card)
@@ -6067,7 +6070,7 @@ if (edited) editCount++;
 // ======================
 else if (meta.type === "metrics_year") {
 const filterSource = meta.ref_id || "all";
-const y = await sbMetricSummary({ source: filterSource, window: "year" });
+const y = await sbMetricSummary({ source: filterSource, window: "year" }).catch(() => ({}));
 const text = buildYearSummaryText(y, filterSource);
 await safeEditMessageText(
 meta.chat_id,
