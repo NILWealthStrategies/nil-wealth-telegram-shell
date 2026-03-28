@@ -7562,15 +7562,72 @@ bot.catch((err, ctx) => {
   }
 });
 
-// Launch with error handling
-bot.launch().catch((err) => {
-  logError("bot.launch", err);
-  // Attempt to gracefully exit instead of silently failing
-  setTimeout(() => {
-    console.error("[FATAL] Bot failed to launch, shutting down");
-    process.exit(1);
-  }, 5000);
-});
+// ========== SMART BOT LAUNCH WITH 409 RETRY LOGIC ==========
+// Handles Telegram 409 Conflict: "terminated by other getUpdates request"
+// This occurs on Render during rolling deploys when old process still holds polling connection
+let botLaunchAttempts = 0;
+const MAX_LAUNCH_RETRIES = 3;
+
+async function launchBotWithRetry(attempt = 1) {
+  try {
+    console.log(`[BOT] Launch attempt ${attempt}/${MAX_LAUNCH_RETRIES}...`);
+    await bot.launch();
+    console.log(`✅ Bot launched successfully on attempt ${attempt}`);
+    botLaunchAttempts = attempt;
+  } catch (err) {
+    const errMsg = String(err?.description || err?.message || "");
+    const errCode = err?.error_code || err?.code;
+    const is409 = errCode === 409 || errMsg.includes("409") || errMsg.includes("Conflict");
+    const isOtherGetUpdates = errMsg.toLowerCase().includes("terminated by other getu");
+    
+    // Log the error with full details
+    console.error(`[ERROR] bot.launch (attempt ${attempt}): ${errMsg}`);
+    if (is409 || isOtherGetUpdates) {
+      console.log(`[DEBUG] 409 Conflict detected: ${errMsg}`);
+      console.log(`[DEBUG] Error code: ${errCode}, Full message: ${JSON.stringify(err)}`);
+    }
+    
+    // Determine if retry is possible
+    const shouldRetry = (is409 || isOtherGetUpdates) && attempt < MAX_LAUNCH_RETRIES;
+    
+    if (shouldRetry) {
+      // Exponential backoff: 15s, 30s, 60s
+      const backoffMs = 15000 * Math.pow(2, attempt - 1);
+      const backoffSec = Math.round(backoffMs / 1000);
+      console.warn(`[WARN] Bot launch conflict (409). Retrying in ${backoffSec}s...`);
+      
+      // Clean up bot state before retry
+      try {
+        await bot.stop("409_retry").catch(() => {});
+      } catch (_) {}
+      
+      // Wait and retry
+      setTimeout(() => {
+        launchBotWithRetry(attempt + 1);
+      }, backoffMs);
+    } else {
+      // Non-409 error or max retries exceeded
+      const isMaxRetriesReached = attempt >= MAX_LAUNCH_RETRIES;
+      const isFatalError = !is409 && !isOtherGetUpdates;
+      
+      if (isMaxRetriesReached) {
+        console.error(`[FATAL] Bot launch failed after ${MAX_LAUNCH_RETRIES} attempts with 409 Conflict`);
+        console.error(`[FATAL] Old process likely still holding polling connection on Render`);
+      } else if (isFatalError) {
+        console.error(`[FATAL] Bot launch failed with non-409 error: ${errMsg}`);
+      }
+      
+      // Force exit after brief delay
+      setTimeout(() => {
+        console.error("[FATAL] Bot failed to launch, shutting down");
+        process.exit(1);
+      }, 5000);
+    }
+  }
+}
+
+// Start initial launch attempt
+launchBotWithRetry(1);
 
 console.log(`Bot running: ${CODE_VERSION}`);
 console.log(`✅ Global protection middleware active`);
