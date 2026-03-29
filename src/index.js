@@ -409,17 +409,31 @@ async function safeAnswerCbQuery(ctx, text = undefined) {
   } catch (_) {}
 }
 
+function fastAckCallback(ctx, text = undefined) {
+  if (!ctx?.update?.callback_query?.id) return;
+  ctx.answerCbQuery(text).catch((err) => {
+    const msg = String(err?.description || err?.message || "");
+    if (
+      !msg.includes("query is too old") &&
+      !msg.includes("QUERY_ID_INVALID") &&
+      !msg.includes("already answered")
+    ) {
+      console.log(`[WARN] fastAckCallback failed: ${msg}`);
+    }
+  });
+}
+
 // Action handler wrapper - ensures callbacks are answered and errors handled
 function safeAction(handler) {
   return async (ctx) => {
     try {
-      // Answer callback query FIRST to stop loading spinner
-      await safeAnswerCbQuery(ctx);
+      // Fire-and-forget callback answer for instant UI feedback
+      fastAckCallback(ctx);
       
       // Run handler with timeout
       await withTimeout(
         handler(ctx),
-        30000,
+        20000,
         "Action took too long - please try again"
       );
     } catch (err) {
@@ -1741,13 +1755,7 @@ const safeText = sanitizeDisplayText(text);
 // stop Telegram spinner when this was a button click
 try {
 if (ctx.update?.callback_query?.id) {
-await ctx.answerCbQuery().catch((err) => {
-// Only log if it's not "query is too old" or "already answered"
-const msg = String(err?.description || err?.message || "");
-if (!msg.includes("query is too old") && !msg.includes("QUERY_ID_INVALID") && !msg.includes("already answered")) {
-console.log(`[WARN] answerCbQuery failed: ${msg}`);
-}
-});
+fastAckCallback(ctx);
 }
 } catch (_) {}
 // try edit-in-place first (clean UI)
@@ -1762,7 +1770,7 @@ undefined,
 safeText,
 keyboard
 ),
-8000,
+3500,
 "Edit message timed out"
 );
 // ✅ CRITICAL: Unregister this card from live refresh to prevent auto-revert
@@ -1783,7 +1791,7 @@ console.log(`[INFO] Edit failed, sending new message: ${msg.substring(0, 60)}`);
 try {
 const msg = await withTimeout(
 ctx.reply(safeText, keyboard),
-8000,
+3500,
 "Send message timed out"
 );
 return { mode: "reply", message_id: msg?.message_id, chat_id: msg?.chat?.id };
@@ -7562,14 +7570,52 @@ bot.catch((err, ctx) => {
   }
 });
 
-// Launch with error handling
-bot.launch().catch((err) => {
-  logError("bot.launch", err);
-  // Attempt to gracefully exit instead of silently failing
-  setTimeout(() => {
-    console.error("[FATAL] Bot failed to launch, shutting down");
-    process.exit(1);
-  }, 5000);
+// Launch with non-fatal retry loop.
+// Keep HTTP/card surfaces alive even if Telegram polling collides (409) during deploy restarts.
+let launchRetryCount = 0;
+let launchRetryTimer = null;
+
+function computeLaunchRetryMs(attempt) {
+  if (attempt <= 1) return 2000;
+  if (attempt <= 3) return 5000;
+  if (attempt <= 6) return 10000;
+  return 15000;
+}
+
+async function startBotPolling() {
+  try {
+    await bot.launch();
+    launchRetryCount = 0;
+    if (launchRetryTimer) {
+      clearTimeout(launchRetryTimer);
+      launchRetryTimer = null;
+    }
+    console.log("[INFO] Telegram polling connected");
+  } catch (err) {
+    const msg = String(err?.description || err?.message || "");
+    const code = Number(err?.response?.error_code || err?.error_code || 0);
+    const is409 = code === 409 || msg.includes("Conflict") || msg.includes("other getUpdates request");
+
+    launchRetryCount += 1;
+    const waitMs = computeLaunchRetryMs(launchRetryCount);
+    const waitSec = Math.round(waitMs / 1000);
+
+    if (is409) {
+      console.warn(`[WARN] Telegram polling conflict (409). Retry ${launchRetryCount} in ${waitSec}s`);
+    } else {
+      logError("bot.launch", err);
+      console.warn(`[WARN] Telegram launch failed. Retry ${launchRetryCount} in ${waitSec}s`);
+    }
+
+    if (launchRetryTimer) clearTimeout(launchRetryTimer);
+    launchRetryTimer = setTimeout(() => {
+      startBotPolling().catch(() => {});
+    }, waitMs);
+  }
+}
+
+startBotPolling().catch((err) => {
+  logError("startBotPolling", err);
 });
 
 console.log(`Bot running: ${CODE_VERSION}`);
