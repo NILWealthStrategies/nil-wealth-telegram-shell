@@ -134,6 +134,9 @@ const ENABLE_TELEGRAM_BOT =
 String(process.env.ENABLE_TELEGRAM_BOT || "true").toLowerCase() !== "false";
 const ENABLE_TELEGRAM_LIVE_REFRESH =
 String(process.env.ENABLE_TELEGRAM_LIVE_REFRESH || "true").toLowerCase() !== "false";
+const ENABLE_PERF_LOGS =
+String(process.env.ENABLE_PERF_LOGS || "false").toLowerCase() === "true";
+const PERF_LOG_WARN_MS = Number(process.env.PERF_LOG_WARN_MS || 1200);
 // NY time
 const NY_TZ = "America/New_York";
 // ---------- GUARDS ----------
@@ -207,6 +210,18 @@ function withTimeout(promise, timeoutMs = 25000, errorMsg = "Operation timed out
   return Promise.race([promise, timeoutPromise]).finally(() => {
     if (timeoutId) clearTimeout(timeoutId);
   });
+}
+
+async function trackPerf(label, fn, { warnMs = PERF_LOG_WARN_MS } = {}) {
+  const startedAt = Date.now();
+  try {
+    return await fn();
+  } finally {
+    const durationMs = Date.now() - startedAt;
+    if (ENABLE_PERF_LOGS || durationMs >= warnMs) {
+      console.log(`[PERF] ${label} ${durationMs}ms`);
+    }
+  }
 }
 
 async function postJsonWebhook(url, payload, { timeoutMs = WEBHOOK_TIMEOUT_MS, headers = {} } = {}) {
@@ -1840,20 +1855,44 @@ const { dayKey, time } = nyParts(new Date());
 const filterLabel =
 filterSource === "support" ? "🧑‍🧒 Support" : filterSource === "programs" ? "🏈 Programs" :
 "🌐 All";
+const [
+handoffCount,
+urgentCount,
+needsReplyCount,
+waitingCount,
+activeCount,
+forwardedCount,
+followCount,
+completedCount,
+submissionsCount,
+callsCount,
+lastIngestAt,
+] = await trackPerf(`dashboard.counts.${filterSource}`, () => Promise.all([
+sbCountHandoffPending({ source: filterSource }),
+sbCountUrgentAuto({ source: filterSource }),
+sbCountNeedsReplyNonUrgent({ source: filterSource }),
+sbCountConversations({ pipeline: "actions_waiting", source: filterSource }),
+sbCountConversations({ pipeline: "active", source: filterSource }),
+sbCountConversations({ pipeline: "forwarded", source: filterSource }),
+sbCountConversations({ pipeline: "followups", source: filterSource }),
+sbCountConversations({ pipeline: "completed", source: filterSource }),
+sbCountSubmissions(),
+sbCountCalls(),
+sbGetLastOpsEventTimestamp(),
+]));
+
 const counts = {
-handoffCount: await sbCountHandoffPending({ source: filterSource }),
-urgentCount: await sbCountUrgentAuto({ source: filterSource }),
-needsReplyCount: await sbCountNeedsReplyNonUrgent({ source: filterSource }),
-waitingCount: await sbCountConversations({ pipeline: "actions_waiting", source: filterSource
-}),
-activeCount: await sbCountConversations({ pipeline: "active", source: filterSource }),
-forwardedCount: await sbCountConversations({ pipeline: "forwarded", source: filterSource }),
-followCount: await sbCountConversations({ pipeline: "followups", source: filterSource }),
-completedCount: await sbCountConversations({ pipeline: "completed", source: filterSource }),
-submissionsCount: await sbCountSubmissions(),
-callsCount: await sbCountCalls(),
+handoffCount,
+urgentCount,
+needsReplyCount,
+waitingCount,
+activeCount,
+forwardedCount,
+followCount,
+completedCount,
+submissionsCount,
+callsCount,
 };
-const lastIngestAt = await sbGetLastOpsEventTimestamp();
 const staleWarning = (() => {
 if (!lastIngestAt) return "⚠️ Data may be stale · Last ingest: none yet";
 const ts = new Date(lastIngestAt).getTime();
@@ -1876,7 +1915,10 @@ followCount: capQueueCount(counts.followCount, MAX_QUEUE_DISPLAY),
 callsCount: capQueueCount(counts.callsCount, MAX_QUEUE_DISPLAY),
 completedCount: capQueueCount(counts.completedCount, MAX_QUEUE_DISPLAY),
 };
-const m = await sbMetricSummary({ source: filterSource, window: "all" }).catch(() => ({}));
+const m = await trackPerf(
+`dashboard.metrics.${filterSource}`,
+() => sbMetricSummary({ source: filterSource, window: "all" }).catch(() => ({}))
+);
 return buildDashboardText({
 codeVersion: CODE_VERSION,
 buildVersion: BUILD_VERSION,
@@ -2158,13 +2200,17 @@ await ctx.reply(buildOpsHealthText(summary));
 bot.action("DASH:back", safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const filterSource = getAdminFilter(ctx);
+await trackPerf(`handler.dashboard.back.${filterSource}`, async () => {
 await smartRender(ctx, await dashboardText(filterSource), dashboardKeyboardV50());
+});
 }));
 
 bot.action("DASH:refresh", safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const filterSource = getAdminFilter(ctx);
+await trackPerf(`handler.dashboard.refresh.${filterSource}`, async () => {
 await smartRender(ctx, await dashboardText(filterSource), dashboardKeyboardV50());
+});
 }));
 
 // ---------- FILTER ----------
@@ -2190,11 +2236,11 @@ if (!isAdmin(ctx)) return;
 
 const filterSource = getAdminFilter(ctx);
 const roleFilter = getAdminRoleFilter(ctx);
-const msg = await smartRender(
+const msg = await trackPerf(`handler.allq.open.${filterSource}.${roleFilter}`, async () => smartRender(
 ctx,
 await allQueuesText(filterSource, roleFilter),
 allQueuesKeyboard(filterSource)
-);
+));
 // Optional: track as live card (queue list)
 if (msg?.message_id) {
 registerLiveCard(msg, {
@@ -2219,9 +2265,9 @@ if (viewKey === "website_submissions") {
 const pageSize = 5;
 const offset = (page - 1) * pageSize;
 // Get total count + page of data
-const { data: allSubs, error: countErr } = await ops()
+const { count: totalCount, error: countErr } = await trackPerf("view.website_submissions.count", () => ops()
 .from("submissions")
-.select("submission_id", { count: "exact", head: false });
+.select("submission_id", { count: "exact", head: true }));
 if (countErr) {
 logError("VIEW:website_submissions count", countErr);
 return smartRender(
@@ -2230,11 +2276,11 @@ buildLoadWarning("submission queue count", countErr),
 Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "ALLQ:open")]])
 );
 }
-const totalCount = allSubs?.length || 0;
-const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+const safeTotalCount = totalCount || 0;
+const totalPages = Math.max(1, Math.ceil(safeTotalCount / pageSize));
 const currentPage = Math.min(page, totalPages);
   
-const subs = await sbListSubmissions({ limit: pageSize, offset });
+const subs = await trackPerf("view.website_submissions.list", () => sbListSubmissions({ limit: pageSize, offset }));
 const lineForSub = (s, idx) => {
 const p = s.submission_payload || {};
 const name = [p.first_name, p.last_name].filter(Boolean).join(" ") || "—";
@@ -2248,7 +2294,7 @@ const shortId = idShort(s.submission_id);
 return `${offset + idx + 1}. ${name} • ${state}\n   ${athlete} • ${cov}\n   ID: ${shortId}`;
 };
 
-const pageInfo = `Page ${currentPage}/${totalPages} (${totalCount} total)`;
+const pageInfo = `Page ${currentPage}/${totalPages} (${safeTotalCount} total)`;
 const lines = subs.length ? subs.map(lineForSub).join("\n\n") : "No submissions.";
 // Just navigation buttons, no individual open buttons
 const kb = [];
@@ -4421,9 +4467,9 @@ const pageSize = 5;
 const offset = (page - 1) * pageSize;
 
 // Get total count for this bucket
-const { data: allClients, error: allClientsErr } = await ops()
+const { count: totalCount, error: allClientsErr } = await trackPerf(`clients.list.${bucket}.count`, () => ops()
 .from("people")
-.select("client_id", { count: "exact", head: false });
+.select("client_id", { count: "exact", head: true }));
 if (allClientsErr) {
 logError("CLIENTS:list count", allClientsErr);
 return smartRender(
@@ -4432,11 +4478,11 @@ buildLoadWarning("client counts", allClientsErr),
 Markup.inlineKeyboard([[Markup.button.callback("⬅ Clients", "CLIENTS:open")]])
 );
 }
-const totalCount = allClients?.length || 0;
-const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+const safeTotalCount = totalCount || 0;
+const totalPages = Math.max(1, Math.ceil(safeTotalCount / pageSize));
 const currentPage = Math.min(page, totalPages);
 
-const rows = await sbListClients({ bucket, limit: pageSize, offset });
+const rows = await trackPerf(`clients.list.${bucket}.rows`, () => sbListClients({ bucket, limit: pageSize, offset }));
 const title =
 bucket === "needs_reply" ? "📝 Clients · Awaiting Reply"
 : bucket === "active" ? "💬 Clients · Active"
@@ -4444,8 +4490,8 @@ bucket === "needs_reply" ? "📝 Clients · Awaiting Reply"
 : bucket === "new_month" ? "🆕 Clients · New This Month"
 : bucket === "recent" ? "🕘 Clients · Recent"
 : "📜 Clients · History";
-const endItem = Math.min(offset + rows.length, totalCount);
-const pageInfo = `Page ${currentPage}/${totalPages} • Items ${endItem}/${totalCount}`;
+const endItem = Math.min(offset + rows.length, safeTotalCount);
+const pageInfo = `Page ${currentPage}/${totalPages} • Items ${endItem}/${safeTotalCount}`;
 const body = rows?.length
 ? rows.map((c, idx) => {
 const nm = c.primary_name || c.name || "—";
@@ -4574,9 +4620,9 @@ const pageSize = 5;
 const offset = (page - 1) * pageSize;
 
 // Get total count
-const { data: allThreads, error: allThreadsErr } = await ops()
+const { count: totalCount, error: allThreadsErr } = await trackPerf(`client.threads.${clientId}.count`, () => ops()
 .from("conversations")
-.select("id", { count: "exact", head: false });
+.select("id", { count: "exact", head: true }));
 if (allThreadsErr) {
 logError("CLIENT:threads count", allThreadsErr);
 return smartRender(
@@ -4585,14 +4631,14 @@ buildLoadWarning("thread counts", allThreadsErr),
 Markup.inlineKeyboard([[Markup.button.callback("⬅ Client", `CLIENT:${clientId}`)]])
 );
 }
-const totalCount = allThreads?.length || 0;
-const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+const safeTotalCount = totalCount || 0;
+const totalPages = Math.max(1, Math.ceil(safeTotalCount / pageSize));
 const currentPage = Math.min(page, totalPages);
 
-const threads = await sbListClientThreads(clientId, pageSize, offset);
+const threads = await trackPerf(`client.threads.${clientId}.rows`, () => sbListClientThreads(clientId, pageSize, offset));
 const title = `🧵 Threads · ${idShort(clientId)}`;
-const endItem = Math.min(offset + threads.length, totalCount);
-const pageInfo = `Page ${currentPage}/${totalPages} • Items ${endItem}/${totalCount}`;
+const endItem = Math.min(offset + threads.length, safeTotalCount);
+const pageInfo = `Page ${currentPage}/${totalPages} • Items ${endItem}/${safeTotalCount}`;
 const body = threads?.length
 ? threads.map((t, idx) => {
 const pipe = t.pipeline || "active";
@@ -4642,9 +4688,9 @@ const pageSize = 5;
 const offset = (page - 1) * pageSize;
 
 // Get total count
-const { data: allSubs, error: allSubsErr } = await ops()
+const { count: totalCount, error: allSubsErr } = await trackPerf(`client.subs.${clientId}.count`, () => ops()
 .from("submissions")
-.select("submission_id", { count: "exact", head: false });
+.select("submission_id", { count: "exact", head: true }));
 if (allSubsErr) {
 logError("CLIENT:subs count", allSubsErr);
 return smartRender(
@@ -4653,14 +4699,14 @@ buildLoadWarning("submission counts", allSubsErr),
 Markup.inlineKeyboard([[Markup.button.callback("⬅ Client", `CLIENT:${clientId}`)]])
 );
 }
-const totalCount = allSubs?.length || 0;
-const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+const safeTotalCount = totalCount || 0;
+const totalPages = Math.max(1, Math.ceil(safeTotalCount / pageSize));
 const currentPage = Math.min(page, totalPages);
 
-const subs = await sbListClientSubmissions(clientId, pageSize, offset);
+const subs = await trackPerf(`client.subs.${clientId}.rows`, () => sbListClientSubmissions(clientId, pageSize, offset));
 const title = `🧾 Submissions · ${idShort(clientId)}`;
-const endItem = Math.min(offset + subs.length, totalCount);
-const pageInfo = `Page ${currentPage}/${totalPages} • Items ${endItem}/${totalCount}`;
+const endItem = Math.min(offset + subs.length, safeTotalCount);
+const pageInfo = `Page ${currentPage}/${totalPages} • Items ${endItem}/${safeTotalCount}`;
 const body = subs?.length
 ? subs.map((s, idx) => {
 const sid = s.submission_id || "—";
@@ -4904,9 +4950,9 @@ const pageSize = 5;
 const offset = (page - 1) * pageSize;
   
 // Get total count
-const { data: allCalls, error: countErr } = await ops()
+const { count: totalCount, error: countErr } = await trackPerf("calls.hub.count", () => ops()
 .from("calls")
-.select("id", { count: "exact", head: false });
+.select("id", { count: "exact", head: true }));
 if (countErr) {
 logError("CALLS:hub count", countErr);
 return smartRender(
@@ -4915,13 +4961,13 @@ buildLoadWarning("call counts", countErr),
 Markup.inlineKeyboard([[Markup.button.callback("⬅ Dashboard", "DASH:back")]])
 );
 }
-const totalCount = allCalls?.length || 0;
-const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+const safeTotalCount = totalCount || 0;
+const totalPages = Math.max(1, Math.ceil(safeTotalCount / pageSize));
 const currentPage = Math.min(page, totalPages);
   
-const calls = await sbListCalls({ limit: pageSize, offset });
-const endItem = Math.min(offset + calls.length, totalCount);
-const pageInfo = `Page ${currentPage}/${totalPages} • Items ${endItem}/${totalCount}`;
+const calls = await trackPerf("calls.hub.rows", () => sbListCalls({ limit: pageSize, offset }));
+const endItem = Math.min(offset + calls.length, safeTotalCount);
+const pageInfo = `Page ${currentPage}/${totalPages} • Items ${endItem}/${safeTotalCount}`;
 const body = calls.length ? calls.map(callSummaryLine).join("\n") + "\n──────────────────────" : "No calls found.";
 // Just navigation buttons, no individual open buttons
 const kb = [];
