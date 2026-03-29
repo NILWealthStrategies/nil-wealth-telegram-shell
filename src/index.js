@@ -7394,8 +7394,54 @@ ctx.reply("❌ An error occurred. Try /dashboard to refresh.").catch(() => {});
 } catch (_) {}
 });
 
-bot.launch().catch((err) => {
-logError("bot.launch", err);
+let botLaunchRetryCount = 0;
+let botLaunchRetryTimer = null;
+let botLaunching = false;
+
+function botLaunchBackoffMs(attempt) {
+  if (attempt <= 1) return 2000;
+  if (attempt <= 3) return 5000;
+  if (attempt <= 8) return 10000;
+  return 15000;
+}
+
+async function startBotLaunchLoop() {
+  if (botLaunching) return;
+  botLaunching = true;
+  try {
+    await bot.launch();
+    botLaunchRetryCount = 0;
+    if (botLaunchRetryTimer) {
+      clearTimeout(botLaunchRetryTimer);
+      botLaunchRetryTimer = null;
+    }
+    console.log("[INFO] Telegram bot connected");
+  } catch (err) {
+    const msg = String(err?.description || err?.message || "");
+    const code = Number(err?.response?.error_code || err?.error_code || 0);
+    const is409 = code === 409 || msg.includes("Conflict") || msg.includes("other getUpdates request");
+    botLaunchRetryCount += 1;
+    const waitMs = botLaunchBackoffMs(botLaunchRetryCount);
+    const waitSec = Math.round(waitMs / 1000);
+
+    if (is409) {
+      console.warn(`[WARN] Telegram launch conflict (409). Retrying in ${waitSec}s (attempt ${botLaunchRetryCount})`);
+    } else {
+      logError("bot.launch", err);
+      console.warn(`[WARN] Telegram launch failed. Retrying in ${waitSec}s (attempt ${botLaunchRetryCount})`);
+    }
+
+    if (botLaunchRetryTimer) clearTimeout(botLaunchRetryTimer);
+    botLaunchRetryTimer = setTimeout(() => {
+      startBotLaunchLoop().catch(() => {});
+    }, waitMs);
+  } finally {
+    botLaunching = false;
+  }
+}
+
+startBotLaunchLoop().catch((err) => {
+  logError("startBotLaunchLoop", err);
 });
 console.log(`Bot running: ${CODE_VERSION}`);
 console.log(`✅ Global protection middleware active`);
