@@ -5620,7 +5620,9 @@ if (await blockInstantlyManagedAction(ctx, conv, convId, "Manual send")) return;
 // Determine send mode(s) based on conversation state
 const isSupport = conv.source === "support";
 const isCCd = conv.cc_support_suggested === true;
-const isLockedToSupport = isSupport || isCCd;
+const isFollowupPipeline = String(conv.pipeline || "").toLowerCase() === "followups";
+// Follow-up due items can still be sent as outreach unless the conversation is truly support-lane.
+const isLockedToSupport = isSupport || (isCCd && !isFollowupPipeline);
 
 // If locked to one mode, skip the choice
 if (isLockedToSupport) {
@@ -5642,7 +5644,10 @@ Markup.button.callback("📤 Send as Support", `CONFIRMSEND:${convId}:${useDraft
 ],
 [Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)],
 ]);
-await smartRender(ctx, `📤 Send Draft\n\nChoose sending lane:\n\n(Outreach selected by default. Use Support only if CC is enabled manually.)`, kb);
+const followupHint = isFollowupPipeline
+? "\n\nTimed follow-up: outreach remains available for continuity."
+: "";
+await smartRender(ctx, `📤 Send Draft\n\nChoose sending lane:\n\n(Outreach selected by default. Use Support only if CC is enabled manually.)${followupHint}`, kb);
 }
 }));
 // ===============================
