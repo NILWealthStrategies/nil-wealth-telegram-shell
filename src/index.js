@@ -7562,34 +7562,42 @@ bot.catch((err, ctx) => {
   }
 });
 
-// Launch bot with simple retry on 409 Conflict
+// Launch bot with infinite retry on 409 Conflict (non-blocking)
 let botLaunchRetries = 0;
-function launchBot() {
-  bot.launch().catch((err) => {
+let botConnected = false;
+
+function launchBotWithRetry() {
+  bot.launch().then(() => {
+    botConnected = true;
+    botLaunchRetries = 0;
+    console.log("✅ Bot connected successfully");
+  }).catch((err) => {
     const errMsg = String(err?.message || err?.description || "");
     const errCode = err?.error_code;
     const is409 = errCode === 409 || errMsg.includes("Conflict");
     
-    logError("bot.launch", err);
-    
-    // Retry on 409 Conflict up to 3 times with short delays
-    if (is409 && botLaunchRetries < 3) {
-      botLaunchRetries++;
-      const delayMs = 3000 * botLaunchRetries; // 3s, 6s, 9s
-      console.warn(`[WARN] 409 Conflict detected. Retrying in ${delayMs / 1000}s (attempt ${botLaunchRetries + 1}/4)...`);
-      setTimeout(launchBot, delayMs);
-      return;
+    if (!botConnected) {
+      logError("bot.launch", err);
     }
     
-    // Non-409 error or max retries - exit
-    setTimeout(() => {
-      console.error("[FATAL] Bot failed to launch, shutting down");
-      process.exit(1);
-    }, 5000);
+    // Exponential backoff: 2s, 4s, 8s, 16s, 30s, 60s, 120s, then cap at 120s
+    botLaunchRetries++;
+    const maxBackoff = 120000; // 2 minutes max
+    const backoffMs = Math.min(2000 * Math.pow(2, Math.min(botLaunchRetries - 1, 3)), maxBackoff);
+    const backoffSec = Math.round(backoffMs / 1000);
+    
+    if (is409) {
+      console.warn(`[WARN] 409 Conflict (attempt ${botLaunchRetries}). Retrying in ${backoffSec}s...`);
+    } else {
+      console.warn(`[WARN] Bot launch error (attempt ${botLaunchRetries}): ${errMsg.substring(0, 60)}. Retrying in ${backoffSec}s...`);
+    }
+    
+    // Retry without exiting
+    setTimeout(launchBotWithRetry, backoffMs);
   });
 }
 
-launchBot();
+launchBotWithRetry();
 
 console.log(`Bot running: ${CODE_VERSION}`);
 console.log(`✅ Global protection middleware active`);
