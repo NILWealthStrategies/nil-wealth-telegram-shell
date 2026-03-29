@@ -1941,7 +1941,7 @@ Markup.button.callback("🧑‍🧒 Support", "FILTER:support"),
 ],
 // Row 2 (nav)
 [
-Markup.button.callback("🗂 All Queues", "ALLQ:open"),
+Markup.button.callback("🗂 Queues", "ALLQ:open"),
 Markup.button.callback("⚡️ Triage", "TRIAGE:open"),
 Markup.button.callback("🔎 Search", "SEARCH:help"),
 
@@ -1962,50 +1962,28 @@ function allQueuesKeyboard(filterSource = "all") {
 if (filterSource === "programs") {
 return Markup.inlineKeyboard([
 [
-Markup.button.callback("Role: All", "ROLEFILTER:all"),
-Markup.button.callback("Parent", "ROLEFILTER:parent"),
-Markup.button.callback("Athlete", "ROLEFILTER:athlete"),
-],
-[
-Markup.button.callback("Coach", "ROLEFILTER:coach"),
-Markup.button.callback("Trainer", "ROLEFILTER:trainer"),
-Markup.button.callback("Other", "ROLEFILTER:other"),
-],
-[
 Markup.button.callback("🤖 Instantly Threads", "VIEW:active"),
 Markup.button.callback("📌 Loop in Support", "HANDOFF:open"),
 ],
+[Markup.button.callback("⬅ Dashboard", "DASH:back")],
+]);
+}
+
+if (filterSource === "support") {
+return Markup.inlineKeyboard([
 [
 Markup.button.callback("‼️ Urgent", "VIEW:urgent"),
 Markup.button.callback("📝 Needs Reply", "VIEW:needs_reply"),
 ],
 [
-Markup.button.callback("📚 Follow-Ups", "VIEW:followups"),
-Markup.button.callback("🌊 Pools", "POOLS:open"),
-],
-[
-Markup.button.callback("👥 Clients", "CLIENTS:open"),
-Markup.button.callback("📱 Calls", "CALLS:hub"),
-],
-[
-Markup.button.callback("🧾 Submissions", "VIEW:website_submissions"),
-Markup.button.callback("✅ Completed", "VIEW:completed"),
+Markup.button.callback("⏳ Waiting", "VIEW:actions_waiting"),
+Markup.button.callback("💬 Active", "VIEW:active"),
 ],
 [Markup.button.callback("⬅ Dashboard", "DASH:back")],
 ]);
 }
 
 return Markup.inlineKeyboard([
-[
-Markup.button.callback("Role: All", "ROLEFILTER:all"),
-Markup.button.callback("Parent", "ROLEFILTER:parent"),
-Markup.button.callback("Athlete", "ROLEFILTER:athlete"),
-],
-[
-Markup.button.callback("Coach", "ROLEFILTER:coach"),
-Markup.button.callback("Trainer", "ROLEFILTER:trainer"),
-Markup.button.callback("Other", "ROLEFILTER:other"),
-],
 [
 Markup.button.callback("‼️ Urgent", "VIEW:urgent"),
 Markup.button.callback("📝 Needs Reply", "VIEW:needs_reply"),
@@ -2235,7 +2213,8 @@ bot.action("ALLQ:open", safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 
 const filterSource = getAdminFilter(ctx);
-const roleFilter = getAdminRoleFilter(ctx);
+setAdminRoleFilter(ctx, "all");
+const roleFilter = "all";
 const msg = await trackPerf(`handler.allq.open.${filterSource}.${roleFilter}`, async () => smartRender(
 ctx,
 await allQueuesText(filterSource, roleFilter),
@@ -2259,7 +2238,7 @@ if (!isAdmin(ctx)) return;
 const viewKey = ctx.match[1];
 const page = parseInt(ctx.match[2]) || 1;
 const filterSource = getAdminFilter(ctx);
-const roleFilter = getAdminRoleFilter(ctx);
+const roleFilter = "all";
 try {
 if (viewKey === "website_submissions") {
 const pageSize = 5;
@@ -3703,7 +3682,7 @@ pageItems.forEach((conv) => {
   kb.push([Markup.button.callback(tConvoBtnLabelTriage(conv), `OPENCARD:${conv.id}`)]);
 });
 
-kb.push([Markup.button.callback("⬅ All Queues", "ALLQ:open")]);
+kb.push([Markup.button.callback("⬅ Queues", "ALLQ:open")]);
 kb.push([Markup.button.callback("⬅ Dashboard", "DASH:back")]);
 
 const msg = await smartRender(ctx, lines.join("\n\n"), Markup.inlineKeyboard(kb));
@@ -4120,7 +4099,7 @@ ${dayKey} • ${time}
 --`;
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("⚡️ Triage", "TRIAGE:open")],
-[Markup.button.callback("📱 Calls", "CALLS:hub"), Markup.button.callback("🗂 All Queues", "ALLQ:open")],
+[Markup.button.callback("📱 Calls", "CALLS:hub"), Markup.button.callback("🗂 Queues", "ALLQ:open")],
 [Markup.button.callback("🔎 Search", "SEARCH:help"), Markup.button.callback("🕘 Recent", "SEARCH:recent")],
 [Markup.button.callback("⬅ Dashboard", "DASH:back")],
 ]);

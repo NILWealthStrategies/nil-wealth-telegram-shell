@@ -66,7 +66,7 @@ function viewTitle(key) {
     calls: "📱 Calls",
     today: "📅 Today",
     triage: "⚡️ Triage",
-    all_queues: "🗂 All Queues",
+    all_queues: "🗂 Queues",
     clients: "👥 Clients",
     pools: "🌊 Pools",
   };

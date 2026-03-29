@@ -1,6 +1,5 @@
 "use strict";
 
-const { roleFilterLabel } = require("./core-utils");
 const {
   formatCappedQueueLabel,
   headerLine,
@@ -36,9 +35,9 @@ function allQueuesText(filterSource = "all", roleFilter = "all") {
         : "🌐 All";
   const laneHint =
     filterSource === "programs"
-      ? "Programs lane shows Instantly threads, handoffs, follow-ups, pools, and client activity."
+      ? "Programs lane shows Instantly threads and support handoff queue."
       : "Tap a queue below to open it.";
-  return `${headerLine("all_queues", filterLabel)} · ${roleFilterLabel(roleFilter)}
+  return `${headerLine("all_queues", filterLabel)}
 ${laneHint}`;
 }
 
@@ -70,7 +69,7 @@ ${codeVersion} • Build: ${String(buildVersion).slice(0, 8)}
 ⏰ NY Time: ${time}
 🧮 Filter: ${filterLabel}
 ${staleBlock}
-🗂 ALL QUEUES
+🗂 QUEUES
 ${capped.handoffCount?.displayCount > 0 ? `${formatCappedQueueLabel("📌 Loop in Support", capped.handoffCount)}\n` : ""}${formatCappedQueueLabel("‼️ Urgent", capped.urgentCount)}
 ${formatCappedQueueLabel("📝 Needs Reply", capped.needsReplyCount)}
 ${formatCappedQueueLabel("⏳ Waiting", capped.waitingCount)}
