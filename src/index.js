@@ -333,12 +333,26 @@ async function safeAnswerCbQuery(ctx, text = undefined) {
   } catch (_) {}
 }
 
+function fastAnswerCbQuery(ctx, text = undefined) {
+  if (!ctx?.update?.callback_query?.id) return;
+  ctx.answerCbQuery(text).catch((err) => {
+    const msg = String(err?.description || err?.message || "");
+    if (
+      !msg.includes("query is too old") &&
+      !msg.includes("QUERY_ID_INVALID") &&
+      !msg.includes("already answered")
+    ) {
+      console.log(`[WARN] fastAnswerCbQuery failed: ${msg}`);
+    }
+  });
+}
+
 // Action handler wrapper - ensures callbacks are answered and errors handled
 function safeAction(handler) {
   return async (ctx) => {
     try {
-      // Answer callback query FIRST to stop loading spinner
-      await safeAnswerCbQuery(ctx);
+      // Answer callback query immediately without blocking handler.
+      fastAnswerCbQuery(ctx);
       
       // Run handler with timeout
       await withTimeout(
@@ -1665,13 +1679,7 @@ const safeText = sanitizeDisplayText(text);
 // stop Telegram spinner when this was a button click
 try {
 if (ctx.update?.callback_query?.id) {
-await ctx.answerCbQuery().catch((err) => {
-// Only log if it's not "query is too old" or "already answered"
-const msg = String(err?.description || err?.message || "");
-if (!msg.includes("query is too old") && !msg.includes("QUERY_ID_INVALID") && !msg.includes("already answered")) {
-console.log(`[WARN] answerCbQuery failed: ${msg}`);
-}
-});
+fastAnswerCbQuery(ctx);
 }
 } catch (_) {}
 // try edit-in-place first (clean UI)
@@ -7375,7 +7383,11 @@ if (middlewareTimeoutId) clearTimeout(middlewareTimeoutId);
 
 // Global error handler for bot actions/commands
 bot.catch((err, ctx) => {
-console.error(`[BOT ERROR] Update ${ctx.update.update_id}:`, err);
+if (!ctx) {
+  console.error("[BOT ERROR] No context:", err?.message || String(err));
+  return;
+}
+console.error(`[BOT ERROR] Update ${ctx?.update?.update_id || "unknown"}:`, err);
 logError("bot.middleware", err);
 try {
 // Try to answer callback query if not already answered
@@ -7409,6 +7421,8 @@ async function startBotLaunchLoop() {
   if (botLaunching) return;
   botLaunching = true;
   try {
+    // Ensure polling mode isn't blocked by stale webhook configuration.
+    await bot.telegram.deleteWebhook({ drop_pending_updates: false }).catch(() => {});
     await bot.launch();
     botLaunchRetryCount = 0;
     if (botLaunchRetryTimer) {
