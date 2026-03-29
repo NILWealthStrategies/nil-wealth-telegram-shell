@@ -146,49 +146,7 @@ throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
 // ---------- CLIENTS ----------
 const bot = new Telegraf(BOT_TOKEN);
 const app = express();
-
-// ========== GLOBAL EXPRESS MIDDLEWARE ==========
-// Request size and JSON parsing
 app.use(express.json({ limit: "1mb" }));
-
-// Request timeout protection
-app.use((req, res, next) => {
-  res.setTimeout(30000); // 30 second timeout for all requests
-  next();
-});
-
-// Comprehensive error logging middleware
-app.use((req, res, next) => {
-  const originalJson = res.json.bind(res);
-  res.json = function(body) {
-    if (!res.headersSent) {
-      res.setHeader("X-Service-Version", CODE_VERSION);
-    }
-    return originalJson(body);
-  };
-  next();
-});
-
-// Request validation middleware
-app.use((req, res, next) => {
-  // Protect against missing/malformed request body
-  if (req.method !== "GET" && req.method !== "HEAD") {
-    if (!req.body || typeof req.body !== "object") {
-      req.body = {};
-    }
-  }
-  next();
-});
-
-// Catch unhandled JSON parsing errors
-app.use((err, req, res, next) => {
-  if (err instanceof SyntaxError && "body" in err) {
-    console.error("[SECURITY] Invalid JSON received:", err.message);
-    return res.status(400).json({ ok: false, error: "Invalid JSON in request body" });
-  }
-  next(err);
-});
-
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 auth: { persistSession: false },
 });
@@ -291,40 +249,6 @@ async function postJsonWebhook(url, payload, { timeoutMs = WEBHOOK_TIMEOUT_MS, h
   }
 }
 
-// Retry wrapper for critical webhook operations
-async function postJsonWebhookWithRetry(url, payload, { maxRetries = 3, timeoutMs = WEBHOOK_TIMEOUT_MS, headers = {} } = {}) {
-  if (!url) {
-    return { ok: false, status: 503, error: "webhook_url_not_configured", bodyText: "", attempts: 0 };
-  }
-
-  let lastError = null;
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const result = await postJsonWebhook(url, payload, { timeoutMs, headers });
-      if (result.ok || attempt === maxRetries) {
-        return { ...result, attempts: attempt };
-      }
-      // Exponential backoff: 100ms, 200ms, 400ms
-      const backoffMs = Math.min(100 * Math.pow(2, attempt - 1), 1000);
-      await new Promise(resolve => setTimeout(resolve, backoffMs));
-    } catch (err) {
-      lastError = err;
-      if (attempt < maxRetries) {
-        const backoffMs = Math.min(100 * Math.pow(2, attempt - 1), 1000);
-        await new Promise(resolve => setTimeout(resolve, backoffMs));
-      }
-    }
-  }
-  
-  return {
-    ok: false,
-    status: 504,
-    error: String(lastError?.message || "webhook failed after retries"),
-    bodyText: "",
-    attempts: maxRetries,
-  };
-}
-
 function validateOutboundPayload(payload, options = {}) {
   const {
     requireConversationId = true,
@@ -409,31 +333,17 @@ async function safeAnswerCbQuery(ctx, text = undefined) {
   } catch (_) {}
 }
 
-function fastAckCallback(ctx, text = undefined) {
-  if (!ctx?.update?.callback_query?.id) return;
-  ctx.answerCbQuery(text).catch((err) => {
-    const msg = String(err?.description || err?.message || "");
-    if (
-      !msg.includes("query is too old") &&
-      !msg.includes("QUERY_ID_INVALID") &&
-      !msg.includes("already answered")
-    ) {
-      console.log(`[WARN] fastAckCallback failed: ${msg}`);
-    }
-  });
-}
-
 // Action handler wrapper - ensures callbacks are answered and errors handled
 function safeAction(handler) {
   return async (ctx) => {
     try {
-      // Fire-and-forget callback answer for instant UI feedback
-      fastAckCallback(ctx);
+      // Answer callback query FIRST to stop loading spinner
+      await safeAnswerCbQuery(ctx);
       
       // Run handler with timeout
       await withTimeout(
         handler(ctx),
-        20000,
+        30000,
         "Action took too long - please try again"
       );
     } catch (err) {
@@ -1755,7 +1665,13 @@ const safeText = sanitizeDisplayText(text);
 // stop Telegram spinner when this was a button click
 try {
 if (ctx.update?.callback_query?.id) {
-fastAckCallback(ctx);
+await ctx.answerCbQuery().catch((err) => {
+// Only log if it's not "query is too old" or "already answered"
+const msg = String(err?.description || err?.message || "");
+if (!msg.includes("query is too old") && !msg.includes("QUERY_ID_INVALID") && !msg.includes("already answered")) {
+console.log(`[WARN] answerCbQuery failed: ${msg}`);
+}
+});
 }
 } catch (_) {}
 // try edit-in-place first (clean UI)
@@ -1770,7 +1686,7 @@ undefined,
 safeText,
 keyboard
 ),
-3500,
+8000,
 "Edit message timed out"
 );
 // ✅ CRITICAL: Unregister this card from live refresh to prevent auto-revert
@@ -1791,7 +1707,7 @@ console.log(`[INFO] Edit failed, sending new message: ${msg.substring(0, 60)}`);
 try {
 const msg = await withTimeout(
 ctx.reply(safeText, keyboard),
-3500,
+8000,
 "Send message timed out"
 );
 return { mode: "reply", message_id: msg?.message_id, chat_id: msg?.chat?.id };
@@ -6285,88 +6201,68 @@ return convo.id;
 // ---------- CANONICAL OPS INGEST: /ops/ingest (v5.3 CLEAN) ----------
 app.post("/ops/ingest", async (req, res) => {
 try {
-  // Validate auth first
-  if (!verifyOpsIngestAuth(req)) {
-    return res.status(401).json({ ok: false, error: "Unauthorized" });
-  }
-  
-  // Validate request body
-  const b = req.body;
-  if (!b || typeof b !== "object") {
-    return res.status(400).json({ ok: false, error: "Request body must be JSON object" });
-  }
-  
-  const nowIso = new Date().toISOString();
-  // ---- normalize canonical envelope ----
-  const schema_version = b.schema_version || "5.3";
-  let event_type = String(b.event_type || "unknown.event").trim();
-  const source = String(b.source || "unknown").trim();
-  const direction = String(b.direction || "inbound").trim();
-  const trace_id = String(b.trace_id || uuidv4()).trim();
-  let idempotency_key = b.idempotency_key ? String(b.idempotency_key).trim() : null;
-  const entity_type = b.entity_type ? String(b.entity_type).trim() : null;
-  const entity_id = b.entity_id ? String(b.entity_id).trim() : null;
-  const submission_id = (b.submission_id || b.payload?.submission_id || b.payload?.submissionId || "").toString().trim() || null;
-  const client_email = (b.client?.email || b.client_email || "").toString().trim() || null;
-  const client_phone_e164 = (b.client?.phone_e164 || b.client_phone_e164 || "").toString().trim() || null;
+if (!verifyOpsIngestAuth(req)) {
+return res.status(401).json({ ok: false });
+}
+const b = req.body || {};
+const nowIso = new Date().toISOString();
+// ---- normalize canonical envelope ----
+const schema_version = b.schema_version || "5.3";
+let event_type = String(b.event_type || "unknown.event");
+const source = String(b.source || "unknown");
+const direction = String(b.direction || "inbound");
+const trace_id = String(b.trace_id || uuidv4());
+let idempotency_key = b.idempotency_key ? String(b.idempotency_key) : null;
+const entity_type = b.entity_type ? String(b.entity_type) : null;
+const entity_id = b.entity_id ? String(b.entity_id) : null;
+const submission_id =
+b.submission_id ||
+b.payload?.submission_id ||
+b.payload?.submissionId ||
+null;
+const client_email = b.client?.email || b.client_email || null;
+const client_phone_e164 = b.client?.phone_e164 || b.client_phone_e164 || null;
 
-  let payload = b.payload || b;
-  if (!payload || typeof payload !== "object") {
-    payload = {};
-  }
+let payload = b.payload || b;
 
-  // Legacy compatibility: map older email_reply events into Instantly receipt handling.
-  if (event_type === "email_reply") {
-    const legacyCoachReply = safeStr(payload?.coach_reply_body || payload?.coachReplyBody || payload?.reply_body || payload?.replyBody || b.reply_body || b.replyBody || "");
-    const legacyAiReply = safeStr(payload?.ai_reply_body || payload?.aiReplyBody || b.ai_reply_body || b.aiReplyBody || "");
-    payload = {
-      ...payload,
-      coach_reply_body: legacyCoachReply,
-      ai_reply_body: legacyAiReply,
-      legacy_event_type: "email_reply",
-    };
-    event_type = "instantly_reply_sent";
-  }
+// Legacy compatibility: map older email_reply events into Instantly receipt handling.
+if (event_type === "email_reply") {
+  const legacyCoachReply = safeStr(payload?.coach_reply_body || payload?.coachReplyBody || payload?.reply_body || payload?.replyBody || b.reply_body || b.replyBody || "");
+  const legacyAiReply = safeStr(payload?.ai_reply_body || payload?.aiReplyBody || b.ai_reply_body || b.aiReplyBody || "");
+  payload = {
+    ...payload,
+    coach_reply_body: legacyCoachReply,
+    ai_reply_body: legacyAiReply,
+    legacy_event_type: "email_reply",
+  };
+  event_type = "instantly_reply_sent";
+}
 
-  if (!idempotency_key && (event_type === "instantly_reply_sent" || event_type === "instantly_email_sent")) {
-    const idemLeadId = payload?.lead_id || payload?.leadId || b.lead_id || b.leadId || "";
-    const idemTs = payload?.timestamp || payload?.created_at || b.timestamp || nowIso;
-    idempotency_key = deriveInstantlyReplyIdempotencyKey({ leadId: String(idemLeadId).trim(), timestamp: String(idemTs).trim() });
-  }
-  
-  // ---- 1) insert ledger with dedupe handling ----
-  const inserted = await sbInsertOpsEventSafe({
-  schema_version,
-  event_type,
-  source,
-  direction,
-  trace_id,
-  idempotency_key,
-  entity_type,
-  entity_id,
-  submission_id,
-  client_email,
-  client_phone_e164,
-  payload,
-  received_at: nowIso,
-  }).catch((err) => {
-    logError("ops.ingest.insert_event", err);
-    return { deduped: false, error: err };
-  });
-  
-  // Safety check on response
-  if (!inserted) {
-    return res.status(500).json({ ok: false, error: "Failed to insert event" });
-  }
-  
-  // if deduped, do NOT re-run state upserts
-  if (inserted?.deduped) {
-    return res.json({ ok: true, deduped: true });
-  }
-  
-  if (inserted?.error) {
-    return res.status(500).json({ ok: false, error: "Event insertion failed" });
-  }
+if (!idempotency_key && (event_type === "instantly_reply_sent" || event_type === "instantly_email_sent")) {
+  const idemLeadId = payload?.lead_id || payload?.leadId || b.lead_id || b.leadId || "";
+  const idemTs = payload?.timestamp || payload?.created_at || b.timestamp || nowIso;
+  idempotency_key = deriveInstantlyReplyIdempotencyKey({ leadId: idemLeadId, timestamp: idemTs });
+}
+// ---- 1) insert ledger with dedupe handling ----
+const inserted = await sbInsertOpsEventSafe({
+schema_version,
+event_type,
+source,
+direction,
+trace_id,
+idempotency_key,
+entity_type,
+entity_id,
+submission_id,
+client_email,
+client_phone_e164,
+payload,
+received_at: nowIso,
+});
+// if deduped, do NOT re-run state upserts
+if (inserted?.deduped) {
+return res.json({ ok: true, deduped: true });
+}
 // ---- 2) route state updates (minimal + safe) ----
 // SUBMISSIONS
 if (event_type === "submission.created") {
@@ -7390,14 +7286,6 @@ app.get("/health", (_req, res) => {
       telegram_bot_enabled: ENABLE_TELEGRAM_BOT,
       live_refresh_enabled: ENABLE_TELEGRAM_LIVE_REFRESH,
     },
-    telegram: {
-      connected: botRuntime.connected,
-      retry_count: botRuntime.retryCount,
-      launch_in_progress: botRuntime.launchInProgress,
-      last_connected_at: botRuntime.lastConnectedAt,
-      last_error: botRuntime.lastError,
-      last_error_at: botRuntime.lastErrorAt,
-    },
     timestamp: new Date().toISOString(),
   });
 });
@@ -7415,43 +7303,6 @@ app.get("/ready", (_req, res) => {
   return res.json({ ok: true, missing: [] });
 });
 
-// ========== GLOBAL ERROR HANDLING MIDDLEWARE ==========
-// 404 handler for undefined routes
-app.use((req, res) => {
-  res.status(404).json({
-    ok: false,
-    error: "Not found",
-    path: req.path,
-    method: req.method,
-  });
-});
-
-// Final catch-all error handler
-app.use((err, req, res, next) => {
-  const requestPath = req.path || "unknown";
-  const method = req.method || "UNKNOWN";
-  const statusCode = err?.statusCode || err?.status || 500;
-  const errorMsg = err?.message || String(err) || "Unknown error";
-  
-  logError(`Express:${method} ${requestPath}`, err);
-  
-  // Don't expose internal error details to client
-  const clientMessage = statusCode === 500 ? "Internal server error" : errorMsg;
-  
-  try {
-    if (!res.headersSent) {
-      res.status(statusCode).json({
-        ok: false,
-        error: clientMessage,
-        status: statusCode,
-      });
-    }
-  } catch (_) {
-    // Response already sent or other issue, just log
-    console.error("[FATAL] Could not send error response", errorMsg);
-  }
-});
-
 // ---------- START ----------
 const server = app.listen(PORT, "0.0.0.0", () => {
 console.log(`Webhook server listening on 0.0.0.0:${PORT}`);
@@ -7465,200 +7316,87 @@ if (ENABLE_TELEGRAM_BOT) {
 // for ALL bot actions and commands, preventing timeouts and freezes
 
 bot.use(async (ctx, next) => {
-  try {
-    // Harden raw Telegram calls used throughout handlers
-    if (ctx && typeof ctx.reply === "function" && !ctx.__safeReplyWrapped) {
-      const originalReply = ctx.reply.bind(ctx);
-      ctx.reply = async (...args) => {
-        try {
-          return await originalReply(...args);
-        } catch (err) {
-          logError("ctx.reply", err);
-          return null;
-        }
-      };
-      ctx.__safeReplyWrapped = true;
-    }
-    
-    if (ctx && typeof ctx.editMessageText === "function" && !ctx.__safeEditWrapped) {
-      const originalEditMessageText = ctx.editMessageText.bind(ctx);
-      ctx.editMessageText = async (...args) => {
-        try {
-          return await originalEditMessageText(...args);
-        } catch (err) {
-          logError("ctx.editMessageText", err);
-          return null;
-        }
-      };
-      ctx.__safeEditWrapped = true;
-    }
-    
-    if (ctx && typeof ctx.deleteMessage === "function" && !ctx.__safeDeleteWrapped) {
-      const originalDelete = ctx.deleteMessage.bind(ctx);
-      ctx.deleteMessage = async (...args) => {
-        try {
-          return await originalDelete(...args);
-        } catch (err) {
-          // Silently ignore delete errors (message may already be deleted)
-          return null;
-        }
-      };
-      ctx.__safeDeleteWrapped = true;
-    }
-    
-    // Auto-answer callback query to prevent loading spinner timeout
-    if (ctx.update?.callback_query?.id) {
-      ctx.answerCbQuery().catch((err) => {
-        const msg = String(err?.description || err?.message || "");
-        if (
-          !msg.includes("query is too old") &&
-          !msg.includes("QUERY_ID_INVALID") &&
-          !msg.includes("already answered")
-        ) {
-          console.log(`[WARN] Auto answerCbQuery failed: ${msg.substring(0, 50)}`);
-        }
-      });
-    }
+// Harden raw Telegram calls used throughout handlers
+if (ctx && typeof ctx.reply === "function" && !ctx.__safeReplyWrapped) {
+const originalReply = ctx.reply.bind(ctx);
+ctx.reply = async (...args) => {
+try {
+return await originalReply(...args);
+} catch (err) {
+logError("ctx.reply", err);
+return null;
+}
+};
+ctx.__safeReplyWrapped = true;
+}
+if (ctx && typeof ctx.editMessageText === "function" && !ctx.__safeEditWrapped) {
+const originalEditMessageText = ctx.editMessageText.bind(ctx);
+ctx.editMessageText = async (...args) => {
+try {
+return await originalEditMessageText(...args);
+} catch (err) {
+logError("ctx.editMessageText", err);
+return null;
+}
+};
+ctx.__safeEditWrapped = true;
+}
+// Auto-answer callback query to prevent loading spinner timeout
+if (ctx.update?.callback_query?.id) {
+ctx.answerCbQuery().catch((err) => {
+const msg = String(err?.description || err?.message || "");
+if (
+!msg.includes("query is too old") &&
+!msg.includes("QUERY_ID_INVALID") &&
+!msg.includes("already answered")
+) {
+console.log(`[WARN] Auto answerCbQuery failed: ${msg.substring(0, 50)}`);
+}
+});
+}
 
-    // Add timeout protection to all handler executions
-    let middlewareTimeoutId;
-    const timeoutPromise = new Promise((_, reject) => {
-      middlewareTimeoutId = setTimeout(() => reject(new Error("Handler execution timeout")), 35000);
-    });
+// Add timeout protection to all handler executions
+let middlewareTimeoutId;
+const timeoutPromise = new Promise((_, reject) => {
+middlewareTimeoutId = setTimeout(() => reject(new Error("Handler execution timeout")), 35000);
+});
 
-    try {
-      await Promise.race([next(), timeoutPromise]);
-    } catch (err) {
-      const errMsg = String(err?.message || "Unknown error");
-      console.log(`[ERROR] Handler error: ${errMsg.substring(0, 60)}`);
-      // Re-throw so bot.catch() can handle it
-      throw err;
-    } finally {
-      if (middlewareTimeoutId) clearTimeout(middlewareTimeoutId);
-    }
-  } catch (err) {
-    logError("bot.middleware", err);
-    throw err;
-  }
+try {
+await Promise.race([next(), timeoutPromise]);
+} catch (err) {
+const errMsg = String(err?.message || "Unknown error");
+console.log(`[ERROR] Handler error: ${errMsg.substring(0, 60)}`);
+// Re-throw so bot.catch() can handle it
+throw err;
+} finally {
+if (middlewareTimeoutId) clearTimeout(middlewareTimeoutId);
+}
 });
 
 // Global error handler for bot actions/commands
 bot.catch((err, ctx) => {
-  if (!ctx) {
-    console.error("[BOT ERROR] No context:", err);
-    return;
-  }
-  
-  try {
-    const updateId = ctx?.update?.update_id || "unknown";
-    const userId = ctx?.from?.id || "unknown";
-    console.error(`[BOT ERROR] Update ${updateId} (user ${userId}):`, err?.message);
-    logError("bot.middleware", err);
-  } catch (_) {}
-  
-  try {
-    // Try to answer callback query if not already answered
-    if (ctx.update?.callback_query?.id) {
-      ctx.answerCbQuery("Error occurred").catch(() => {});
-    }
-    
-    // Send user-friendly error message
-    const errMsg = String(err?.message || "");
-    if (errMsg.includes("timeout") || errMsg.includes("timed out")) {
-      ctx.reply("⏱ Request timed out. Try /dashboard to refresh.").catch(() => {});
-    } else if (errMsg.includes("not found")) {
-      ctx.reply("❌ Item not found. Try /dashboard to refresh.").catch(() => {});
-    } else if (errMsg.includes("Database")) {
-      ctx.reply("⚠️ Database issue. Try again in a moment.").catch(() => {});
-    } else {
-      ctx.reply("❌ An error occurred. Try /dashboard to refresh.").catch(() => {});
-    }
-  } catch (replyErr) {
-    logError("bot.catch_reply", replyErr);
-  }
+console.error(`[BOT ERROR] Update ${ctx.update.update_id}:`, err);
+logError("bot.middleware", err);
+try {
+// Try to answer callback query if not already answered
+if (ctx.update?.callback_query?.id) {
+ctx.answerCbQuery("Error occurred").catch(() => {});
+}
+// Send user-friendly error message
+const errMsg = String(err?.message || "");
+if (errMsg.includes("timeout") || errMsg.includes("timed out")) {
+ctx.reply("⏱ Request timed out. Try /dashboard to refresh.").catch(() => {});
+} else if (errMsg.includes("not found")) {
+ctx.reply("❌ Item not found. Try /dashboard to refresh.").catch(() => {});
+} else {
+ctx.reply("❌ An error occurred. Try /dashboard to refresh.").catch(() => {});
+}
+} catch (_) {}
 });
 
-// Launch with non-fatal retry loop.
-// Keep HTTP/card surfaces alive even if Telegram polling collides (409) during deploy restarts.
-const botRuntime = {
-  connected: false,
-  retryCount: 0,
-  launchInProgress: false,
-  lastConnectedAt: null,
-  lastError: null,
-  lastErrorAt: null,
-};
-let launchRetryTimer = null;
-
-function computeLaunchRetryMs(attempt) {
-  if (attempt <= 1) return 2000;
-  if (attempt <= 3) return 5000;
-  if (attempt <= 8) return 10000;
-  return 15000;
-}
-
-function scheduleBotLaunchRetry() {
-  const waitMs = computeLaunchRetryMs(botRuntime.retryCount);
-  if (launchRetryTimer) clearTimeout(launchRetryTimer);
-  launchRetryTimer = setTimeout(() => {
-    startBotPolling().catch((err) => {
-      logError("startBotPolling.retry", err);
-    });
-  }, waitMs);
-}
-
-async function startBotPolling() {
-  if (botRuntime.launchInProgress) return;
-  botRuntime.launchInProgress = true;
-
-  try {
-    // Ensure polling mode is available and not blocked by webhook state.
-    await bot.telegram.deleteWebhook({ drop_pending_updates: false }).catch(() => {});
-    await bot.launch();
-
-    botRuntime.connected = true;
-    botRuntime.retryCount = 0;
-    botRuntime.lastConnectedAt = new Date().toISOString();
-    botRuntime.lastError = null;
-    botRuntime.lastErrorAt = null;
-
-    if (launchRetryTimer) {
-      clearTimeout(launchRetryTimer);
-      launchRetryTimer = null;
-    }
-    console.log("[INFO] Telegram polling connected");
-  } catch (err) {
-    const msg = String(err?.description || err?.message || "");
-    const code = Number(err?.response?.error_code || err?.error_code || 0);
-    const is409 = code === 409 || msg.includes("Conflict") || msg.includes("other getUpdates request");
-
-    botRuntime.connected = false;
-    botRuntime.retryCount += 1;
-    botRuntime.lastError = msg || "launch_failed";
-    botRuntime.lastErrorAt = new Date().toISOString();
-
-    if (is409) {
-      console.warn(`[WARN] Telegram polling conflict (409). Retry ${botRuntime.retryCount} scheduled`);
-    } else {
-      logError("bot.launch", err);
-      console.warn(`[WARN] Telegram launch failed. Retry ${botRuntime.retryCount} scheduled`);
-    }
-
-    scheduleBotLaunchRetry();
-  } finally {
-    botRuntime.launchInProgress = false;
-  }
-}
-
-startBotPolling().catch((err) => {
-  logError("startBotPolling", err);
-  botRuntime.connected = false;
-  botRuntime.retryCount += 1;
-  botRuntime.lastError = String(err?.message || err);
-  botRuntime.lastErrorAt = new Date().toISOString();
-  scheduleBotLaunchRetry();
+bot.launch().catch((err) => {
+logError("bot.launch", err);
 });
-
 console.log(`Bot running: ${CODE_VERSION}`);
 console.log(`✅ Global protection middleware active`);
 } else {
@@ -7670,11 +7408,6 @@ async function gracefulShutdown(signal) {
   if (isShuttingDown) return;
   isShuttingDown = true;
   console.log(`[INFO] Received ${signal}. Starting graceful shutdown...`);
-
-  if (launchRetryTimer) {
-    clearTimeout(launchRetryTimer);
-    launchRetryTimer = null;
-  }
 
   try {
     if (ENABLE_TELEGRAM_BOT) {
