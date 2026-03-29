@@ -7390,6 +7390,14 @@ app.get("/health", (_req, res) => {
       telegram_bot_enabled: ENABLE_TELEGRAM_BOT,
       live_refresh_enabled: ENABLE_TELEGRAM_LIVE_REFRESH,
     },
+    telegram: {
+      connected: botRuntime.connected,
+      retry_count: botRuntime.retryCount,
+      launch_in_progress: botRuntime.launchInProgress,
+      last_connected_at: botRuntime.lastConnectedAt,
+      last_error: botRuntime.lastError,
+      last_error_at: botRuntime.lastErrorAt,
+    },
     timestamp: new Date().toISOString(),
   });
 });
@@ -7572,20 +7580,48 @@ bot.catch((err, ctx) => {
 
 // Launch with non-fatal retry loop.
 // Keep HTTP/card surfaces alive even if Telegram polling collides (409) during deploy restarts.
-let launchRetryCount = 0;
+const botRuntime = {
+  connected: false,
+  retryCount: 0,
+  launchInProgress: false,
+  lastConnectedAt: null,
+  lastError: null,
+  lastErrorAt: null,
+};
 let launchRetryTimer = null;
 
 function computeLaunchRetryMs(attempt) {
   if (attempt <= 1) return 2000;
   if (attempt <= 3) return 5000;
-  if (attempt <= 6) return 10000;
+  if (attempt <= 8) return 10000;
   return 15000;
 }
 
+function scheduleBotLaunchRetry() {
+  const waitMs = computeLaunchRetryMs(botRuntime.retryCount);
+  if (launchRetryTimer) clearTimeout(launchRetryTimer);
+  launchRetryTimer = setTimeout(() => {
+    startBotPolling().catch((err) => {
+      logError("startBotPolling.retry", err);
+    });
+  }, waitMs);
+}
+
 async function startBotPolling() {
+  if (botRuntime.launchInProgress) return;
+  botRuntime.launchInProgress = true;
+
   try {
+    // Ensure polling mode is available and not blocked by webhook state.
+    await bot.telegram.deleteWebhook({ drop_pending_updates: false }).catch(() => {});
     await bot.launch();
-    launchRetryCount = 0;
+
+    botRuntime.connected = true;
+    botRuntime.retryCount = 0;
+    botRuntime.lastConnectedAt = new Date().toISOString();
+    botRuntime.lastError = null;
+    botRuntime.lastErrorAt = null;
+
     if (launchRetryTimer) {
       clearTimeout(launchRetryTimer);
       launchRetryTimer = null;
@@ -7596,26 +7632,31 @@ async function startBotPolling() {
     const code = Number(err?.response?.error_code || err?.error_code || 0);
     const is409 = code === 409 || msg.includes("Conflict") || msg.includes("other getUpdates request");
 
-    launchRetryCount += 1;
-    const waitMs = computeLaunchRetryMs(launchRetryCount);
-    const waitSec = Math.round(waitMs / 1000);
+    botRuntime.connected = false;
+    botRuntime.retryCount += 1;
+    botRuntime.lastError = msg || "launch_failed";
+    botRuntime.lastErrorAt = new Date().toISOString();
 
     if (is409) {
-      console.warn(`[WARN] Telegram polling conflict (409). Retry ${launchRetryCount} in ${waitSec}s`);
+      console.warn(`[WARN] Telegram polling conflict (409). Retry ${botRuntime.retryCount} scheduled`);
     } else {
       logError("bot.launch", err);
-      console.warn(`[WARN] Telegram launch failed. Retry ${launchRetryCount} in ${waitSec}s`);
+      console.warn(`[WARN] Telegram launch failed. Retry ${botRuntime.retryCount} scheduled`);
     }
 
-    if (launchRetryTimer) clearTimeout(launchRetryTimer);
-    launchRetryTimer = setTimeout(() => {
-      startBotPolling().catch(() => {});
-    }, waitMs);
+    scheduleBotLaunchRetry();
+  } finally {
+    botRuntime.launchInProgress = false;
   }
 }
 
 startBotPolling().catch((err) => {
   logError("startBotPolling", err);
+  botRuntime.connected = false;
+  botRuntime.retryCount += 1;
+  botRuntime.lastError = String(err?.message || err);
+  botRuntime.lastErrorAt = new Date().toISOString();
+  scheduleBotLaunchRetry();
 });
 
 console.log(`Bot running: ${CODE_VERSION}`);
@@ -7629,6 +7670,11 @@ async function gracefulShutdown(signal) {
   if (isShuttingDown) return;
   isShuttingDown = true;
   console.log(`[INFO] Received ${signal}. Starting graceful shutdown...`);
+
+  if (launchRetryTimer) {
+    clearTimeout(launchRetryTimer);
+    launchRetryTimer = null;
+  }
 
   try {
     if (ENABLE_TELEGRAM_BOT) {
