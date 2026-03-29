@@ -291,7 +291,7 @@ async function postJsonWebhook(url, payload, { timeoutMs = WEBHOOK_TIMEOUT_MS, h
   }
 }
 
-// Retry wrapper for critical webhook operations
+// Retry wrapper for critical webhook operations (NO DELAYS - instant response)
 async function postJsonWebhookWithRetry(url, payload, { maxRetries = 3, timeoutMs = WEBHOOK_TIMEOUT_MS, headers = {} } = {}) {
   if (!url) {
     return { ok: false, status: 503, error: "webhook_url_not_configured", bodyText: "", attempts: 0 };
@@ -304,15 +304,10 @@ async function postJsonWebhookWithRetry(url, payload, { maxRetries = 3, timeoutM
       if (result.ok || attempt === maxRetries) {
         return { ...result, attempts: attempt };
       }
-      // Exponential backoff: 100ms, 200ms, 400ms
-      const backoffMs = Math.min(100 * Math.pow(2, attempt - 1), 1000);
-      await new Promise(resolve => setTimeout(resolve, backoffMs));
+      // No delay - instant retry
     } catch (err) {
       lastError = err;
-      if (attempt < maxRetries) {
-        const backoffMs = Math.min(100 * Math.pow(2, attempt - 1), 1000);
-        await new Promise(resolve => setTimeout(resolve, backoffMs));
-      }
+      // No delay between retries - instant
     }
   }
   
@@ -7562,42 +7557,15 @@ bot.catch((err, ctx) => {
   }
 });
 
-// Launch bot with infinite retry on 409 Conflict (non-blocking)
-let botLaunchRetries = 0;
-let botConnected = false;
-
-function launchBotWithRetry() {
-  bot.launch().then(() => {
-    botConnected = true;
-    botLaunchRetries = 0;
-    console.log("✅ Bot connected successfully");
-  }).catch((err) => {
-    const errMsg = String(err?.message || err?.description || "");
-    const errCode = err?.error_code;
-    const is409 = errCode === 409 || errMsg.includes("Conflict");
-    
-    if (!botConnected) {
-      logError("bot.launch", err);
-    }
-    
-    // Exponential backoff: 2s, 4s, 8s, 16s, 30s, 60s, 120s, then cap at 120s
-    botLaunchRetries++;
-    const maxBackoff = 120000; // 2 minutes max
-    const backoffMs = Math.min(2000 * Math.pow(2, Math.min(botLaunchRetries - 1, 3)), maxBackoff);
-    const backoffSec = Math.round(backoffMs / 1000);
-    
-    if (is409) {
-      console.warn(`[WARN] 409 Conflict (attempt ${botLaunchRetries}). Retrying in ${backoffSec}s...`);
-    } else {
-      console.warn(`[WARN] Bot launch error (attempt ${botLaunchRetries}): ${errMsg.substring(0, 60)}. Retrying in ${backoffSec}s...`);
-    }
-    
-    // Retry without exiting
-    setTimeout(launchBotWithRetry, backoffMs);
-  });
-}
-
-launchBotWithRetry();
+// Launch with error handling
+bot.launch().catch((err) => {
+  logError("bot.launch", err);
+  // Attempt to gracefully exit instead of silently failing
+  setTimeout(() => {
+    console.error("[FATAL] Bot failed to launch, shutting down");
+    process.exit(1);
+  }, 5000);
+});
 
 console.log(`Bot running: ${CODE_VERSION}`);
 console.log(`✅ Global protection middleware active`);
