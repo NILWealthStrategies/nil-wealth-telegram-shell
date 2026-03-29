@@ -71,10 +71,10 @@ ${codeVersion} • Build: ${String(buildVersion).slice(0, 8)}
 ${staleBlock}
 🗂 QUEUES
 ${capped.handoffCount?.displayCount > 0 ? `${formatCappedQueueLabel("📌 Loop in Support", capped.handoffCount)}\n` : ""}${formatCappedQueueLabel("‼️ Urgent", capped.urgentCount)}
-${formatCappedQueueLabel("🧵 Threads", capped.threadsCount)}
 ${formatCappedQueueLabel("📝 Needs Reply", capped.needsReplyCount)}
 ${formatCappedQueueLabel("⏳ Waiting", capped.waitingCount)}
 ${formatCappedQueueLabel("💬 Active", capped.activeCount)}
+${formatCappedQueueLabel("🧵 Threads", capped.threadsCount)}
 ${formatCappedQueueLabel("📨 Forwarded", capped.forwardedCount)}
 ${formatCappedQueueLabel("🧾 Submissions", capped.submissionsCount)}
 ${formatCappedQueueLabel("📚 Follow-Ups", capped.followCount)}
