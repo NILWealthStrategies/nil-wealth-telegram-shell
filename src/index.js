@@ -88,7 +88,7 @@ const {
 } = require("./lib/view-utils");
 // ---------- VERSION ----------
 const CODE_VERSION =
-"Index.js V6.2";
+"Index.js V6.4";
 const BUILD_VERSION =
 process.env.BUILD_VERSION ||
 process.env.RENDER_GIT_COMMIT ||
@@ -1858,6 +1858,7 @@ filterSource === "support" ? "🧑‍🧒 Support" : filterSource === "programs"
 const [
 handoffCount,
 urgentCount,
+threadsCount,
 needsReplyCount,
 waitingCount,
 activeCount,
@@ -1870,6 +1871,7 @@ lastIngestAt,
 ] = await trackPerf(`dashboard.counts.${filterSource}`, () => Promise.all([
 sbCountHandoffPending({ source: filterSource }),
 sbCountUrgentAuto({ source: filterSource }),
+sbCountConversations({ source: filterSource }),
 sbCountNeedsReplyNonUrgent({ source: filterSource }),
 sbCountConversations({ pipeline: "actions_waiting", source: filterSource }),
 sbCountConversations({ pipeline: "active", source: filterSource }),
@@ -1884,6 +1886,7 @@ sbGetLastOpsEventTimestamp(),
 const counts = {
 handoffCount,
 urgentCount,
+threadsCount,
 needsReplyCount,
 waitingCount,
 activeCount,
@@ -1906,6 +1909,7 @@ return "";
 const capped = {
 handoffCount: capQueueCount(counts.handoffCount, MAX_QUEUE_DISPLAY),
 urgentCount: capQueueCount(counts.urgentCount, MAX_QUEUE_DISPLAY),
+threadsCount: capQueueCount(counts.threadsCount, MAX_QUEUE_DISPLAY),
 needsReplyCount: capQueueCount(counts.needsReplyCount, MAX_QUEUE_DISPLAY),
 waitingCount: capQueueCount(counts.waitingCount, MAX_QUEUE_DISPLAY),
 activeCount: capQueueCount(counts.activeCount, MAX_QUEUE_DISPLAY),
@@ -2133,7 +2137,7 @@ return Markup.inlineKeyboard([
     ...mirrorRow,
   ],
   [Markup.button.callback("🔧 Set Role", `SETROLE:${id}`)],
-  [Markup.button.callback("✍️ Drafts V1/V2/V3", `DRAFTS:open:${id}`)],
+  [Markup.button.callback("✏️ Drafts V1/V2/V3", `DRAFTS:open:${id}`)],
   [Markup.button.callback("📤 Send (Support) 🔒", `SEND:${id}:1`)],
   [Markup.button.callback("⬅ Dashboard", "DASH:back")],
 ]);
