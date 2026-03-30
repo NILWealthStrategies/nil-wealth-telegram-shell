@@ -5251,10 +5251,9 @@ const { dayKey, time, dayStartISO, dayEndISO } = nyParts(now);
 // - dayStartISO: ISO string at NY 00:00
 // - dayEndISO: ISO string at next day NY 00:00
 // Pull counts (parallel)
-const [triageDue, callsToday, opsDelivery] = await Promise.all([
+const [triageDue, callsToday] = await Promise.all([
   sbCountTriageDueNow({ source: filterSource }).catch(() => 0),
   sbCountCallsToday({ source: filterSource, dayStartISO, dayEndISO }).catch(() => 0),
-  sbOpsDeliverySummary().catch(() => ({})),
 ]);
 
 const text =
@@ -5264,10 +5263,6 @@ ${dayKey} • ${time}
 
 ⚡️ Triage Due: ${triageDue}
 📱 Calls Scheduled: ${callsToday}
-📤 Email Pending: ${opsDelivery?.emailPending == null ? "n/a" : opsDelivery.emailPending}
-📲 SMS Pending: ${opsDelivery?.smsPending == null ? "n/a" : opsDelivery.smsPending}
-☠️ Dead Letter Events: ${opsDelivery?.deadLetterEvents == null ? "n/a" : opsDelivery.deadLetterEvents}
-🎟 Open Support Tickets: ${opsDelivery?.supportTicketsOpen == null ? "n/a" : opsDelivery.supportTicketsOpen}
 --`;
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("⚡️ Triage", "TRIAGE:open")],
