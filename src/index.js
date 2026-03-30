@@ -505,6 +505,17 @@ function isAdmin(ctx) {
 if (!ADMIN_IDS.length) return true;
 return ADMIN_IDS.includes(String(ctx.from?.id || ""));
 }
+
+async function requireAdminOrNotify(ctx, origin = "unknown") {
+  if (isAdmin(ctx)) return true;
+  const userId = String(ctx.from?.id || "unknown");
+  const chatId = String(ctx.chat?.id || "unknown");
+  console.warn(`[AUTH] blocked ${origin} for user ${userId} in chat ${chatId}`);
+  try {
+    await ctx.reply(`⛔ Access denied for this bot.\nYour Telegram ID: ${userId}\nAsk admin to add it to ADMIN_TELEGRAM_IDS.`).catch(() => {});
+  } catch (_) {}
+  return false;
+}
 function verifyWebhookSecret(req) {
 const got = req.headers["x-nil-secret"];
 return got && String(got) === String(BASE_WEBHOOK_SECRET);
@@ -3120,14 +3131,29 @@ return Markup.inlineKeyboard([
 }
 // ---------- START / DASH ----------
 bot.start(safeCommand(async (ctx) => {
-if (!isAdmin(ctx)) return;
+if (!(await requireAdminOrNotify(ctx, "start"))) return;
 await ctx.reply("✅ NIL Wealth Ops Bot running.\nType /dashboard");
 }));
 
 bot.command("dashboard", safeCommand(async (ctx) => {
-if (!isAdmin(ctx)) return;
+if (!(await requireAdminOrNotify(ctx, "dashboard_command"))) return;
 const filterSource = getAdminFilter(ctx);
-const msg = await ctx.reply(await dashboardText(filterSource), dashboardKeyboardV50());
+const dashboardBody = await dashboardText(filterSource);
+let msg = await ctx.reply(dashboardBody, dashboardKeyboardV50());
+if (!msg?.message_id) {
+  // Fallback path in case wrapped ctx.reply returns null silently.
+  const chatId = ctx.chat?.id ?? ctx.from?.id;
+  if (chatId != null) {
+    msg = await bot.telegram.sendMessage(chatId, dashboardBody, dashboardKeyboardV50()).catch((err) => {
+      logError("dashboard_command.send_fallback", err);
+      return null;
+    });
+  }
+}
+if (!msg?.message_id) {
+  await ctx.reply("❌ Dashboard render failed. Try /diag and verify ADMIN_TELEGRAM_IDS + bot permissions.").catch(() => {});
+  return;
+}
 if (msg?.message_id) {
   registerLiveCard(msg, {
     type: "dashboard",
@@ -3140,29 +3166,29 @@ if (msg?.message_id) {
 }));
 
 bot.command("leads", safeCommand(async (ctx) => {
-if (!isAdmin(ctx)) return;
+if (!(await requireAdminOrNotify(ctx, "leads_command"))) return;
 await ctx.reply(await leadsText(), leadsKeyboard());
 }));
 
 bot.command("analytics", safeCommand(async (ctx) => {
-if (!isAdmin(ctx)) return;
+if (!(await requireAdminOrNotify(ctx, "analytics_command"))) return;
 await ctx.reply(await analyticsText(), analyticsKeyboard());
 }));
 
 bot.command("health", safeCommand(async (ctx) => {
-if (!isAdmin(ctx)) return;
+if (!(await requireAdminOrNotify(ctx, "health_command"))) return;
 const summary = await buildOpsHealthSummary();
 await ctx.reply(buildOpsHealthText(summary));
 }));
 
 bot.command("watchdog", safeCommand(async (ctx) => {
-if (!isAdmin(ctx)) return;
+if (!(await requireAdminOrNotify(ctx, "watchdog_command"))) return;
 const wd = await runDataWatchdog({ forceSchema: true });
 await ctx.reply(buildWatchdogCardText(wd), watchdogKeyboard());
 }));
 
 bot.command("reset", safeCommand(async (ctx) => {
-if (!isAdmin(ctx)) return;
+if (!(await requireAdminOrNotify(ctx, "reset_command"))) return;
 const userId = String(ctx.from?.id || "");
 const chatId = String(ctx.chat?.id || userId);
 const msg = await forceAdminDashboardReset({ userId, chatId, reason: "command" });
@@ -3173,8 +3199,29 @@ if (!msg) {
 }
 }));
 
+bot.command("diag", safeCommand(async (ctx) => {
+const userId = String(ctx.from?.id || "");
+const chatId = String(ctx.chat?.id || "");
+const adminAllowed = isAdmin(ctx);
+const filterSource = getAdminFilter(ctx);
+const roleFilter = getAdminRoleFilter(ctx);
+const diag = [
+  "🧪 Dashboard Diagnostics",
+  `User ID: ${userId || "unknown"}`,
+  `Chat ID: ${chatId || "unknown"}`,
+  `Admin Allowed: ${adminAllowed ? "yes" : "no"}`,
+  `Configured Admin IDs: ${ADMIN_IDS.length}`,
+  `Bot Enabled: ${ENABLE_TELEGRAM_BOT ? "yes" : "no"}`,
+  `Live Refresh: ${ENABLE_TELEGRAM_LIVE_REFRESH ? "yes" : "no"}`,
+  `Filter: ${filterSource}`,
+  `Role Filter: ${roleFilter}`,
+  `Build: ${String(BUILD_VERSION)}`,
+].join("\n");
+await ctx.reply(diag).catch(() => {});
+}));
+
 bot.action("DASH:back", safeAction(async (ctx) => {
-if (!isAdmin(ctx)) return;
+if (!(await requireAdminOrNotify(ctx, "dash_back_action"))) return;
 const filterSource = getAdminFilter(ctx);
 await trackPerf(`handler.dashboard.back.${filterSource}`, async () => {
 await smartRender(ctx, await dashboardText(filterSource), dashboardKeyboardV50());
@@ -3182,7 +3229,7 @@ await smartRender(ctx, await dashboardText(filterSource), dashboardKeyboardV50()
 }));
 
 bot.action("DASH:refresh", safeAction(async (ctx) => {
-if (!isAdmin(ctx)) return;
+if (!(await requireAdminOrNotify(ctx, "dash_refresh_action"))) return;
 const filterSource = getAdminFilter(ctx);
 await trackPerf(`handler.dashboard.refresh.${filterSource}`, async () => {
 await smartRender(ctx, await dashboardText(filterSource), dashboardKeyboardV50());
