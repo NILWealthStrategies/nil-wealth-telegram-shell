@@ -619,6 +619,37 @@ async function runIdleDashboardResetSweep() {
     });
   }
 }
+async function forceAdminDashboardReset({ userId, chatId, reason = "manual" } = {}) {
+  const resolvedUserId = String(userId || chatId || "");
+  const resolvedChatId = String(chatId || userId || "");
+  if (!resolvedUserId || !resolvedChatId) return null;
+  userFilters.set(resolvedUserId, "all");
+  userRoleFilters.set(resolvedUserId, "all");
+
+  const text = await dashboardText("all").catch(() => null);
+  if (!text) return null;
+
+  const msg = await bot.telegram.sendMessage(resolvedChatId, text, dashboardKeyboardV50()).catch(() => null);
+  if (msg?.message_id) {
+    registerLiveCard(msg, {
+      type: "dashboard",
+      card_key: `dashboard:all:all:force_${reason}`,
+      ref_id: "all",
+      filterSource: "all",
+      user_id: resolvedUserId,
+    });
+  }
+
+  adminActivity.set(resolvedUserId, {
+    ...(adminActivity.get(resolvedUserId) || {}),
+    chatId: resolvedChatId,
+    lastActivityAt: Date.now(),
+    lastCardType: "dashboard",
+    lastMessageId: msg?.message_id || null,
+    lastResetAt: Date.now(),
+  });
+  return msg;
+}
 // ---------- v5.4 UTILITY FUNCTIONS ----------
 function compact(v) {
 // Safe string display: converts null/undefined to "—"
@@ -3128,6 +3159,18 @@ bot.command("watchdog", safeCommand(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const wd = await runDataWatchdog({ forceSchema: true });
 await ctx.reply(buildWatchdogCardText(wd), watchdogKeyboard());
+}));
+
+bot.command("reset", safeCommand(async (ctx) => {
+if (!isAdmin(ctx)) return;
+const userId = String(ctx.from?.id || "");
+const chatId = String(ctx.chat?.id || userId);
+const msg = await forceAdminDashboardReset({ userId, chatId, reason: "command" });
+if (!msg) {
+  await ctx.reply("❌ Reset failed. Try /dashboard.").catch(() => {});
+} else {
+  await ctx.reply("✅ Reset complete. Dashboard is back to default (All filter).", Markup.inlineKeyboard([[Markup.button.callback("⬅ Dashboard", "DASH:back")]])).catch(() => {});
+}
 }));
 
 bot.action("DASH:back", safeAction(async (ctx) => {
