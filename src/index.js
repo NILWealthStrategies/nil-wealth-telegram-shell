@@ -7829,6 +7829,7 @@ app.post("/webhook/metric", async (req, res) => {
           coach_id: resolvedCoachId ?? null,
           campaign_id: resolvedCampaignId ?? null,
           click_source: clickSource,
+          click_type: kind,
           kind,
           event_type: kind,
           source: bodySource,

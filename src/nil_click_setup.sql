@@ -27,6 +27,15 @@ alter table nil.click_events add column if not exists meta jsonb;
 alter table nil.click_events add column if not exists campaign_id text;
 alter table nil.click_events add column if not exists coach_id text;
 alter table nil.click_events add column if not exists link text;
+alter table nil.click_events add column if not exists click_type text;
+
+-- Backfill click_type from kind or event_type if null
+update nil.click_events
+set click_type = coalesce(nullif(kind,''), nullif(event_type,''), 'website_click')
+where click_type is null;
+
+-- Set a safe default so future inserts never hit NOT NULL
+alter table nil.click_events alter column click_type set default 'website_click';
 
 update nil.click_events
 set created_at = coalesce(created_at, event_time, clicked_at, now())
