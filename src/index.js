@@ -3228,7 +3228,7 @@ return Markup.inlineKeyboard([
 // ---------- START / DASH ----------
 bot.start(safeCommand(async (ctx) => {
 if (!(await requireAdminOrNotify(ctx, "start"))) return;
-await ctx.reply("✅ NIL Wealth Ops Bot running.\nType /dashboard");
+await safeReplyWithFallback(ctx, "✅ NIL Wealth Ops Bot running.\nType /dashboard");
 }));
 
 bot.command("dashboard", safeCommand(async (ctx) => {
@@ -8669,12 +8669,17 @@ async function startBotLaunchLoop() {
     // Ensure polling mode isn't blocked by stale webhook configuration.
     await bot.telegram.deleteWebhook({ drop_pending_updates: false }).catch(() => {});
     await bot.launch();
+    const me = await bot.telegram.getMe().catch(() => null);
     botLaunchRetryCount = 0;
     if (botLaunchRetryTimer) {
       clearTimeout(botLaunchRetryTimer);
       botLaunchRetryTimer = null;
     }
-    console.log("[INFO] Telegram bot connected");
+    if (me?.username) {
+      console.log(`[INFO] Telegram bot connected as @${me.username} (${me.id})`);
+    } else {
+      console.log("[INFO] Telegram bot connected");
+    }
   } catch (err) {
     const msg = String(err?.description || err?.message || "");
     const code = Number(err?.response?.error_code || err?.error_code || 0);
@@ -8685,6 +8690,9 @@ async function startBotLaunchLoop() {
 
     if (is409) {
       console.warn(`[WARN] Telegram launch conflict (409). Retrying in ${waitSec}s (attempt ${botLaunchRetryCount})`);
+      if (botLaunchRetryCount >= 3) {
+        console.warn("[WARN] Another process is polling this same Telegram bot token. Ensure only one bot instance is running.");
+      }
     } else {
       logError("bot.launch", err);
       console.warn(`[WARN] Telegram launch failed. Retrying in ${waitSec}s (attempt ${botLaunchRetryCount})`);
