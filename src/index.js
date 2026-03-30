@@ -150,6 +150,9 @@ String(process.env.WATCHDOG_ALERT_ONLY_WARN || "true").toLowerCase() === "true";
 const ADMIN_IDLE_DASHBOARD_RESET_HOURS = Number(process.env.ADMIN_IDLE_DASHBOARD_RESET_HOURS || 5);
 const ADMIN_IDLE_DASHBOARD_CHECK_MS = Number(process.env.ADMIN_IDLE_DASHBOARD_CHECK_MS || 5 * 60 * 1000);
 const DASHBOARD_CACHE_TTL_MS = Number(process.env.DASHBOARD_CACHE_TTL_MS || 3000);
+const DASHBOARD_SPEED_MODE = String(process.env.DASHBOARD_SPEED_MODE || "true").toLowerCase() !== "false";
+const DASHBOARD_METRICS_CACHE_TTL_MS = Number(process.env.DASHBOARD_METRICS_CACHE_TTL_MS || 10000);
+const DASHBOARD_OPS_CACHE_TTL_MS = Number(process.env.DASHBOARD_OPS_CACHE_TTL_MS || 20000);
 // NY time
 const NY_TZ = "America/New_York";
 // ---------- GUARDS ----------
@@ -196,6 +199,8 @@ const userRoleFilters = new Map(); // userId -> role filter ("all" | "parent" | 
 const draftEditState = new Map(); // userId -> { convId, version }
 const adminActivity = new Map(); // userId -> { chatId, lastActivityAt, lastCardType, lastMessageId, lastResetAt }
 const dashboardTextCache = new Map(); // filterSource -> { ts, text }
+const dashboardMetricsCache = new Map(); // filterSource -> { ts, data }
+const dashboardOpsDeliveryCache = new Map(); // filterSource -> { ts, data }
 const EVENT_TYPES = {
   LEAD_CREATED: "lead.created",
   LEAD_UPDATED: "lead.updated",
@@ -2847,16 +2852,40 @@ if (cached && Date.now() - cached.ts < DASHBOARD_CACHE_TTL_MS) {
 return cached.text;
 }
 
+const getCachedDashboardMetrics = async () => {
+  const cachedMetrics = dashboardMetricsCache.get(cacheKey);
+  if (cachedMetrics && Date.now() - cachedMetrics.ts < DASHBOARD_METRICS_CACHE_TTL_MS) {
+    return cachedMetrics.data;
+  }
+  const data = await trackPerf(
+    `dashboard.metrics.${filterSource}`,
+    () => sbMetricSummary({ source: filterSource, window: "all" }).catch(() => ({}))
+  );
+  dashboardMetricsCache.set(cacheKey, { ts: Date.now(), data });
+  return data;
+};
+
+const getCachedOpsDelivery = async () => {
+  const cachedOps = dashboardOpsDeliveryCache.get(cacheKey);
+  if (cachedOps && Date.now() - cachedOps.ts < DASHBOARD_OPS_CACHE_TTL_MS) {
+    return cachedOps.data;
+  }
+  const data = await sbOpsDeliverySummary().catch(() => ({}));
+  dashboardOpsDeliveryCache.set(cacheKey, { ts: Date.now(), data });
+  return data;
+};
+
 const { dayKey, time } = nyParts(new Date());
 const filterLabel =
 filterSource === "support" ? "🧑‍🧒 Support" : filterSource === "programs" ? "🏈 Programs" :
 "🌐 All";
 
 const needsReplyBreakdownPromise = sbNeedsReplyBreakdown({ source: filterSource });
+const metricSummaryPromise = getCachedDashboardMetrics();
+const opsDeliveryPromise = getCachedOpsDelivery();
 const [
 handoffCount,
 needsReplyBreakdown,
-threadsCount,
 waitingCount,
 activeCount,
 forwardedCount,
@@ -2864,12 +2893,10 @@ followCount,
 completedCount,
 submissionsCount,
 callsCount,
-lastIngestAt,
 opsDelivery,
 ] = await trackPerf(`dashboard.counts.${filterSource}`, () => Promise.all([
 sbCountHandoffPending({ source: filterSource }),
 needsReplyBreakdownPromise,
-sbCountConversations({ source: filterSource }),
 sbCountConversations({ pipeline: "actions_waiting", source: filterSource }),
 sbCountConversations({ pipeline: "active", source: filterSource }),
 sbCountConversations({ pipeline: "forwarded", source: filterSource }),
@@ -2877,12 +2904,16 @@ sbCountConversations({ pipeline: "followups", source: filterSource }),
 sbCountConversations({ pipeline: "completed", source: filterSource }),
 sbCountSubmissions(),
 sbCountCalls(),
-sbGetLastOpsEventTimestamp(),
-sbOpsDeliverySummary(),
+// In speed mode skip expensive ingest timestamp call on every dashboard open.
+DASHBOARD_SPEED_MODE ? Promise.resolve(null) : sbGetLastOpsEventTimestamp(),
+opsDeliveryPromise,
 ]));
 
 const urgentCount = needsReplyBreakdown?.urgentCount || 0;
 const needsReplyCount = needsReplyBreakdown?.nonUrgentCount || 0;
+const threadsCount = DASHBOARD_SPEED_MODE
+  ? urgentCount + needsReplyCount + waitingCount + activeCount + forwardedCount + followCount + completedCount
+  : await sbCountConversations({ source: filterSource });
 
 const counts = {
 handoffCount,
@@ -2920,10 +2951,7 @@ followCount: capQueueCount(counts.followCount, MAX_QUEUE_DISPLAY),
 callsCount: capQueueCount(counts.callsCount, MAX_QUEUE_DISPLAY),
 completedCount: capQueueCount(counts.completedCount, MAX_QUEUE_DISPLAY),
 };
-const m = await trackPerf(
-`dashboard.metrics.${filterSource}`,
-() => sbMetricSummary({ source: filterSource, window: "all" }).catch(() => ({}))
-);
+const m = await metricSummaryPromise;
 const rendered = buildDashboardText({
 codeVersion: CODE_VERSION,
 buildVersion: BUILD_VERSION,
