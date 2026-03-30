@@ -287,6 +287,7 @@ let watchdogSnapshot = {
   overallStatus: "unknown",
   freshness: { overall: "unknown", checks: [] },
   reconciliation: { overall: "unknown", checks: [] },
+  cards: { overall: "unknown", checks: [] },
   schema: {
     overall: "unknown",
     checkedAt: null,
@@ -1160,6 +1161,94 @@ async function sbListUrgentCombined({ source = "all", role = "all", limit = 8 } 
     return [];
   }
 }
+
+async function sbCoachIdsForSource(source = "all") {
+  if (source === "all") return null;
+  try {
+    const safeSrc = sourceSafe(source);
+    const { data, error } = await ops()
+      .from("conversations")
+      .select("coach_id")
+      .or(`source.eq.${safeSrc},source.is.null,source.eq.`)
+      .not("coach_id", "is", null)
+      .limit(5000);
+    if (error) return null;
+    const ids = new Set((data || []).map((r) => String(r.coach_id || "").trim()).filter(Boolean));
+    return ids;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function sbCountForwardedCombined({ source = "all" } = {}) {
+  try {
+    const coachIdsForSource = await sbCoachIdsForSource(source);
+
+    const { data: clicks, error } = await ops()
+      .from("click_events")
+      .select("coach_id, click_source, click_type, kind, event_type")
+      .not("coach_id", "is", null)
+      .limit(10000);
+    if (error) return 0;
+
+    const clickRows = clicks || [];
+    const coachIds = new Set();
+    for (const row of clickRows) {
+      const coachId = String(row?.coach_id || "").trim();
+      if (!coachId) continue;
+      if (coachIdsForSource && !coachIdsForSource.has(coachId)) continue;
+      const sourceTag = String(row?.click_source || "").toLowerCase();
+      const typeTag = String(row?.click_type || row?.kind || row?.event_type || "").toLowerCase();
+      const looksForwardedFamilyClick = sourceTag === "email" || typeTag.includes("guide") || typeTag.includes("enroll") || typeTag.includes("eapp");
+      if (looksForwardedFamilyClick) coachIds.add(coachId);
+    }
+
+    return coachIds.size;
+  } catch (err) {
+    console.warn("sbCountForwardedCombined exception:", err.message);
+    return 0;
+  }
+}
+
+async function sbListForwardedCombined({ source = "all", limit = 8 } = {}) {
+  try {
+    const coachIdsForSource = await sbCoachIdsForSource(source);
+    const { data: clicks, error } = await ops()
+      .from("click_events")
+      .select("coach_id, click_source, click_type, kind, event_type")
+      .not("coach_id", "is", null)
+      .limit(10000);
+    if (error) return [];
+
+    const clickedCoachIds = new Set();
+    for (const row of clicks || []) {
+      const coachId = String(row?.coach_id || "").trim();
+      if (!coachId) continue;
+      if (coachIdsForSource && !coachIdsForSource.has(coachId)) continue;
+      const sourceTag = String(row?.click_source || "").toLowerCase();
+      const typeTag = String(row?.click_type || row?.kind || row?.event_type || "").toLowerCase();
+      const looksForwardedFamilyClick = sourceTag === "email" || typeTag.includes("guide") || typeTag.includes("enroll") || typeTag.includes("eapp");
+      if (looksForwardedFamilyClick) clickedCoachIds.add(coachId);
+    }
+
+    const ids = Array.from(clickedCoachIds).slice(0, 200);
+    if (!ids.length) return [];
+
+    const { data: convs, error: convErr } = await ops()
+      .from("conversations")
+      .select("id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at")
+      .in("coach_id", ids)
+      .order("updated_at", { ascending: false })
+      .limit(Math.max(limit * 3, 24));
+    if (convErr) return [];
+
+    return (convs || []).slice(0, limit);
+  } catch (err) {
+    console.warn("sbListForwardedCombined exception:", err.message);
+    return [];
+  }
+}
+
 async function sbCountDeadLetters() {
 try {
 const { count, error } = await ops()
@@ -1231,6 +1320,7 @@ function buildWatchdogCardText(wd) {
   const snapshot = wd || {};
   const freshness = snapshot.freshness || {};
   const rec = snapshot.reconciliation || {};
+  const cards = snapshot.cards || {};
   const schema = snapshot.schema || {};
   const staleItems = (freshness.checks || [])
     .filter((c) => c.status === "stale")
@@ -1240,6 +1330,10 @@ function buildWatchdogCardText(wd) {
     .filter((c) => c.status === "warn")
     .map((c) => c.name)
     .slice(0, 5);
+  const cardWarnChecks = (cards.checks || [])
+    .filter((c) => c.status === "warn" || c.status === "degraded")
+    .map((c) => c.name)
+    .slice(0, 8);
   const missingSample = (schema.missing || []).slice(0, 8);
 
   return `🛡 DATA WATCHDOG
@@ -1253,6 +1347,9 @@ Stale Sources: ${staleItems.length ? staleItems.join(", ") : "none"}
 
 Reconciliation: ${watchdogStatusLabel(rec.overall)}
 Warnings: ${warnChecks.length ? warnChecks.join(", ") : "none"}
+
+Cards & Dashboard: ${watchdogStatusLabel(cards.overall)}
+Warnings: ${cardWarnChecks.length ? cardWarnChecks.join(", ") : "none"}
 
 Schema Contract: ${watchdogStatusLabel(schema.overall)}
 Covered: ${schema.coveredCount ?? 0}/${schema.expectedCount ?? EXPECTED_NIL_RELATIONS.length}
@@ -2528,6 +2625,56 @@ async function sbWatchdogReconciliationChecks() {
   };
 }
 
+async function sbWatchdogCardChecks() {
+  const checks = [];
+  const runCheck = async (name, countFn, listFn = null) => {
+    try {
+      const count = await countFn();
+      const list = listFn ? await listFn() : null;
+      let status = "ok";
+      let note = null;
+      if (count == null || !Number.isFinite(Number(count))) {
+        status = "degraded";
+        note = "count_unavailable";
+      } else if (listFn && Number(count) > 0 && Array.isArray(list) && list.length === 0) {
+        status = "warn";
+        note = "count_list_mismatch";
+      }
+      checks.push({
+        name,
+        status,
+        count: Number.isFinite(Number(count)) ? Number(count) : null,
+        sampleSize: Array.isArray(list) ? list.length : null,
+        note,
+      });
+    } catch (err) {
+      checks.push({
+        name,
+        status: "warn",
+        note: err?.message || String(err),
+      });
+    }
+  };
+
+  await runCheck("urgent", () => sbCountUrgentCombined({ source: "all", role: "all" }), () => sbListUrgentCombined({ source: "all", role: "all", limit: 8 }));
+  await runCheck("needs_reply", () => sbCountNeedsReplyNonUrgent({ source: "all", role: "all" }), () => sbListConversations({ pipeline: "needs_reply", source: "all", role: "all", limit: 8 }));
+  await runCheck("actions_waiting", () => sbCountConversations({ pipeline: "actions_waiting", source: "all", role: "all" }), () => sbListConversations({ pipeline: "actions_waiting", source: "all", role: "all", limit: 8 }));
+  await runCheck("active", () => sbCountConversations({ pipeline: "active", source: "all", role: "all" }), () => sbListConversations({ pipeline: "active", source: "all", role: "all", limit: 8 }));
+  await runCheck("forwarded", () => sbCountForwardedCombined({ source: "all" }), () => sbListForwardedCombined({ source: "all", limit: 8 }));
+  await runCheck("followups", () => sbCountConversations({ pipeline: "followups", source: "all", role: "all" }), () => sbListConversations({ pipeline: "followups", source: "all", role: "all", limit: 8 }));
+  await runCheck("completed", () => sbCountConversations({ pipeline: "completed", source: "all", role: "all" }), () => sbListConversations({ pipeline: "completed", source: "all", role: "all", limit: 8 }));
+  await runCheck("submissions", () => sbCountSubmissions());
+  await runCheck("calls", () => sbCountCalls());
+  await runCheck("handoff", () => sbCountHandoffPending({ source: "all" }), () => sbListHandoffPending({ source: "all", limit: 8 }));
+
+  const hasWarn = checks.some((c) => c.status === "warn");
+  const hasDegraded = checks.some((c) => c.status === "degraded");
+  return {
+    overall: hasWarn ? "warn" : hasDegraded ? "degraded" : "ok",
+    checks,
+  };
+}
+
 async function sbWatchdogSchemaContract(force = false) {
   const nowMs = Date.now();
   if (!force && lastSchemaCheckAt && nowMs - lastSchemaCheckAt < WATCHDOG_SCHEMA_CHECK_INTERVAL_MS) {
@@ -2562,9 +2709,11 @@ async function sbWatchdogSchemaContract(force = false) {
 function buildWatchdogAlertText(snapshot, previousStatus) {
   const freshness = snapshot?.freshness || {};
   const reconciliation = snapshot?.reconciliation || {};
+  const cards = snapshot?.cards || {};
   const schema = snapshot?.schema || {};
   const staleCount = (freshness.checks || []).filter((c) => c.status === "stale").length;
   const recWarnCount = (reconciliation.checks || []).filter((c) => c.status === "warn").length;
+  const cardWarnCount = (cards.checks || []).filter((c) => c.status === "warn" || c.status === "degraded").length;
   const schemaMissing = (schema.missing || []).length;
   const prevLabel = watchdogStatusLabel(previousStatus);
   const nextLabel = watchdogStatusLabel(snapshot.overallStatus);
@@ -2573,6 +2722,7 @@ function buildWatchdogAlertText(snapshot, previousStatus) {
     `Status: ${trend}\n` +
     `Freshness: ${watchdogStatusLabel(freshness.overall)} (stale: ${staleCount})\n` +
     `Reconciliation: ${watchdogStatusLabel(reconciliation.overall)} (warn: ${recWarnCount})\n` +
+    `Cards & Dashboard: ${watchdogStatusLabel(cards.overall)} (warn: ${cardWarnCount})\n` +
     `Schema: ${watchdogStatusLabel(schema.overall)} (missing: ${schemaMissing})\n` +
     `Checked: ${snapshot.lastRunAt || new Date().toISOString()}`;
 }
@@ -2616,13 +2766,14 @@ async function sendWatchdogAdminAlert(snapshot, previousStatus) {
 async function runDataWatchdog({ forceSchema = false, notifyAdmins = false } = {}) {
   const previousStatus = watchdogSnapshot?.overallStatus || "unknown";
   try {
-    const [freshness, reconciliation, schema] = await Promise.all([
+    const [freshness, reconciliation, cards, schema] = await Promise.all([
       sbWatchdogFreshnessChecks(),
       sbWatchdogReconciliationChecks(),
+      sbWatchdogCardChecks(),
       sbWatchdogSchemaContract(forceSchema),
     ]);
 
-    const statuses = [freshness?.overall, reconciliation?.overall, schema?.overall];
+    const statuses = [freshness?.overall, reconciliation?.overall, cards?.overall, schema?.overall];
     const overallStatus = statuses.includes("warn")
       ? "warn"
       : statuses.includes("degraded")
@@ -2634,6 +2785,7 @@ async function runDataWatchdog({ forceSchema = false, notifyAdmins = false } = {
       overallStatus,
       freshness,
       reconciliation,
+      cards,
       schema,
     };
     if (notifyAdmins) {
@@ -2976,6 +3128,7 @@ filterSource === "support" ? "🧑‍🧒 Support" : filterSource === "programs"
 
 const needsReplyBreakdownPromise = sbNeedsReplyBreakdown({ source: filterSource });
 const urgentCombinedPromise = sbCountUrgentCombined({ source: filterSource, role: "all" });
+const forwardedCombinedPromise = sbCountForwardedCombined({ source: filterSource });
 const metricSummaryPromise = getCachedDashboardMetrics();
 const opsDeliveryPromise = getCachedOpsDelivery();
 const [
@@ -2997,7 +3150,7 @@ needsReplyBreakdownPromise,
 urgentCombinedPromise,
 sbCountConversations({ pipeline: "actions_waiting", source: filterSource }),
 sbCountConversations({ pipeline: "active", source: filterSource }),
-sbCountConversations({ pipeline: "forwarded", source: filterSource }),
+forwardedCombinedPromise,
 sbCountConversations({ pipeline: "followups", source: filterSource }),
 sbCountConversations({ pipeline: "completed", source: filterSource }),
 sbCountSubmissions(),
@@ -3512,6 +3665,8 @@ return;
 // Handle urgent with auto-escalation logic
 const rows = viewKey === "urgent" 
 ? await sbListUrgentCombined({ source: filterSource, role: roleFilter, limit: 8 })
+: viewKey === "forwarded"
+? await sbListForwardedCombined({ source: filterSource, limit: 8 })
 : await sbListConversations({ pipeline: viewKey, source: filterSource, role: roleFilter, limit: 8 });
 await showConversationList(ctx, viewKey, rows, filterSource, roleFilter);
 // If you want queue lists to live-refresh too, update showConversationList
