@@ -1658,6 +1658,7 @@ return new Date(Date.UTC(year, 0, 1)).toISOString();
 return now.toISOString();
 };
 const eventRows = [];
+let rawClickEventCount = 0;
 const fallbackCounts = {
 programLinkOpens: 0,
 coverageExploration: 0,
@@ -1731,6 +1732,7 @@ if (since) cq = cq.gte("created_at", since);
 const { data: clickRows, error: clickErr } = await cq;
 if (!clickErr && Array.isArray(clickRows)) {
 for (const r of clickRows) {
+rawClickEventCount++;
 const mappedType = normalizeMetricEventType(r.kind || r.click_source);
 if (mappedType) eventRows.push({ event_type: mappedType, created_at: r.created_at });
 }
@@ -1837,11 +1839,12 @@ counts.programLinkOpens = Math.max(counts.programLinkOpens, fallbackCounts.progr
 counts.coverageExploration = Math.max(counts.coverageExploration, fallbackCounts.coverageExploration);
 counts.enrollClicks = Math.max(counts.enrollClicks, fallbackCounts.enrollClicks);
 counts.eappVisits = Math.max(counts.eappVisits, fallbackCounts.eappVisits);
-counts.totalClicks =
+const categoryTotalClicks =
   (counts.programLinkOpens || 0) +
   (counts.coverageExploration || 0) +
   (counts.enrollClicks || 0) +
   (counts.eappVisits || 0);
+counts.totalClicks = Math.max(categoryTotalClicks, rawClickEventCount);
   
   // Fetch calls answered for all windows
   let callsAnswered = 0;
