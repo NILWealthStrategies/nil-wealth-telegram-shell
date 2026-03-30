@@ -143,6 +143,10 @@ const WATCHDOG_SCHEMA_CHECK_INTERVAL_MS = Number(process.env.WATCHDOG_SCHEMA_CHE
 const WATCHDOG_ALERT_COOLDOWN_MINUTES = Number(process.env.WATCHDOG_ALERT_COOLDOWN_MINUTES || 30);
 const WATCHDOG_ALERT_BUSINESS_START_HOUR = Number(process.env.WATCHDOG_ALERT_BUSINESS_START_HOUR || 9);
 const WATCHDOG_ALERT_BUSINESS_END_HOUR = Number(process.env.WATCHDOG_ALERT_BUSINESS_END_HOUR || 18);
+const WATCHDOG_NOTIFY_ADMINS =
+String(process.env.WATCHDOG_NOTIFY_ADMINS || "true").toLowerCase() === "true";
+const WATCHDOG_ALERT_ONLY_WARN =
+String(process.env.WATCHDOG_ALERT_ONLY_WARN || "false").toLowerCase() === "true";
 // NY time
 const NY_TZ = "America/New_York";
 // ---------- GUARDS ----------
@@ -2307,7 +2311,7 @@ function isWithinNyBusinessHours(date = new Date()) {
 }
 
 async function sendWatchdogAdminAlert(snapshot, previousStatus) {
-  if (!ENABLE_TELEGRAM_BOT || !ADMIN_IDS.length) return;
+  if (!WATCHDOG_NOTIFY_ADMINS || !ENABLE_TELEGRAM_BOT || !ADMIN_IDS.length) return;
   if (!isWithinNyBusinessHours()) return;
   const now = Date.now();
   const cooldownMs = WATCHDOG_ALERT_COOLDOWN_MINUTES * 60 * 1000;
@@ -2315,6 +2319,8 @@ async function sendWatchdogAdminAlert(snapshot, previousStatus) {
   const changed = previousStatus !== snapshot.overallStatus;
   const recovered = snapshot.overallStatus === "ok" && (previousStatus === "warn" || previousStatus === "degraded");
   const cooldownElapsed = !lastWatchdogAlertAt || (now - lastWatchdogAlertAt) >= cooldownMs;
+
+  if (WATCHDOG_ALERT_ONLY_WARN && snapshot.overallStatus !== "warn") return;
 
   // Alert on status transitions, on recovery, and periodic reminders while degraded.
   if (!(changed || recovered || (severe && cooldownElapsed))) return;
