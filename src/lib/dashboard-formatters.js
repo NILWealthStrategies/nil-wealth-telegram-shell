@@ -43,8 +43,20 @@ ${laneHint}`;
 }
 
 function buildDashboardMetricsText(metrics = {}) {
+  const totalClicks =
+    metrics.totalClicks ||
+    ((metrics.parentGuideClicks || metrics.programLinkOpens || 0) +
+      (metrics.supplementalHealthGuideClicks || 0) +
+      (metrics.riskAwarenessGuideClicks || 0) +
+      (metrics.taxEducationGuideClicks || 0) +
+      (metrics.enrollPortalClicks || metrics.enrollClicks || 0) +
+      (metrics.eappVisits || 0));
   return `📊 METRICS
+Total Clicks: ${totalClicks}
 Total Parent Guide Opens: ${metrics.programLinkOpens || 0}
+Total Supplemental Health Guide Clicks: ${metrics.supplementalHealthGuideClicks || 0}
+Total Risk Awareness Guide Clicks: ${metrics.riskAwarenessGuideClicks || 0}
+Total Tax Education Guide Clicks: ${metrics.taxEducationGuideClicks || 0}
 Total Coverage Exploration: ${metrics.coverageExploration || 0}
 Total Enroll Portal Visits: ${metrics.enrollClicks || 0}
 Total eApp Visits: ${metrics.eappVisits || 0}
@@ -160,7 +172,11 @@ function buildYearSummaryText(y, filterSource) {
 TOTALS
 
 ` +
+    `• Total Clicks: ${n(d.totalClicks)} (Avg ${avg(d.totalClicks)}/mo)\n` +
     `• Total Parent Guides Opened: ${n(d.programLinkOpens)} (Avg ${avg(d.programLinkOpens)}/mo)\n` +
+    `• Supplemental Health Guide Clicks: ${n(d.supplementalHealthGuideClicks)} (Avg ${avg(d.supplementalHealthGuideClicks)}/mo)\n` +
+    `• Risk Awareness Guide Clicks: ${n(d.riskAwarenessGuideClicks)} (Avg ${avg(d.riskAwarenessGuideClicks)}/mo)\n` +
+    `• Tax Education Guide Clicks: ${n(d.taxEducationGuideClicks)} (Avg ${avg(d.taxEducationGuideClicks)}/mo)\n` +
     `• Coverage Exploration: ${n(d.coverageExploration)} (Avg ${avg(d.coverageExploration)}/mo)\n` +
     `• Enroll Clicks: ${n(d.enrollClicks)} (Avg ${avg(d.enrollClicks)}/mo)\n` +
     `• eApp Visits: ${n(d.eappVisits)} (Avg ${avg(d.eappVisits)}/mo)\n` +
@@ -176,6 +192,7 @@ HIGHLIGHTS\n\n` +
     `${bestMonthEver}\n\n` +
     `--
 TRENDS (vs last month)\n\n` +
+    `• Total Clicks: ${trendEmoji(t.totalClicks)}\n` +
     `• Parent Guides: ${trendEmoji(t.opens)}\n` +
     `• Exploration: ${trendEmoji(t.exploration)}\n` +
     `• Enroll Clicks: ${trendEmoji(t.enrollClicks)}\n` +
