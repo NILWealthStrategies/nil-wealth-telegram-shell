@@ -37,17 +37,28 @@ function convoSummaryLine(conv, urgentAfterMinutes) {
   ${sla} • ${until}`;
 }
 
-function formatMessageLineFull(m) {
+function formatMessageLineFull(m, conv = null, opts = {}) {
   const dir = m.direction === "outbound" ? "➡ OUT" : "⬅ IN";
+  const supportEmail = String(opts.supportFromEmail || "").trim().toLowerCase();
+  const outreachEmail = String(opts.outreachFromEmail || "").trim().toLowerCase();
+  const fromEmailLc = String(m.from_email || "").trim().toLowerCase();
+  const sourceLabel = (() => {
+    if (String(m.sender || "").toLowerCase() === "instantly_ai") return "Source: AI";
+    if (m.direction === "inbound") return "Source: Inbound (Contact)";
+    if (supportEmail && fromEmailLc && fromEmailLc === supportEmail) return "Source: Support";
+    if (outreachEmail && fromEmailLc && fromEmailLc === outreachEmail) return "Source: Outreach";
+    if (m.direction === "outbound") return "Source: Outbound";
+    return "Source: System";
+  })();
   const from = m.from_email ? `From: ${m.from_email}\n` : "";
   const to = m.to_email ? `To: ${m.to_email}\n` : "";
   const subj = m.subject ? `Subject: ${m.subject}\n` : "";
   const body = shorten(m.body || m.preview || "", 1200);
   const ts = m.created_at || "";
-  return `${dir}\n${from}${to}${subj}${body}\n${ts}`;
+  return `${dir}\n${sourceLabel}\n${from}${to}${subj}${body}\n${ts}`;
 }
 
-function formatInstantlyTimelineLine(item, conv) {
+function formatInstantlyTimelineLine(item, conv, opts = {}) {
   const ts = item?.created_at || "";
   if (item?.timeline_type === "event" && item?.event_type === "cc_support_sent") {
     return `SYSTEM — LOOP IN SUPPORT SENT\n${ts}`;
@@ -56,9 +67,14 @@ function formatInstantlyTimelineLine(item, conv) {
   const msg = item || {};
   const body = shorten(msg.body || msg.preview || "", 1200);
   const coachEmail = msg.from_email || conv?.contact_email || "—";
+  const supportEmail = String(opts.supportFromEmail || "").trim().toLowerCase();
+  const outreachEmail = String(opts.outreachFromEmail || "").trim().toLowerCase();
+  const fromEmailLc = String(msg.from_email || "").trim().toLowerCase();
   const label = (() => {
     if (String(msg.sender || "").toLowerCase() === "instantly_ai") return "AI AGENT";
     if (msg.direction === "inbound") return `COACH (${coachEmail})`;
+    if (supportEmail && fromEmailLc && fromEmailLc === supportEmail) return "SUPPORT";
+    if (outreachEmail && fromEmailLc && fromEmailLc === outreachEmail) return "OUTREACH";
     return "SYSTEM";
   })();
   return `${label}\n${body}\n${ts}`;

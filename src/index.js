@@ -3290,10 +3290,10 @@ const kb = [];
 // Pagination buttons
 const navRow = [];
 if (currentPage > 1) {
-navRow.push(Markup.button.callback("◀️ Prev", `VIEW:website_submissions:${currentPage - 1}`));
+navRow.push(Markup.button.callback("◀ Prev", `VIEW:website_submissions:${currentPage - 1}`));
 }
 if (currentPage < totalPages) {
-navRow.push(Markup.button.callback("Next ▶️", `VIEW:website_submissions:${currentPage + 1}`));
+navRow.push(Markup.button.callback("Next ▶", `VIEW:website_submissions:${currentPage + 1}`));
 }
 if (navRow.length > 0) kb.push(navRow);
 kb.push([Markup.button.callback("⬅ Back", "ALLQ:open")]);
@@ -3628,7 +3628,10 @@ total = timeline.length;
 if (total > 0) {
   pageIndex = Math.min(safeOffset, total - 1);
   totalPages = total;
-  body = formatInstantlyTimelineLine(timeline[pageIndex], conv);
+  body = formatInstantlyTimelineLine(timeline[pageIndex], conv, {
+    supportFromEmail: SUPPORT_FROM_EMAIL,
+    outreachFromEmail: OUTREACH_FROM_EMAIL,
+  });
 }
 } else {
 total = await sbCountMessages(convId);
@@ -3636,7 +3639,10 @@ if (total > 0) {
   pageIndex = Math.min(safeOffset, total - 1);
   msgs = await sbListMessages(convId, { offset: pageIndex, limit }).catch(() => []);
   const msg = msgs?.[0] || null;
-  body = msg ? formatMessageLineFull(msg) : "(No messages yet)";
+  body = msg ? formatMessageLineFull(msg, conv, {
+    supportFromEmail: SUPPORT_FROM_EMAIL,
+    outreachFromEmail: OUTREACH_FROM_EMAIL,
+  }) : "(No messages yet)";
   totalPages = total;
 }
 }
@@ -3658,6 +3664,9 @@ if (paging.length) kbRows.push(paging);
 // latest row (only show if not already on latest)
 if (pageIndex !== latestOffset && total > 0) {
 kbRows.push([Markup.button.callback("⏩ Latest", `THREAD:${convId}:${latestOffset}`)]);
+}
+if (pageIndex !== total - 1 && total > 0) {
+kbRows.push([Markup.button.callback("⏮ First", `THREAD:${convId}:${Math.max(0, total - 1)}`)]);
 }
 // 🪞 mirror row (recommended)
 if (conv?.mirror_conversation_id) {
@@ -4614,11 +4623,11 @@ const kb = [];
 if (totalPages > 1) {
   const navRow = [];
   if (safePage > 1) {
-    navRow.push(Markup.button.callback("◀️ Prev", `TRIAGE:all:${safePage - 1}`));
+    navRow.push(Markup.button.callback("◀ Prev", `TRIAGE:all:${safePage - 1}`));
   }
   navRow.push(Markup.button.callback(`· ${safePage}/${totalPages} ·`, `TRIAGE:all:${safePage}`));
   if (safePage < totalPages) {
-    navRow.push(Markup.button.callback("Next ▶️", `TRIAGE:all:${safePage + 1}`));
+    navRow.push(Markup.button.callback("Next ▶", `TRIAGE:all:${safePage + 1}`));
   }
   kb.push(navRow);
 }
@@ -4688,11 +4697,11 @@ const kb = [];
 if (totalPages > 1) {
   const navRow = [];
   if (safePage > 1) {
-    navRow.push(Markup.button.callback("◀️ Prev", `HANDOFF:${safePage - 1}`));
+    navRow.push(Markup.button.callback("◀ Prev", `HANDOFF:${safePage - 1}`));
   }
   navRow.push(Markup.button.callback(`· ${safePage}/${totalPages} ·`, `HANDOFF:${safePage}`));
   if (safePage < totalPages) {
-    navRow.push(Markup.button.callback("Next ▶️", `HANDOFF:${safePage + 1}`));
+    navRow.push(Markup.button.callback("Next ▶", `HANDOFF:${safePage + 1}`));
   }
   kb.push(navRow);
 }
@@ -5519,10 +5528,10 @@ const kb = [];
 // Pagination buttons
 const navRow = [];
 if (currentPage > 1) {
-navRow.push(Markup.button.callback("◀️ Prev", `CLIENTS:list:${bucket}:${currentPage - 1}`));
+navRow.push(Markup.button.callback("◀ Prev", `CLIENTS:list:${bucket}:${currentPage - 1}`));
 }
 if (currentPage < totalPages) {
-navRow.push(Markup.button.callback("Next ▶️", `CLIENTS:list:${bucket}:${currentPage + 1}`));
+navRow.push(Markup.button.callback("Next ▶", `CLIENTS:list:${bucket}:${currentPage + 1}`));
 }
 if (navRow.length > 0) kb.push(navRow);
 
@@ -5670,10 +5679,10 @@ const kb = [];
 // Pagination buttons
 const navRow = [];
 if (currentPage > 1) {
-navRow.push(Markup.button.callback("◀️ Prev", `CLIENT:threads:${clientId}:${currentPage - 1}`));
+navRow.push(Markup.button.callback("◀ Prev", `CLIENT:threads:${clientId}:${currentPage - 1}`));
 }
 if (currentPage < totalPages) {
-navRow.push(Markup.button.callback("Next ▶️", `CLIENT:threads:${clientId}:${currentPage + 1}`));
+navRow.push(Markup.button.callback("Next ▶", `CLIENT:threads:${clientId}:${currentPage + 1}`));
 }
 if (navRow.length > 0) kb.push(navRow);
 
@@ -5737,10 +5746,10 @@ const kb = [];
 // Pagination buttons
 const navRow = [];
 if (currentPage > 1) {
-navRow.push(Markup.button.callback("◀️ Prev", `CLIENT:subs:${clientId}:${currentPage - 1}`));
+navRow.push(Markup.button.callback("◀ Prev", `CLIENT:subs:${clientId}:${currentPage - 1}`));
 }
 if (currentPage < totalPages) {
-navRow.push(Markup.button.callback("Next ▶️", `CLIENT:subs:${clientId}:${currentPage + 1}`));
+navRow.push(Markup.button.callback("Next ▶", `CLIENT:subs:${clientId}:${currentPage + 1}`));
 }
 if (navRow.length > 0) kb.push(navRow);
 
@@ -5984,10 +5993,10 @@ const kb = [];
 // Pagination buttons
 const navRow = [];
 if (currentPage > 1) {
-navRow.push(Markup.button.callback("◀️ Prev", `CALLS:hub:${currentPage - 1}`));
+navRow.push(Markup.button.callback("◀ Prev", `CALLS:hub:${currentPage - 1}`));
 }
 if (currentPage < totalPages) {
-navRow.push(Markup.button.callback("Next ▶️", `CALLS:hub:${currentPage + 1}`));
+navRow.push(Markup.button.callback("Next ▶", `CALLS:hub:${currentPage + 1}`));
 }
 if (navRow.length > 0) kb.push(navRow);
   
