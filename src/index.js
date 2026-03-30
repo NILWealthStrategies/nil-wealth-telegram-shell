@@ -1485,16 +1485,166 @@ async function sbMetricSummary({ source = "all", window = "month" }) {
 const now = new Date();
 const sinceDays = window === "week" ? 7 : window === "year" ? 365 : window === "all" ? null : 30;
 const since = sinceDays ? new Date(now.getTime() - sinceDays * 24 * 3600 * 1000).toISOString() : null;
-// metric events
+const normalizeMetricEventType = (rawType) => {
+const t = String(rawType || "").trim().toLowerCase();
+if (!t) return null;
+if (t.includes("thread_created") || t === "conversation.created") return "thread_created";
+if (t.includes("eapp")) return "eapp_visit";
+if (t.includes("coverage")) return "coverage_exploration";
+if (t.includes("enroll") || t.includes("portal") || t.includes("signup")) return "enroll_click";
+if (t.includes("guide") || t.includes("program_link") || t.includes("parent_link")) return "program_link_open";
+if (t.includes("click")) return "enroll_click";
+if (["program_link_open", "parent_guide_open", "parent_guide_click", "program_guide_open", "guide_open"].includes(t)) return "program_link_open";
+if (["coverage_exploration", "coverage_explore", "coverage_click", "coverage_link_open"].includes(t)) return "coverage_exploration";
+if (["enroll_click", "enroll_portal_click", "enroll_portal_visit", "enroll_visit", "portal_click"].includes(t)) return "enroll_click";
+if (["eapp_visit", "eapp_click", "eapp_open"].includes(t)) return "eapp_visit";
+if (t === "thread_created" || t === "conversation.created") return "thread_created";
+return null;
+};
+const toNumber = (v) => {
+const n = Number(v);
+return Number.isFinite(n) ? n : 0;
+};
+const readNumeric = (row, keys) => {
+for (const k of keys) {
+if (row && row[k] != null) return toNumber(row[k]);
+}
+return 0;
+};
+const eventRows = [];
+const fallbackCounts = {
+programLinkOpens: 0,
+coverageExploration: 0,
+enrollClicks: 0,
+eappVisits: 0,
+};
+const monthlyFallback = Array.from({ length: 12 }, () => ({
+opens: 0,
+exploration: 0,
+enrollClicks: 0,
+eappVisits: 0,
+}));
+
+const addFallbackBucket = (createdAt, bucket) => {
+const ts = new Date(createdAt || now.toISOString()).getTime();
+if (!Number.isFinite(ts)) return;
+if (since) {
+const sinceTs = new Date(since).getTime();
+if (Number.isFinite(sinceTs) && ts < sinceTs) return;
+}
+fallbackCounts.programLinkOpens += toNumber(bucket.opens);
+fallbackCounts.coverageExploration += toNumber(bucket.exploration);
+fallbackCounts.enrollClicks += toNumber(bucket.enrollClicks);
+fallbackCounts.eappVisits += toNumber(bucket.eappVisits);
+const mi = new Date(ts).getMonth();
+if (mi >= 0 && mi <= 11) {
+monthlyFallback[mi].opens += toNumber(bucket.opens);
+monthlyFallback[mi].exploration += toNumber(bucket.exploration);
+monthlyFallback[mi].enrollClicks += toNumber(bucket.enrollClicks);
+monthlyFallback[mi].eappVisits += toNumber(bucket.eappVisits);
+}
+};
+
+// 1) canonical metric events (source of truth)
+try {
 let q = ops()
 .from("metric_events")
 .select("event_type, source, created_at");
 if (since) q = q.gte("created_at", since);
-
 if (source !== "all") q = q.eq("source", sourceSafe(source));
 const { data, error } = await q;
-if (error) throw new Error(error.message);
-const rows = data || [];
+if (!error && Array.isArray(data)) {
+for (const r of data) {
+const eventType = normalizeMetricEventType(r.event_type) || String(r.event_type || "");
+eventRows.push({ event_type: eventType, created_at: r.created_at });
+}
+}
+} catch (err) {
+console.warn("sbMetricSummary metric_events fallback:", err?.message || err);
+}
+
+// 2) click_events fallback (webhook/metric writes here)
+try {
+let cq = ops()
+.from("click_events")
+.select("kind, click_source, created_at");
+if (since) cq = cq.gte("created_at", since);
+const { data: clickRows, error: clickErr } = await cq;
+if (!clickErr && Array.isArray(clickRows)) {
+for (const r of clickRows) {
+const mappedType = normalizeMetricEventType(r.kind || r.click_source);
+if (mappedType) eventRows.push({ event_type: mappedType, created_at: r.created_at });
+}
+}
+} catch (err) {
+console.warn("sbMetricSummary click_events fallback:", err?.message || err);
+}
+
+// 3) eapp_visits fallback table
+try {
+let eq = ops()
+.from("eapp_visits")
+.select("created_at");
+if (since) eq = eq.gte("created_at", since);
+const { data: eappRows, error: eappErr } = await eq;
+if (!eappErr && Array.isArray(eappRows)) {
+for (const r of eappRows) eventRows.push({ event_type: "eapp_visit", created_at: r.created_at });
+}
+} catch (err) {
+console.warn("sbMetricSummary eapp_visits fallback:", err?.message || err);
+}
+
+// 4) daily click summary view/table fallback (aggregates)
+for (const relation of ["v_click_daily_summary", "click_analytics_daily"]) {
+try {
+const { data: dailyRows, error: dailyErr } = await ops()
+.from(relation)
+.select("*");
+if (dailyErr || !Array.isArray(dailyRows)) continue;
+for (const r of dailyRows) {
+const createdAt = r.created_at || r.day || r.date || r.event_date || now.toISOString();
+const byKindType = normalizeMetricEventType(r.kind);
+if (byKindType && (r.count != null || r.total != null || r.clicks != null)) {
+const count = toNumber(r.count ?? r.total ?? r.clicks);
+const bucket = { opens: 0, exploration: 0, enrollClicks: 0, eappVisits: 0 };
+if (byKindType === "program_link_open") bucket.opens = count;
+if (byKindType === "coverage_exploration") bucket.exploration = count;
+if (byKindType === "enroll_click") bucket.enrollClicks = count;
+if (byKindType === "eapp_visit") bucket.eappVisits = count;
+addFallbackBucket(createdAt, bucket);
+continue;
+}
+addFallbackBucket(createdAt, {
+opens: readNumeric(r, ["program_link_opens", "guide_opens", "parent_guide_opens", "opens"]),
+exploration: readNumeric(r, ["coverage_exploration", "coverage_explorations", "coverage_clicks", "exploration"]),
+enrollClicks: readNumeric(r, ["enroll_clicks", "enroll_portal_visits", "enroll_portal_clicks", "total_clicks", "clicks"]),
+eappVisits: readNumeric(r, ["eapp_visits", "eapp_clicks"]),
+});
+}
+} catch (err) {
+console.warn(`sbMetricSummary ${relation} fallback:`, err?.message || err);
+}
+}
+
+// 5) today click summary view fallback
+try {
+const { data: todayRows, error: todayErr } = await ops()
+.from("v_click_summary_today")
+.select("*");
+if (!todayErr && Array.isArray(todayRows)) {
+for (const r of todayRows) {
+addFallbackBucket(now.toISOString(), {
+opens: readNumeric(r, ["program_link_opens", "guide_opens", "parent_guide_opens", "opens"]),
+exploration: readNumeric(r, ["coverage_exploration", "coverage_explorations", "coverage_clicks", "exploration"]),
+enrollClicks: readNumeric(r, ["enroll_clicks", "enroll_portal_visits", "enroll_portal_clicks", "total_clicks", "clicks"]),
+eappVisits: readNumeric(r, ["eapp_visits", "eapp_clicks"]),
+});
+}
+}
+} catch (err) {
+console.warn("sbMetricSummary v_click_summary_today fallback:", err?.message || err);
+}
+
 const counts = {
 programLinkOpens: 0,
 coverageExploration: 0,
@@ -1502,15 +1652,20 @@ enrollClicks: 0,
 eappVisits: 0,
 threadsCreated: 0, // ✅ new
 };
-  for (const r of rows) {
-    if (r.event_type === "program_link_open") counts.programLinkOpens++;
-    if (r.event_type === "coverage_exploration") counts.coverageExploration++;
-    if (r.event_type === "enroll_click") counts.enrollClicks++;
-    if (r.event_type === "eapp_visit") counts.eappVisits++;
+  for (const r of eventRows) {
+    const evt = normalizeMetricEventType(r.event_type) || String(r.event_type || "");
+    if (evt === "program_link_open") counts.programLinkOpens++;
+    if (evt === "coverage_exploration") counts.coverageExploration++;
+    if (evt === "enroll_click") counts.enrollClicks++;
+    if (evt === "eapp_visit") counts.eappVisits++;
     // ✅ choose ONE canonical thread metric event name and stick to it
-    if (r.event_type === "thread_created" || r.event_type ===  "conversation.created")
+    if (evt === "thread_created")
       counts.threadsCreated++;
   }
+counts.programLinkOpens = Math.max(counts.programLinkOpens, fallbackCounts.programLinkOpens);
+counts.coverageExploration = Math.max(counts.coverageExploration, fallbackCounts.coverageExploration);
+counts.enrollClicks = Math.max(counts.enrollClicks, fallbackCounts.enrollClicks);
+counts.eappVisits = Math.max(counts.eappVisits, fallbackCounts.eappVisits);
   
   // Fetch calls answered for all windows
   let callsAnswered = 0;
@@ -1543,15 +1698,22 @@ threads: 0,
 callsAnswered: 0,
 }));
 
-for (const r of rows) {
+for (const r of eventRows) {
 const mi = monthIndex(r.created_at);
 if (mi < 0 || mi > 11) continue;
-if (r.event_type === "program_link_open") monthly[mi].opens++;
-if (r.event_type === "coverage_exploration") monthly[mi].exploration++;
-if (r.event_type === "enroll_click") monthly[mi].enrollClicks++;
-if (r.event_type === "eapp_visit") monthly[mi].eappVisits++;
-if (r.event_type === "thread_created" || r.event_type === "conversation.created")
+const evt = normalizeMetricEventType(r.event_type) || String(r.event_type || "");
+if (evt === "program_link_open") monthly[mi].opens++;
+if (evt === "coverage_exploration") monthly[mi].exploration++;
+if (evt === "enroll_click") monthly[mi].enrollClicks++;
+if (evt === "eapp_visit") monthly[mi].eappVisits++;
+if (evt === "thread_created")
 monthly[mi].threads++;
+}
+for (let i = 0; i < 12; i++) {
+monthly[i].opens = Math.max(monthly[i].opens, monthlyFallback[i].opens || 0);
+monthly[i].exploration = Math.max(monthly[i].exploration, monthlyFallback[i].exploration || 0);
+monthly[i].enrollClicks = Math.max(monthly[i].enrollClicks, monthlyFallback[i].enrollClicks || 0);
+monthly[i].eappVisits = Math.max(monthly[i].eappVisits, monthlyFallback[i].eappVisits || 0);
 }
 
 // Add calls to monthly buckets
@@ -1584,11 +1746,12 @@ const week = Math.ceil((((d - onejan) / 86400000) + onejan.getDay() + 1) / 7);
 return `${y}-W${String(week).padStart(2, "0")}`;
 };
 const weekAgg = new Map(); // key -> { enrollClicks, threads }
-for (const r of rows) {
+for (const r of eventRows) {
 const k = weekKey(r.created_at);
 const cur = weekAgg.get(k) || { enrollClicks: 0, threads: 0 };
-if (r.event_type === "enroll_click") cur.enrollClicks++;
-if (r.event_type === "thread_created" || r.event_type === "conversation.created")
+const evt = normalizeMetricEventType(r.event_type) || String(r.event_type || "");
+if (evt === "enroll_click") cur.enrollClicks++;
+if (evt === "thread_created")
 cur.threads++;
 weekAgg.set(k, cur);
 }
