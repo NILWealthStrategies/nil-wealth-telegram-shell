@@ -1619,7 +1619,6 @@ if (t.includes("sh_click") || t.includes("supplemental") || t.includes("supp_hea
 if (t.includes("risk_awareness") || (t.includes("risk") && t.includes("click"))) return "risk_awareness_guide_click";
 if (t.includes("tax_education") || (t.includes("tax") && t.includes("click"))) return "tax_education_guide_click";
 if (t.includes("enroll") || t.includes("portal") || t.includes("signup")) return "enroll_click";
-if (t.includes("click")) return "enroll_click";
 if (["program_link_open", "parent_guide_open", "parent_guide_click", "program_guide_open", "guide_open", "parent_guide_click"].includes(t)) return "parent_guide_click";
 if (["coverage_exploration", "coverage_explore", "coverage_click", "coverage_link_open"].includes(t)) return "supplemental_health_guide_click";
 if (["sh_click", "supplemental_health_click", "supplemental_health_guide_click"].includes(t)) return "supplemental_health_guide_click";
@@ -7817,6 +7816,10 @@ app.post("/webhook/metric", async (req, res) => {
     const referrer = req.header("referer") || req.header("referrer") || meta?.referrer || req.body?.referrer || "";
     const clickSource = inferClickSource(referrer);
 
+    const bodyTs = req.body?.ts || null;
+    const bodySource = req.body?.source || "cloudflare";
+    const bodyValue = req.body?.value != null ? Number(req.body.value) : 1;
+
     // Insert into schema `nil`
     const { error } = await supabase
       .schema("nil")
@@ -7827,6 +7830,10 @@ app.post("/webhook/metric", async (req, res) => {
           campaign_id: resolvedCampaignId ?? null,
           click_source: clickSource,
           kind,
+          event_type: kind,
+          source: bodySource,
+          value: bodyValue,
+          event_time: bodyTs ? new Date(bodyTs).toISOString() : new Date().toISOString(),
           link: link ?? null,
           meta: meta ?? {},
         },
