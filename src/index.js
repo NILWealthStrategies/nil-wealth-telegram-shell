@@ -159,6 +159,8 @@ const DASHBOARD_CACHE_TTL_MS = Number(process.env.DASHBOARD_CACHE_TTL_MS || 3000
 const DASHBOARD_SPEED_MODE = String(process.env.DASHBOARD_SPEED_MODE || "true").toLowerCase() !== "false";
 const DASHBOARD_METRICS_CACHE_TTL_MS = Number(process.env.DASHBOARD_METRICS_CACHE_TTL_MS || 10000);
 const DASHBOARD_OPS_CACHE_TTL_MS = Number(process.env.DASHBOARD_OPS_CACHE_TTL_MS || 20000);
+const FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY =
+String(process.env.FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY || "false").toLowerCase() === "true";
 // NY time
 const NY_TZ = "America/New_York";
 // ---------- GUARDS ----------
@@ -1180,13 +1182,90 @@ async function sbCoachIdsForSource(source = "all") {
   }
 }
 
+function normalizeGuideKey(rawType) {
+  const t = String(rawType || "").trim().toLowerCase();
+  if (!t) return "";
+  if (t.includes("parent") && t.includes("guide")) return "parent-guide";
+  if (t.includes("supplemental") && t.includes("guide")) return "supplemental-health-guide";
+  if (t.includes("risk") && t.includes("guide")) return "risk-awareness-guide";
+  if (t.includes("tax") && t.includes("guide")) return "tax-education-guide";
+  if (t.includes("enroll")) return "enroll";
+  if (t.includes("eapp")) return "eapp";
+  if (t.includes("guide")) return "guide";
+  return "";
+}
+
+function isForwardedGuideSignal(rawType) {
+  return Boolean(normalizeGuideKey(rawType));
+}
+
+function isCoachLikeActorType(rawActorType) {
+  const t = String(rawActorType || "").trim().toLowerCase();
+  if (!t) return false;
+  return t.includes("coach") || t.includes("program");
+}
+
+function isBotLikeActorType(rawActorType) {
+  const t = String(rawActorType || "").trim().toLowerCase();
+  if (!t) return false;
+  return t.includes("bot") || t.includes("crawler") || t.includes("spider") || t.includes("prefetch") || t.includes("preview");
+}
+
+function isLikelyCoachSelfClick(row = {}) {
+  if (row?.is_coach_self_click === true) return true;
+  const actorType = String(row?.actor_type || "").trim().toLowerCase();
+  const actorId = String(row?.actor_id || "").trim();
+  const coachId = String(row?.coach_id || "").trim();
+  if (!actorId || !coachId) return false;
+  return isCoachLikeActorType(actorType) && actorId === coachId;
+}
+
+function includesForwardedFamilyEvidence(row = {}) {
+  if (isLikelyCoachSelfClick(row)) return false;
+  if (isBotLikeActorType(row?.actor_type)) return false;
+  const guideKey = normalizeGuideKey(row?.guide_key || row?.click_type || row?.kind || row?.event_type);
+  if (guideKey) return true;
+  const sourceTag = String(row?.click_source || "").toLowerCase();
+  const typeTag = String(row?.click_type || row?.kind || row?.event_type || "").toLowerCase();
+  return sourceTag === "email" || typeTag.includes("guide") || typeTag.includes("enroll") || typeTag.includes("eapp");
+}
+
+async function sbForwardedCoachIdsFromRegistry({ source = "all" } = {}) {
+  try {
+    const coachIdsForSource = await sbCoachIdsForSource(source);
+    const { data, error } = await ops()
+      .from("click_link_registry")
+      .select("coach_id, guide_key, actor_type, actor_id, is_coach_self_click")
+      .not("coach_id", "is", null)
+      .limit(10000);
+    if (error) return null;
+
+    const coachIds = new Set();
+    for (const row of data || []) {
+      const coachId = String(row?.coach_id || "").trim();
+      if (!coachId) continue;
+      if (coachIdsForSource && !coachIdsForSource.has(coachId)) continue;
+      if (isLikelyCoachSelfClick(row)) continue;
+      if (!isForwardedGuideSignal(row?.guide_key)) continue;
+      coachIds.add(coachId);
+    }
+
+    return coachIds;
+  } catch (_) {
+    return null;
+  }
+}
+
 async function sbCountForwardedCombined({ source = "all" } = {}) {
   try {
+    const fromRegistry = await sbForwardedCoachIdsFromRegistry({ source });
+    if (fromRegistry) return fromRegistry.size;
+
     const coachIdsForSource = await sbCoachIdsForSource(source);
 
     const { data: clicks, error } = await ops()
       .from("click_events")
-      .select("coach_id, click_source, click_type, kind, event_type")
+      .select("coach_id, click_source, click_type, kind, event_type, guide_key, actor_type, actor_id, is_coach_self_click")
       .not("coach_id", "is", null)
       .limit(10000);
     if (error) return 0;
@@ -1197,10 +1276,8 @@ async function sbCountForwardedCombined({ source = "all" } = {}) {
       const coachId = String(row?.coach_id || "").trim();
       if (!coachId) continue;
       if (coachIdsForSource && !coachIdsForSource.has(coachId)) continue;
-      const sourceTag = String(row?.click_source || "").toLowerCase();
-      const typeTag = String(row?.click_type || row?.kind || row?.event_type || "").toLowerCase();
-      const looksForwardedFamilyClick = sourceTag === "email" || typeTag.includes("guide") || typeTag.includes("enroll") || typeTag.includes("eapp");
-      if (looksForwardedFamilyClick) coachIds.add(coachId);
+      if (!includesForwardedFamilyEvidence(row)) continue;
+      coachIds.add(coachId);
     }
 
     return coachIds.size;
@@ -1212,10 +1289,30 @@ async function sbCountForwardedCombined({ source = "all" } = {}) {
 
 async function sbListForwardedCombined({ source = "all", limit = 8 } = {}) {
   try {
+    const fromRegistry = await sbForwardedCoachIdsFromRegistry({ source });
+    if (fromRegistry && fromRegistry.size) {
+      const ids = Array.from(fromRegistry).slice(0, 200);
+      const { data: convs, error: convErr } = await ops()
+        .from("conversations")
+        .select("id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at")
+        .in("coach_id", ids)
+        .order("updated_at", { ascending: false })
+        .limit(Math.max(limit * 8, 64));
+      if (convErr) return [];
+
+      const latestByCoach = new Map();
+      for (const conv of convs || []) {
+        const coachId = String(conv?.coach_id || "").trim();
+        if (!coachId) continue;
+        if (!latestByCoach.has(coachId)) latestByCoach.set(coachId, conv);
+      }
+      return Array.from(latestByCoach.values()).slice(0, limit);
+    }
+
     const coachIdsForSource = await sbCoachIdsForSource(source);
     const { data: clicks, error } = await ops()
       .from("click_events")
-      .select("coach_id, click_source, click_type, kind, event_type")
+      .select("coach_id, click_source, click_type, kind, event_type, guide_key, actor_type, actor_id, is_coach_self_click")
       .not("coach_id", "is", null)
       .limit(10000);
     if (error) return [];
@@ -1225,10 +1322,8 @@ async function sbListForwardedCombined({ source = "all", limit = 8 } = {}) {
       const coachId = String(row?.coach_id || "").trim();
       if (!coachId) continue;
       if (coachIdsForSource && !coachIdsForSource.has(coachId)) continue;
-      const sourceTag = String(row?.click_source || "").toLowerCase();
-      const typeTag = String(row?.click_type || row?.kind || row?.event_type || "").toLowerCase();
-      const looksForwardedFamilyClick = sourceTag === "email" || typeTag.includes("guide") || typeTag.includes("enroll") || typeTag.includes("eapp");
-      if (looksForwardedFamilyClick) clickedCoachIds.add(coachId);
+      if (!includesForwardedFamilyEvidence(row)) continue;
+      clickedCoachIds.add(coachId);
     }
 
     const ids = Array.from(clickedCoachIds).slice(0, 200);
@@ -2375,8 +2470,95 @@ console.log("sbPoolsOverview error:", error);
 return [];
 }
 
+const coaches = data || [];
+const coachIds = new Set(coaches.map((c) => String(c.coach_id || "").trim()).filter(Boolean));
+const sinceYearIso = new Date(Date.now() - 365 * 24 * 3600 * 1000).toISOString();
+
+const metricsByCoach = new Map();
+for (const id of coachIds) {
+  metricsByCoach.set(id, {
+    guide_opens_year: 0,
+    enroll_clicks_year: 0,
+    eapp_visits_year: 0,
+  });
+}
+
+try {
+  const { data: regRows, error: regErr } = await ops()
+    .from("click_link_registry")
+    .select("coach_id, guide_key, person_key, created_at")
+    .gte("created_at", sinceYearIso)
+    .limit(50000);
+
+  if (!regErr && Array.isArray(regRows) && regRows.length) {
+    const uniq = new Set();
+    for (const row of regRows) {
+      const coachId = String(row?.coach_id || "").trim();
+      if (!coachId || !coachIds.has(coachId)) continue;
+      const guideKey = String(row?.guide_key || "").trim().toLowerCase();
+      const personKey = String(row?.person_key || "").trim();
+      if (!guideKey || !personKey) continue;
+      const dedupe = `${coachId}|${guideKey}|${personKey}`;
+      if (uniq.has(dedupe)) continue;
+      uniq.add(dedupe);
+
+      const m = metricsByCoach.get(coachId) || { guide_opens_year: 0, enroll_clicks_year: 0, eapp_visits_year: 0 };
+      if (guideKey === "enroll") {
+        m.enroll_clicks_year += 1;
+      } else if (guideKey === "eapp") {
+        m.eapp_visits_year += 1;
+      } else {
+        m.guide_opens_year += 1;
+      }
+      metricsByCoach.set(coachId, m);
+    }
+  } else {
+    throw regErr || new Error("registry_unavailable");
+  }
+} catch (_) {
+  // Fallback for older deployments: derive approximate unique counts from click_events.
+  try {
+    const { data: clickRows, error: clickErr } = await ops()
+      .from("click_events")
+      .select("coach_id, guide_key, click_type, kind, event_type, person_key, is_coach_self_click, created_at")
+      .gte("created_at", sinceYearIso)
+      .limit(50000);
+    if (!clickErr && Array.isArray(clickRows)) {
+      const uniq = new Set();
+      for (const row of clickRows) {
+        const coachId = String(row?.coach_id || "").trim();
+        if (!coachId || !coachIds.has(coachId)) continue;
+        if (row?.is_coach_self_click === true) continue;
+        const guideKey = normalizeGuideKey(row?.guide_key || row?.click_type || row?.kind || row?.event_type);
+        const personKey = String(row?.person_key || "").trim();
+        if (!guideKey || !personKey) continue;
+        const dedupe = `${coachId}|${guideKey}|${personKey}`;
+        if (uniq.has(dedupe)) continue;
+        uniq.add(dedupe);
+
+        const m = metricsByCoach.get(coachId) || { guide_opens_year: 0, enroll_clicks_year: 0, eapp_visits_year: 0 };
+        if (guideKey === "enroll") {
+          m.enroll_clicks_year += 1;
+        } else if (guideKey === "eapp") {
+          m.eapp_visits_year += 1;
+        } else {
+          m.guide_opens_year += 1;
+        }
+        metricsByCoach.set(coachId, m);
+      }
+    }
+  } catch (_) {}
+}
+
 // Map to expected format with derived flags
-const rows = (data || []).map(coach => ({
+const rows = coaches.map((coach) => {
+const coachId = String(coach.coach_id || "").trim();
+const metric = metricsByCoach.get(coachId) || {
+  guide_opens_year: 0,
+  enroll_clicks_year: 0,
+  eapp_visits_year: 0,
+};
+return {
 coach_id: coach.coach_id,
 coach_full_name: coach.coach_name,
 program_name: coach.program || coach.school || "Unknown",
@@ -2386,10 +2568,11 @@ is_active: true,
 waiting_minutes: 0,
 followup_next_action_at: null,
 last_activity_at: coach.updated_at,
-guide_opens_year: 0,
-enroll_clicks_year: 0,
-eapp_visits_year: 0,
-}));
+guide_opens_year: Number(metric.guide_opens_year || 0),
+enroll_clicks_year: Number(metric.enroll_clicks_year || 0),
+eapp_visits_year: Number(metric.eapp_visits_year || 0),
+};
+});
 
 return rows;
 }
@@ -2622,6 +2805,73 @@ async function sbWatchdogReconciliationChecks() {
   } catch (err) {
     checks.push({
       name: "processed_vs_dead_letter",
+      status: "unknown",
+      note: err?.message || String(err),
+    });
+  }
+
+  // Reconcile forwarded registry quality against click event candidates.
+  try {
+    const { data: forwardedClicks, error: fErr } = await ops()
+      .from("click_events")
+      .select("id, actor_type, is_coach_self_click, guide_key, click_type, kind, event_type")
+      .gte("created_at", since)
+      .limit(20000);
+
+    const { count: registryUniqueCount, error: rErr } = await ops()
+      .from("click_link_registry")
+      .select("id", { count: "exact", head: true })
+      .gte("created_at", since);
+
+    if (!fErr && !rErr) {
+      let candidateCount = 0;
+      let botLikeCount = 0;
+      for (const row of forwardedClicks || []) {
+        if (isLikelyCoachSelfClick(row)) continue;
+        const actorType = String(row?.actor_type || "").trim().toLowerCase();
+        if (isBotLikeActorType(actorType)) {
+          botLikeCount += 1;
+          continue;
+        }
+        if (!isForwardedGuideSignal(row?.guide_key || row?.click_type || row?.kind || row?.event_type)) continue;
+        candidateCount += 1;
+      }
+
+      const uniqueCount = Number(registryUniqueCount || 0);
+      let status = "ok";
+      let note = null;
+      if (candidateCount >= 10 && uniqueCount === 0) {
+        status = "warn";
+        note = "registry_not_populating";
+      } else if (uniqueCount > candidateCount + 5) {
+        status = "warn";
+        note = "registry_exceeds_candidates";
+      } else if (candidateCount > 0) {
+        const botShare = botLikeCount / Math.max(candidateCount + botLikeCount, 1);
+        if (botShare > 0.4) {
+          status = "warn";
+          note = "high_bot_share";
+        }
+      }
+
+      checks.push({
+        name: "forwarded_registry_quality",
+        status,
+        candidateCount,
+        registryUniqueCount: uniqueCount,
+        botLikeCount,
+        note,
+      });
+    } else {
+      checks.push({
+        name: "forwarded_registry_quality",
+        status: "unknown",
+        note: fErr?.message || rErr?.message || "insufficient_data",
+      });
+    }
+  } catch (err) {
+    checks.push({
+      name: "forwarded_registry_quality",
       status: "unknown",
       note: err?.message || String(err),
     });
@@ -8263,14 +8513,28 @@ app.post("/webhook/metric", async (req, res) => {
     const { coach_id, kind, link, meta } = req.body || {};
     if (!kind) return res.status(400).json({ ok: false, error: "missing kind" });
 
-    const parseTrackingParams = (rawLink, queryObj = {}) => {
+    const parseTrackingParams = (rawLink, queryObj = {}, bodyObj = {}) => {
       const out = {
         coach_id: null,
         campaign_id: null,
+        actor_id: null,
+        actor_type: null,
+        person_id: null,
+        person_email: null,
+        person_key: null,
+        person_key_source: null,
+        guide_key: null,
       };
       const readFromSearch = (sp) => {
         out.coach_id = sp.get("coach_id") || sp.get("coachId") || out.coach_id;
         out.campaign_id = sp.get("campaign_id") || sp.get("campaignId") || out.campaign_id;
+        out.actor_id = sp.get("actor_id") || sp.get("actorId") || out.actor_id;
+        out.actor_type = sp.get("actor_type") || sp.get("actorType") || out.actor_type;
+        out.person_id = sp.get("person_id") || sp.get("personId") || out.person_id;
+        out.person_email = sp.get("person_email") || sp.get("personEmail") || out.person_email;
+        out.person_key = sp.get("person_key") || sp.get("personKey") || out.person_key;
+        out.person_key_source = sp.get("person_key_source") || sp.get("personKeySource") || out.person_key_source;
+        out.guide_key = sp.get("guide_key") || sp.get("guideKey") || out.guide_key;
       };
 
       try {
@@ -8286,6 +8550,24 @@ app.post("/webhook/metric", async (req, res) => {
       const q = queryObj || {};
       out.coach_id = out.coach_id || q.coach_id || q.coachId || null;
       out.campaign_id = out.campaign_id || q.campaign_id || q.campaignId || null;
+      out.actor_id = out.actor_id || q.actor_id || q.actorId || null;
+      out.actor_type = out.actor_type || q.actor_type || q.actorType || null;
+      out.person_id = out.person_id || q.person_id || q.personId || null;
+      out.person_email = out.person_email || q.person_email || q.personEmail || null;
+      out.person_key = out.person_key || q.person_key || q.personKey || null;
+      out.person_key_source = out.person_key_source || q.person_key_source || q.personKeySource || null;
+      out.guide_key = out.guide_key || q.guide_key || q.guideKey || null;
+
+      const b = bodyObj || {};
+      out.coach_id = out.coach_id || b.coach_id || b.coachId || null;
+      out.campaign_id = out.campaign_id || b.campaign_id || b.campaignId || null;
+      out.actor_id = out.actor_id || b.actor_id || b.actorId || null;
+      out.actor_type = out.actor_type || b.actor_type || b.actorType || null;
+      out.person_id = out.person_id || b.person_id || b.personId || null;
+      out.person_email = out.person_email || b.person_email || b.personEmail || null;
+      out.person_key = out.person_key || b.person_key || b.personKey || null;
+      out.person_key_source = out.person_key_source || b.person_key_source || b.personKeySource || null;
+      out.guide_key = out.guide_key || b.guide_key || b.guideKey || null;
 
       return out;
     };
@@ -8305,35 +8587,158 @@ app.post("/webhook/metric", async (req, res) => {
       return "direct";
     };
 
-    const tracking = parseTrackingParams(link, req.query || {});
+    const tracking = parseTrackingParams(link, req.query || {}, req.body || {});
     const resolvedCoachId = tracking.coach_id || coach_id || null;
     const resolvedCampaignId = tracking.campaign_id || req.body?.campaign_id || req.body?.campaignId || null;
+    const normalizedKind = String(kind || "").trim();
+    const resolvedGuideKey = normalizeGuideKey(tracking.guide_key || normalizedKind);
+    const metaActorType = meta?.actor_type || meta?.actorType || null;
+    const metaActorId = meta?.actor_id || meta?.actorId || null;
+    const resolvedActorType = String(tracking.actor_type || metaActorType || "").trim().toLowerCase() || null;
+    const resolvedActorId = String(tracking.actor_id || metaActorId || "").trim() || null;
+    const personEmail = normalizeEmail(tracking.person_email || meta?.person_email || meta?.personEmail || "");
+    const personId = String(tracking.person_id || meta?.person_id || meta?.personId || "").trim() || null;
+    const incomingPersonKey = String(tracking.person_key || meta?.person_key || meta?.personKey || "").trim() || null;
+    const personKeySource = String(tracking.person_key_source || meta?.person_key_source || meta?.personKeySource || "").trim().toLowerCase() || "";
+
+    const personSeed = incomingPersonKey
+      ? null
+      : (personId
+        ? `person_id:${personId}`
+        : (personEmail
+          ? `person_email:${personEmail}`
+          : (resolvedActorId && !isCoachLikeActorType(resolvedActorType)
+            ? `actor_id:${resolvedActorId}`
+            : null)));
+    const resolvedPersonKey = incomingPersonKey || (personSeed
+      ? crypto.createHash("sha256").update(personSeed).digest("hex")
+      : null);
+    const isCoachSelfClick = Boolean(
+      resolvedCoachId &&
+      resolvedActorId &&
+      isCoachLikeActorType(resolvedActorType) &&
+      String(resolvedCoachId) === String(resolvedActorId)
+    );
+    const dedupeKey = (resolvedCoachId && resolvedGuideKey && resolvedPersonKey)
+      ? crypto.createHash("sha256").update(`${resolvedCoachId}|${resolvedGuideKey}|${resolvedPersonKey}`).digest("hex")
+      : null;
+    const hasExplicitRecipientIdentity = Boolean(
+      personId ||
+      personEmail ||
+      (incomingPersonKey && personKeySource === "query")
+    );
+
     const referrer = req.header("referer") || req.header("referrer") || meta?.referrer || req.body?.referrer || "";
     const clickSource = inferClickSource(referrer);
+    const uaLower = String(meta?.ua || req.header("user-agent") || "").toLowerCase();
+    const purposeLower = String(req.header("purpose") || req.header("sec-purpose") || meta?.purpose || "").toLowerCase();
+    const xMoz = String(req.header("x-moz") || "").toLowerCase();
+    const isBotTraffic = Boolean(
+      meta?.is_bot_traffic === true ||
+      uaLower.includes("bot") ||
+      uaLower.includes("spider") ||
+      uaLower.includes("crawler") ||
+      uaLower.includes("facebookexternalhit") ||
+      uaLower.includes("slackbot") ||
+      purposeLower.includes("prefetch") ||
+      purposeLower.includes("preview") ||
+      xMoz.includes("prefetch")
+    );
 
     const bodyTs = req.body?.ts || null;
     const bodySource = req.body?.source || "cloudflare";
     const bodyValue = req.body?.value != null ? Number(req.body.value) : 1;
 
+    let forwardedUnique = false;
+    let forwardedDedupeState = "not_applicable";
+    if (dedupeKey && !isCoachSelfClick && resolvedGuideKey && !isBotTraffic &&
+      (!FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY || hasExplicitRecipientIdentity)) {
+      const registryRow = {
+        dedupe_key: dedupeKey,
+        coach_id: resolvedCoachId,
+        guide_key: resolvedGuideKey,
+        person_key: resolvedPersonKey,
+        actor_type: resolvedActorType,
+        actor_id: resolvedActorId,
+        is_coach_self_click: isCoachSelfClick,
+        campaign_id: resolvedCampaignId,
+        source: bodySource,
+        link: link ?? null,
+        first_seen_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+      };
+
+      const { error: registryErr } = await ops().from("click_link_registry").insert(registryRow);
+      if (registryErr?.code === "23505" || String(registryErr?.message || "").toLowerCase().includes("duplicate")) {
+        forwardedUnique = false;
+        forwardedDedupeState = "duplicate";
+      } else if (registryErr && isMissingColumnError(registryErr)) {
+        forwardedDedupeState = "schema_missing";
+      } else if (registryErr) {
+        console.error("[click_link_registry insert error]", registryErr.message);
+        forwardedDedupeState = "error";
+      } else {
+        forwardedUnique = true;
+        forwardedDedupeState = "inserted";
+      }
+    } else if (isBotTraffic) {
+      forwardedDedupeState = "ignored_bot";
+    } else if (FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY && !hasExplicitRecipientIdentity) {
+      forwardedDedupeState = "ignored_weak_identity";
+    }
+
     // Insert into schema `nil`
-    const { error } = await supabase
+    const clickRow = {
+      coach_id: resolvedCoachId ?? null,
+      campaign_id: resolvedCampaignId ?? null,
+      click_source: clickSource,
+      click_type: kind,
+      kind,
+      event_type: kind,
+      source: bodySource,
+      value: bodyValue,
+      event_time: bodyTs ? new Date(bodyTs).toISOString() : new Date().toISOString(),
+      link: link ?? null,
+      guide_key: resolvedGuideKey || null,
+      person_key: resolvedPersonKey || null,
+      actor_type: resolvedActorType || null,
+      actor_id: resolvedActorId || null,
+      is_coach_self_click: isCoachSelfClick,
+      dedupe_key: dedupeKey,
+      is_unique_forwarded: forwardedUnique,
+      meta: {
+        ...(meta ?? {}),
+        is_bot_traffic: isBotTraffic,
+        person_key_source: personKeySource || null,
+        has_explicit_recipient_identity: hasExplicitRecipientIdentity,
+      },
+    };
+
+    let { error } = await supabase
       .schema("nil")
       .from("click_events")
-      .insert([
-        {
-          coach_id: resolvedCoachId ?? null,
-          campaign_id: resolvedCampaignId ?? null,
-          click_source: clickSource,
-          click_type: kind,
-          kind,
-          event_type: kind,
-          source: bodySource,
-          value: bodyValue,
-          event_time: bodyTs ? new Date(bodyTs).toISOString() : new Date().toISOString(),
-          link: link ?? null,
-          meta: meta ?? {},
-        },
-      ]);
+      .insert([clickRow]);
+
+    if (error && isMissingColumnError(error)) {
+      const legacyRow = {
+        coach_id: resolvedCoachId ?? null,
+        campaign_id: resolvedCampaignId ?? null,
+        click_source: clickSource,
+        click_type: kind,
+        kind,
+        event_type: kind,
+        source: bodySource,
+        value: bodyValue,
+        event_time: bodyTs ? new Date(bodyTs).toISOString() : new Date().toISOString(),
+        link: link ?? null,
+        meta: meta ?? {},
+      };
+      const retry = await supabase
+        .schema("nil")
+        .from("click_events")
+        .insert([legacyRow]);
+      error = retry.error;
+    }
 
     if (error) {
       console.error("[click_events insert error]", error.message);
@@ -8392,6 +8797,13 @@ app.post("/webhook/metric", async (req, res) => {
       coach_id: resolvedCoachId,
       campaign_id: resolvedCampaignId,
       click_source: clickSource,
+      guide_key: resolvedGuideKey || null,
+      actor_type: resolvedActorType,
+      actor_id: resolvedActorId,
+      person_key: resolvedPersonKey,
+      dedupe_key: dedupeKey,
+      forwarded_unique: forwardedUnique,
+      forwarded_dedupe_state: forwardedDedupeState,
       coach_upserted: coachUpserted,
     });
   } catch (e) {

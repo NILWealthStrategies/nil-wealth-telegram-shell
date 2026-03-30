@@ -116,6 +116,48 @@ function cleanHeaders(request) {
   };
 }
 
+function parseCookies(cookieHeader) {
+  const raw = String(cookieHeader || "").trim();
+  if (!raw) return {};
+  const out = {};
+  for (const part of raw.split(";")) {
+    const [k, ...rest] = part.split("=");
+    const key = String(k || "").trim();
+    if (!key) continue;
+    const val = rest.join("=").trim();
+    out[key] = decodeURIComponent(val || "");
+  }
+  return out;
+}
+
+function makePersonCookieValue() {
+  const raw = String(crypto.randomUUID ? crypto.randomUUID() : Date.now()).replace(/-/g, "");
+  return raw.slice(0, 48);
+}
+
+function parseBool(v) {
+  const s = String(v || "").trim().toLowerCase();
+  return s === "1" || s === "true" || s === "yes" || s === "y" || s === "on";
+}
+
+function detectBotLikeTraffic(request) {
+  const ua = String(request.headers.get("user-agent") || "").toLowerCase();
+  const purpose = String(request.headers.get("purpose") || request.headers.get("sec-purpose") || "").toLowerCase();
+  const xPurpose = String(request.headers.get("x-purpose") || "").toLowerCase();
+  const xMoz = String(request.headers.get("x-moz") || "").toLowerCase();
+  const secMode = String(request.headers.get("sec-fetch-mode") || "").toLowerCase();
+  const method = String(request.method || "GET").toUpperCase();
+
+  const uaBot = [
+    "bot", "spider", "crawler", "slurp", "bingpreview", "facebookexternalhit", "twitterbot",
+    "linkedinbot", "whatsapp", "telegrambot", "discordbot", "slackbot", "google-read-aloud"
+  ].some((sig) => ua.includes(sig));
+  const prefetch = purpose.includes("prefetch") || purpose.includes("preview") || xPurpose.includes("preview") || xMoz.includes("prefetch");
+  const headLike = method === "HEAD" || (secMode === "no-cors" && method !== "GET");
+
+  return uaBot || prefetch || headLike;
+}
+
 async function postMetric(env, payload) {
   const webhookUrl = resolveWebhookUrl(env);
   const secret = String(env?.BASE_WEBHOOK_SECRET || "").trim();
@@ -180,11 +222,38 @@ export default {
     }
 
     const isCoach = Boolean(actorId);
-    const actor = actorId || "support";
+    const coachIdFromPath = actorId || null;
+    const actorTypeFromQuery = String(url.searchParams.get("actor_type") || "").trim().toLowerCase();
+    const actorIdFromQuery = String(url.searchParams.get("actor_id") || url.searchParams.get("actorId") || "").trim() || null;
+    const explicitCoachSelfClick = parseBool(url.searchParams.get("coach_self_click") || url.searchParams.get("self_click") || url.searchParams.get("internal_test"));
+
+    const cookies = parseCookies(request.headers.get("cookie"));
+    const cookiePersonKey = String(cookies.nil_person_key || "").trim() || null;
+
+    const personId = String(url.searchParams.get("person_id") || url.searchParams.get("personId") || "").trim() || null;
+    const personEmail = String(url.searchParams.get("person_email") || url.searchParams.get("personEmail") || "").trim() || null;
+    const personKeyFromQuery = String(url.searchParams.get("person_key") || url.searchParams.get("personKey") || "").trim() || null;
+    const personKey = personKeyFromQuery || cookiePersonKey || makePersonCookieValue();
+    const personKeySource = personKeyFromQuery ? "query" : (cookiePersonKey ? "cookie" : "generated");
+
+    // Default to parent/family clicker for coach-generated links unless explicitly overridden.
+    const actorType = explicitCoachSelfClick
+      ? "coach"
+      : (actorTypeFromQuery || (isCoach ? "parent" : "support"));
+    const actorIsCoachLike = actorType.includes("coach") || actorType.includes("program");
+    const actor = actorIdFromQuery || (actorIsCoachLike ? (coachIdFromPath || "support") : personKey);
+    const isBotLike = detectBotLikeTraffic(request);
     const nowIso = new Date().toISOString();
 
     const payload = {
-      coach_id: isCoach ? actor : null,
+      coach_id: coachIdFromPath,
+      guide_key: canonicalKey,
+      actor_id: actor,
+      actor_type: actorType,
+      person_id: personId,
+      person_email: personEmail,
+      person_key: personKey,
+      person_key_source: personKeySource,
       kind: route.kind,
       link: url.toString(),
       value: 1,
@@ -196,18 +265,32 @@ export default {
         link_key: key,
         canonical_key: canonicalKey,
         destination,
+        coach_id: coachIdFromPath,
         actor_id: actor,
-        actor_type: isCoach ? "coach_or_program" : "support",
+        actor_type: actorType,
+        person_id: personId,
+        person_email: personEmail,
+        person_key: personKey,
+        person_key_source: personKeySource,
+        is_coach_self_click: explicitCoachSelfClick,
+        is_bot_traffic: isBotLike,
         legacy_kind: route.legacyKind || route.kind,
         ...cleanHeaders(request),
         ts: nowIso
       }
     };
 
-    if (String(env?.DRY_RUN || "") !== "1") {
+    if (String(env?.DRY_RUN || "") !== "1" && !isBotLike) {
       ctx.waitUntil(postMetric(env, payload));
     }
 
-    return Response.redirect(destination, 302);
+    const resp = Response.redirect(destination, 302);
+    if (!isBotLike && !cookiePersonKey && personKey && String(env?.DRY_RUN || "") !== "1") {
+      resp.headers.append(
+        "set-cookie",
+        `nil_person_key=${encodeURIComponent(personKey)}; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=Lax`
+      );
+    }
+    return resp;
   }
 };

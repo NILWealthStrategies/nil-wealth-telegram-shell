@@ -28,6 +28,13 @@ alter table nil.click_events add column if not exists campaign_id text;
 alter table nil.click_events add column if not exists coach_id text;
 alter table nil.click_events add column if not exists link text;
 alter table nil.click_events add column if not exists click_type text;
+alter table nil.click_events add column if not exists guide_key text;
+alter table nil.click_events add column if not exists person_key text;
+alter table nil.click_events add column if not exists actor_type text;
+alter table nil.click_events add column if not exists actor_id text;
+alter table nil.click_events add column if not exists is_coach_self_click boolean default false;
+alter table nil.click_events add column if not exists dedupe_key text;
+alter table nil.click_events add column if not exists is_unique_forwarded boolean default false;
 
 -- Backfill click_type from kind or event_type if null
 update nil.click_events
@@ -48,6 +55,57 @@ alter table nil.click_events alter column value set default 1;
 create index if not exists idx_click_events_created_at on nil.click_events (created_at desc);
 create index if not exists idx_click_events_kind on nil.click_events (kind);
 create index if not exists idx_click_events_event_type on nil.click_events (event_type);
+create index if not exists idx_click_events_coach_id on nil.click_events (coach_id);
+create index if not exists idx_click_events_guide_key on nil.click_events (guide_key);
+create index if not exists idx_click_events_person_key on nil.click_events (person_key);
+create index if not exists idx_click_events_dedupe_key on nil.click_events (dedupe_key);
+
+create table if not exists nil.click_link_registry (
+  id bigserial primary key,
+  dedupe_key text not null,
+  coach_id text,
+  campaign_id text,
+  guide_key text,
+  person_key text,
+  actor_type text,
+  actor_id text,
+  source text default 'cloudflare',
+  link text,
+  is_coach_self_click boolean default false,
+  first_seen_at timestamptz default now(),
+  created_at timestamptz default now()
+);
+
+alter table nil.click_link_registry add column if not exists dedupe_key text;
+alter table nil.click_link_registry add column if not exists coach_id text;
+alter table nil.click_link_registry add column if not exists campaign_id text;
+alter table nil.click_link_registry add column if not exists guide_key text;
+alter table nil.click_link_registry add column if not exists person_key text;
+alter table nil.click_link_registry add column if not exists actor_type text;
+alter table nil.click_link_registry add column if not exists actor_id text;
+alter table nil.click_link_registry add column if not exists source text default 'cloudflare';
+alter table nil.click_link_registry add column if not exists link text;
+alter table nil.click_link_registry add column if not exists is_coach_self_click boolean default false;
+alter table nil.click_link_registry add column if not exists first_seen_at timestamptz default now();
+alter table nil.click_link_registry add column if not exists created_at timestamptz default now();
+
+update nil.click_link_registry
+set dedupe_key = md5(
+  coalesce(coach_id, '') || '|' ||
+  coalesce(guide_key, '') || '|' ||
+  coalesce(person_key, '') || '|' ||
+  coalesce(actor_id, '') || '|' ||
+  coalesce(created_at::text, now()::text)
+)
+where dedupe_key is null;
+
+create unique index if not exists idx_click_link_registry_dedupe on nil.click_link_registry (dedupe_key);
+create unique index if not exists idx_click_link_registry_coach_guide_person
+  on nil.click_link_registry (coach_id, guide_key, person_key)
+  where coach_id is not null and guide_key is not null and person_key is not null;
+create index if not exists idx_click_link_registry_coach on nil.click_link_registry (coach_id);
+create index if not exists idx_click_link_registry_guide on nil.click_link_registry (guide_key);
+create index if not exists idx_click_link_registry_person on nil.click_link_registry (person_key);
 
 create or replace view nil.click_events_daily_summary as
 select
