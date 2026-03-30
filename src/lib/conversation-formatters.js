@@ -177,7 +177,7 @@ Preview: ${prev}
 Updated: ${tFmtDateTimeShort(conv.updated_at)}
 💬 Messages: ${msgCount}
 ${sla} • ${until}
-CC: ${ccOn ? "📇 Enabled" : "Off"}${gmail}`;
+Loop in Support: ${ccOn ? "📌 Enabled" : "Off"}${gmail}`;
   return { text, isInstantlyInbound: false };
 }
 

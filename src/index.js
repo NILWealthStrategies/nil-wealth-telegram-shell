@@ -3569,14 +3569,8 @@ buttons.push([Markup.button.callback("⬅ Back", `OPENCARD:${cardKey}`)]);
 return smartRender(ctx, text, Markup.inlineKeyboard(buttons));
 }));
 // ==========================================================
-// 🧵 THREAD VIEW (paged) — v5.3 OPS CLEAN + LIVE REFRESH + LATEST JUMP +
-// DEBUG + DELETE (TEST) + 🪞 MIRROR
+// 🧵 THREAD VIEW (single-message pagination)
 // ==========================================================
-//
-// FINAL version w/ tweaks applied:
-// ✅ Tweak #1: Latest offset supports newest_first OR oldest_first via THREAD_ORDER
-// ✅ Tweak #2: Stable card_key = `thread:${convId}` (refresh targets the open thread reliably)
-// ✅ Tweak #3: Adds 🪞 Open Mirror button inside thread view when mirror exists
 //
 // Requires existing helpers:
 // - shorten(str, n)
@@ -3704,7 +3698,7 @@ logError("THREAD", err);
 await ctx.reply("❌ Thread error. Try /dashboard.").catch(() => {});
 }
 }));
-// ---------- CC SUPPORT ----------
+// ---------- LOOP IN SUPPORT ----------
 function makeTraceId() {
 return uuidv4();
 }
