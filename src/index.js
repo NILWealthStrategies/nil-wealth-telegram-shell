@@ -2763,6 +2763,7 @@ Markup.button.callback("👥 Clients", "CLIENTS:open"),
 ],
 [
 Markup.button.callback("🩺 Health", "HEALTH:open"),
+Markup.button.callback("↻ Refresh", "DASH:refresh"),
 ],
 ]);
 }
