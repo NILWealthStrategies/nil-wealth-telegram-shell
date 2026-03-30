@@ -2746,11 +2746,30 @@ console.log(`[INFO] Edit failed, sending new message: ${msg.substring(0, 60)}`);
 }
 // fallback: new message
 try {
-const msg = await withTimeout(
+let msg = await withTimeout(
 ctx.reply(safeText, keyboard),
 8000,
 "Send message timed out"
 );
+if (!msg?.message_id) {
+  const chatId =
+    ctx.chat?.id ??
+    ctx.update?.callback_query?.message?.chat?.id ??
+    ctx.from?.id;
+  if (chatId != null) {
+    msg = await withTimeout(
+      bot.telegram.sendMessage(chatId, safeText, keyboard),
+      8000,
+      "Fallback send message timed out"
+    ).catch((sendErr) => {
+      logError("smartRender.fallbackSend", sendErr);
+      return null;
+    });
+  }
+}
+if (!msg?.message_id) {
+  throw new Error("smartRender_failed_to_send_message");
+}
 return { mode: "reply", message_id: msg?.message_id, chat_id: msg?.chat?.id };
 } catch (err) {
 console.log(`[ERROR] Failed to send message: ${err.message}`);
