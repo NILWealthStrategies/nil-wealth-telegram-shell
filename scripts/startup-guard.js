@@ -14,10 +14,17 @@ function assertIncludes(haystack, needle, label) {
   }
 }
 
+function assertNotIncludes(haystack, needle, label) {
+  if (haystack.includes(needle)) {
+    fail(`${label} contains forbidden snippet: ${needle}`);
+  }
+}
+
 function main() {
   const repoRoot = process.cwd();
   const pkgPath = path.join(repoRoot, "package.json");
   const indexPath = path.join(repoRoot, "src", "index.js");
+  const dashboardFmtPath = path.join(repoRoot, "src", "lib", "dashboard-formatters.js");
 
   if (!fs.existsSync(pkgPath)) {
     fail("package.json not found");
@@ -27,9 +34,14 @@ function main() {
     fail("src/index.js not found");
     process.exit(1);
   }
+  if (!fs.existsSync(dashboardFmtPath)) {
+    fail("src/lib/dashboard-formatters.js not found");
+    process.exit(1);
+  }
 
   const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
   const indexCode = fs.readFileSync(indexPath, "utf8");
+  const dashboardFmtCode = fs.readFileSync(dashboardFmtPath, "utf8");
 
   const startScript = pkg?.scripts?.start;
   if (startScript !== "node src/index.js") {
@@ -61,6 +73,17 @@ function main() {
   if (dashboardCmdCount !== 1) {
     fail(`expected exactly 1 dashboard command handler, found ${dashboardCmdCount}`);
   }
+
+  // Keep delivery health on the main dashboard formatter.
+  assertIncludes(dashboardFmtCode, "function deriveDeliveryHealth(delivery = {})", "src/lib/dashboard-formatters.js");
+  assertIncludes(dashboardFmtCode, "🚚 DELIVERY HEALTH", "src/lib/dashboard-formatters.js");
+  assertIncludes(dashboardFmtCode, "Overall: ${health.emoji} ${health.label}", "src/lib/dashboard-formatters.js");
+
+  // Keep Today card concise (no delivery-health detail rows in TODAY:open text).
+  assertNotIncludes(indexCode, "📤 Email Pending:", "src/index.js");
+  assertNotIncludes(indexCode, "📲 SMS Pending:", "src/index.js");
+  assertNotIncludes(indexCode, "☠️ Dead Letter Events:", "src/index.js");
+  assertNotIncludes(indexCode, "🎟 Open Support Tickets:", "src/index.js");
 
   if (process.exitCode) {
     process.exit(1);
