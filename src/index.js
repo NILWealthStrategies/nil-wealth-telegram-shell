@@ -149,6 +149,7 @@ const WATCHDOG_ALERT_ONLY_WARN =
 String(process.env.WATCHDOG_ALERT_ONLY_WARN || "true").toLowerCase() === "true";
 const ADMIN_IDLE_DASHBOARD_RESET_HOURS = Number(process.env.ADMIN_IDLE_DASHBOARD_RESET_HOURS || 5);
 const ADMIN_IDLE_DASHBOARD_CHECK_MS = Number(process.env.ADMIN_IDLE_DASHBOARD_CHECK_MS || 5 * 60 * 1000);
+const DASHBOARD_CACHE_TTL_MS = Number(process.env.DASHBOARD_CACHE_TTL_MS || 3000);
 // NY time
 const NY_TZ = "America/New_York";
 // ---------- GUARDS ----------
@@ -194,6 +195,7 @@ const userFilters = new Map(); // userId -> filter value ("all" | "programs" | "
 const userRoleFilters = new Map(); // userId -> role filter ("all" | "parent" | "athlete" | "coach" | "trainer" | "other")
 const draftEditState = new Map(); // userId -> { convId, version }
 const adminActivity = new Map(); // userId -> { chatId, lastActivityAt, lastCardType, lastMessageId, lastResetAt }
+const dashboardTextCache = new Map(); // filterSource -> { ts, text }
 const EVENT_TYPES = {
   LEAD_CREATED: "lead.created",
   LEAD_UPDATED: "lead.updated",
@@ -982,14 +984,8 @@ return 0;
 // Auto-urgent: count needs_reply items with >24h wait time
 async function sbCountUrgentAuto({ source = "all", role = "all" } = {}) {
 try {
-const OVERDUE_MINUTES = 24 * 60;
-const rows = await sbListConversations({ pipeline: "needs_reply", source, role, limit: 100 });
-let count = 0;
-for (const c of rows || []) {
-const waitingMin = tComputeWaitingMinutes(c);
-if (waitingMin != null && waitingMin > OVERDUE_MINUTES) count++;
-}
-return count;
+const breakdown = await sbNeedsReplyBreakdown({ source, role });
+return breakdown.urgentCount;
 } catch (err) {
 console.warn("sbCountUrgentAuto exception:", err.message);
 return 0;
@@ -1056,19 +1052,32 @@ async function sbListHandoffPending({ source = "all", limit = 24 } = {}) {
 // Count needs_reply items EXCLUDING those >24h (which are auto-escalated to urgent)
 async function sbCountNeedsReplyNonUrgent({ source = "all", role = "all" } = {}) {
 try {
-const OVERDUE_MINUTES = 24 * 60;
-const rows = await sbListConversations({ pipeline: "needs_reply", source, role, limit: 100 });
-let count = 0;
-for (const c of rows || []) {
-const waitingMin = tComputeWaitingMinutes(c);
-if (waitingMin == null || waitingMin <= OVERDUE_MINUTES) {
-count++;
-}
-}
-return count;
+const breakdown = await sbNeedsReplyBreakdown({ source, role });
+return breakdown.nonUrgentCount;
 } catch (err) {
 console.warn("sbCountNeedsReplyNonUrgent exception:", err.message);
 return 0;
+}
+}
+
+async function sbNeedsReplyBreakdown({ source = "all", role = "all", limit = 100 } = {}) {
+try {
+const OVERDUE_MINUTES = 24 * 60;
+const rows = await sbListConversations({ pipeline: "needs_reply", source, role, limit });
+let urgentCount = 0;
+let nonUrgentCount = 0;
+for (const c of rows || []) {
+const waitingMin = tComputeWaitingMinutes(c);
+if (waitingMin == null || waitingMin <= OVERDUE_MINUTES) {
+nonUrgentCount++;
+} else {
+urgentCount++;
+}
+}
+return { urgentCount, nonUrgentCount };
+} catch (err) {
+console.warn("sbNeedsReplyBreakdown exception:", err.message);
+return { urgentCount: 0, nonUrgentCount: 0 };
 }
 }
 async function sbCountDeadLetters() {
@@ -2832,15 +2841,22 @@ function analyticsKeyboard() {
 
 // ---------- DASHBOARD TEXT ----------
 async function dashboardText(filterSource = "all") {
+const cacheKey = String(filterSource || "all");
+const cached = dashboardTextCache.get(cacheKey);
+if (cached && Date.now() - cached.ts < DASHBOARD_CACHE_TTL_MS) {
+return cached.text;
+}
+
 const { dayKey, time } = nyParts(new Date());
 const filterLabel =
 filterSource === "support" ? "🧑‍🧒 Support" : filterSource === "programs" ? "🏈 Programs" :
 "🌐 All";
+
+const needsReplyBreakdownPromise = sbNeedsReplyBreakdown({ source: filterSource });
 const [
 handoffCount,
-urgentCount,
+needsReplyBreakdown,
 threadsCount,
-needsReplyCount,
 waitingCount,
 activeCount,
 forwardedCount,
@@ -2852,9 +2868,8 @@ lastIngestAt,
 opsDelivery,
 ] = await trackPerf(`dashboard.counts.${filterSource}`, () => Promise.all([
 sbCountHandoffPending({ source: filterSource }),
-sbCountUrgentAuto({ source: filterSource }),
+needsReplyBreakdownPromise,
 sbCountConversations({ source: filterSource }),
-sbCountNeedsReplyNonUrgent({ source: filterSource }),
 sbCountConversations({ pipeline: "actions_waiting", source: filterSource }),
 sbCountConversations({ pipeline: "active", source: filterSource }),
 sbCountConversations({ pipeline: "forwarded", source: filterSource }),
@@ -2865,6 +2880,9 @@ sbCountCalls(),
 sbGetLastOpsEventTimestamp(),
 sbOpsDeliverySummary(),
 ]));
+
+const urgentCount = needsReplyBreakdown?.urgentCount || 0;
+const needsReplyCount = needsReplyBreakdown?.nonUrgentCount || 0;
 
 const counts = {
 handoffCount,
@@ -2906,7 +2924,7 @@ const m = await trackPerf(
 `dashboard.metrics.${filterSource}`,
 () => sbMetricSummary({ source: filterSource, window: "all" }).catch(() => ({}))
 );
-return buildDashboardText({
+const rendered = buildDashboardText({
 codeVersion: CODE_VERSION,
 buildVersion: BUILD_VERSION,
 today: new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York" }).format(new Date()),
@@ -2917,6 +2935,8 @@ capped,
 metrics: m,
 opsDelivery,
 });
+dashboardTextCache.set(cacheKey, { ts: Date.now(), text: rendered });
+return rendered;
 }
 // ✅ EXACT v5.1 dashboard keyboard: filters row + nav row + metrics row (ONLY 3 rows)
 function dashboardKeyboardV50() {
@@ -3042,8 +3062,10 @@ return msg;
 }
 // ---------- CONVERSATION CARD (v5.3 CLEAN + OPS SAFE) ----------
 async function buildConversationCard(conv) {
-const msgCount = await sbCountMessages(conv.id).catch(() => 0);
-const latest = await sbListMessages(conv.id, { offset: 0, limit: 1 }).catch(() => []);
+const [msgCount, latest] = await Promise.all([
+sbCountMessages(conv.id).catch(() => 0),
+sbListMessages(conv.id, { offset: 0, limit: 1 }).catch(() => []),
+]);
 const latestMessage = Array.isArray(latest) && latest.length ? latest[0] : null;
 const lastDirection = latestMessage?.direction === "outbound" ? "outbound" : latestMessage?.direction === "inbound" ? "inbound" : "—";
 const lastAgeMinutes = (() => {
