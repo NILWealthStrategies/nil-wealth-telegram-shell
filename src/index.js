@@ -973,14 +973,20 @@ async function sbCountConversations({ pipeline, source, role }) {
 try {
 let q = ops().from("conversations").select("id", { count: "exact", head: true });
 if (pipeline) q = q.eq("pipeline", pipeline);
-if (source && source !== "all") q = q.eq("source", sourceSafe(source));
+if (source && source !== "all") {
+  const safeSrc = sourceSafe(source);
+  q = q.or(`source.eq.${safeSrc},source.is.null,source.eq.`);
+}
 if (role && role !== "all") q = q.eq("role", role);
 const { count, error } = await q;
 if (error) {
   if (role && String(error.message || "").toLowerCase().includes("role")) {
     let fallback = ops().from("conversations").select("id", { count: "exact", head: true });
     if (pipeline) fallback = fallback.eq("pipeline", pipeline);
-    if (source && source !== "all") fallback = fallback.eq("source", sourceSafe(source));
+    if (source && source !== "all") {
+      const safeSrc = sourceSafe(source);
+      fallback = fallback.or(`source.eq.${safeSrc},source.is.null,source.eq.`);
+    }
     const { count: fallbackCount, error: fallbackErr } = await fallback;
     if (fallbackErr) {
       console.warn(`sbCountConversations(${pipeline}) fallback error:`, fallbackErr.message);
