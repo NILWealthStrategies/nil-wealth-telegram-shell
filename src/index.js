@@ -2983,38 +2983,31 @@ const isInstantlyManaged = isInstantlySource(conv);
 const loopBtnLabel = conv.needs_support_handoff ? "🚨 Loop in Support NOW" : "📌 Loop in Support";
 
 if (isInstantlyManaged) {
-    // Instantly-owned thread: Telegram provides visibility + CC Support only.
-  return Markup.inlineKeyboard([
+  // Instantly-owned thread: keep this card minimal (thread + support handoff only).
+  const rows = [
     [Markup.button.callback(threadLabel, `THREAD:${id}:0`)],
-    [
-      Markup.button.callback(loopBtnLabel, `CC:${id}`),
-      Markup.button.callback("👥 People", `PEOPLE:${id}`),
-    ],
-    [
-      ...roleConflictRow,
-      ...mirrorRow,
-    ],
-    [Markup.button.callback("🔧 Set Role", `SETROLE:${id}`)],
-    [Markup.button.callback("⬅ Dashboard", "DASH:back")],
-  ]);
+    [Markup.button.callback(loopBtnLabel, `CC:${id}`)],
+  ];
+  const conflictAndMirror = [...roleConflictRow, ...mirrorRow];
+  if (conflictAndMirror.length) rows.push(conflictAndMirror);
+  rows.push([Markup.button.callback("⬅ Dashboard", "DASH:back")]);
+  return Markup.inlineKeyboard(rows);
 }
 
 // Support lane or CC-locked — full send/draft flow via Gmail
-return Markup.inlineKeyboard([
+const rows = [
   [Markup.button.callback(threadLabel, `THREAD:${id}:0`)],
   [
     Markup.button.callback(ccBtnLabel, `CC:${id}`),
     Markup.button.callback("👥 People", `PEOPLE:${id}`),
   ],
-  [
-    ...roleConflictRow,
-    ...mirrorRow,
-  ],
-  [Markup.button.callback("🔧 Set Role", `SETROLE:${id}`)],
-  [Markup.button.callback("✏️ Drafts V1/V2/V3", `DRAFTS:open:${id}`)],
-  [Markup.button.callback("📤 Send (Support) 🔒", `SEND:${id}:1`)],
-  [Markup.button.callback("⬅ Dashboard", "DASH:back")],
-]);
+];
+const conflictAndMirror = [...roleConflictRow, ...mirrorRow];
+if (conflictAndMirror.length) rows.push(conflictAndMirror);
+rows.push([Markup.button.callback("✏️ Drafts V1/V2/V3", `DRAFTS:open:${id}`)]);
+rows.push([Markup.button.callback("📤 Send (Support) 🔒", `SEND:${id}:1`)]);
+rows.push([Markup.button.callback("⬅ Dashboard", "DASH:back")]);
+return Markup.inlineKeyboard(rows);
 }
 // ---------- SUBMISSION CARD ----------
 
@@ -7071,13 +7064,13 @@ setInterval(() => {
 runOutboxSenderTick().catch(() => {});
 }, OUTBOX_POLL_MS);
 setInterval(() => {
-runDataWatchdog({ notifyAdmins: true }).catch(() => {});
+runDataWatchdog().catch(() => {});
 }, WATCHDOG_INTERVAL_MS);
 setTimeout(() => {
 runOutboxSenderTick().catch(() => {});
 }, 1500);
 setTimeout(() => {
-runDataWatchdog({ forceSchema: true, notifyAdmins: true }).catch(() => {});
+runDataWatchdog({ forceSchema: true }).catch(() => {});
 }, 2500);
 async function syncConversationRoleFromSubmission({ email, role, submission_id, nowIso }) {
 const normalized = normalizeEmail(email);
