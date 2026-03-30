@@ -1511,6 +1511,28 @@ if (row && row[k] != null) return toNumber(row[k]);
 }
 return 0;
 };
+const sourceFilter = source === "all" ? "all" : sourceSafe(source);
+const rowMatchesSource = (row) => {
+if (sourceFilter === "all") return true;
+const rowSource = String(row?.source || row?.click_source || "").trim().toLowerCase();
+if (!rowSource) return true;
+if (rowSource.includes("support")) return sourceFilter === "support";
+if (rowSource.includes("program") || rowSource.includes("outreach")) return sourceFilter === "programs";
+return rowSource === sourceFilter;
+};
+const rowCreatedAt = (row, relation) => {
+const direct = row?.created_at || row?.day || row?.date || row?.event_date || row?.week_start || row?.month_start || row?.year_start;
+if (direct) return direct;
+const year = toNumber(row?.year);
+const month = toNumber(row?.month);
+if (year > 0 && month >= 1 && month <= 12) {
+return new Date(Date.UTC(year, month - 1, 1)).toISOString();
+}
+if (year > 0 && relation === "v_click_yearly_summary") {
+return new Date(Date.UTC(year, 0, 1)).toISOString();
+}
+return now.toISOString();
+};
 const eventRows = [];
 const fallbackCounts = {
 programLinkOpens: 0,
@@ -1525,23 +1547,36 @@ enrollClicks: 0,
 eappVisits: 0,
 }));
 
-const addFallbackBucket = (createdAt, bucket) => {
+const emptyCountsBucket = () => ({
+programLinkOpens: 0,
+coverageExploration: 0,
+enrollClicks: 0,
+eappVisits: 0,
+});
+const emptyMonthlyBuckets = () => Array.from({ length: 12 }, () => ({
+opens: 0,
+exploration: 0,
+enrollClicks: 0,
+eappVisits: 0,
+}));
+
+const addFallbackBucket = (targetCounts, targetMonthly, createdAt, bucket) => {
 const ts = new Date(createdAt || now.toISOString()).getTime();
 if (!Number.isFinite(ts)) return;
 if (since) {
 const sinceTs = new Date(since).getTime();
 if (Number.isFinite(sinceTs) && ts < sinceTs) return;
 }
-fallbackCounts.programLinkOpens += toNumber(bucket.opens);
-fallbackCounts.coverageExploration += toNumber(bucket.exploration);
-fallbackCounts.enrollClicks += toNumber(bucket.enrollClicks);
-fallbackCounts.eappVisits += toNumber(bucket.eappVisits);
+targetCounts.programLinkOpens += toNumber(bucket.opens);
+targetCounts.coverageExploration += toNumber(bucket.exploration);
+targetCounts.enrollClicks += toNumber(bucket.enrollClicks);
+targetCounts.eappVisits += toNumber(bucket.eappVisits);
 const mi = new Date(ts).getMonth();
 if (mi >= 0 && mi <= 11) {
-monthlyFallback[mi].opens += toNumber(bucket.opens);
-monthlyFallback[mi].exploration += toNumber(bucket.exploration);
-monthlyFallback[mi].enrollClicks += toNumber(bucket.enrollClicks);
-monthlyFallback[mi].eappVisits += toNumber(bucket.eappVisits);
+targetMonthly[mi].opens += toNumber(bucket.opens);
+targetMonthly[mi].exploration += toNumber(bucket.exploration);
+targetMonthly[mi].enrollClicks += toNumber(bucket.enrollClicks);
+targetMonthly[mi].eappVisits += toNumber(bucket.eappVisits);
 }
 };
 
@@ -1594,16 +1629,28 @@ for (const r of eappRows) eventRows.push({ event_type: "eapp_visit", created_at:
 console.warn("sbMetricSummary eapp_visits fallback:", err?.message || err);
 }
 
-// 4) daily click summary view/table fallback (aggregates)
-for (const relation of ["v_click_daily_summary", "click_analytics_daily"]) {
+// 4) aggregate click fallback chain (strict priority, non-stacking)
+const aggregatePriorityByWindow = {
+week: ["v_click_weekly_summary", "v_click_daily_summary", "click_analytics_daily", "v_click_summary_today"],
+month: ["v_click_monthly_summary", "v_click_daily_summary", "click_analytics_daily", "v_click_summary_today"],
+year: ["v_click_yearly_summary", "v_click_monthly_summary", "v_click_daily_summary", "click_analytics_daily", "v_click_summary_today"],
+all: ["v_click_yearly_summary", "v_click_monthly_summary", "v_click_daily_summary", "click_analytics_daily", "v_click_summary_today"],
+};
+const aggregateRelations = aggregatePriorityByWindow[window] || aggregatePriorityByWindow.month;
+let usedAggregateRelation = null;
+for (const relation of aggregateRelations) {
 try {
-const { data: dailyRows, error: dailyErr } = await ops()
+const { data: rows, error: relationErr } = await ops()
 .from(relation)
 .select("*");
-if (dailyErr || !Array.isArray(dailyRows)) continue;
-for (const r of dailyRows) {
-const createdAt = r.created_at || r.day || r.date || r.event_date || now.toISOString();
-const byKindType = normalizeMetricEventType(r.kind);
+if (relationErr || !Array.isArray(rows) || rows.length === 0) continue;
+
+const localCounts = emptyCountsBucket();
+const localMonthly = emptyMonthlyBuckets();
+for (const r of rows) {
+if (!rowMatchesSource(r)) continue;
+const createdAt = rowCreatedAt(r, relation);
+const byKindType = normalizeMetricEventType(r.kind || r.event_type);
 if (byKindType && (r.count != null || r.total != null || r.clicks != null)) {
 const count = toNumber(r.count ?? r.total ?? r.clicks);
 const bucket = { opens: 0, exploration: 0, enrollClicks: 0, eappVisits: 0 };
@@ -1611,38 +1658,38 @@ if (byKindType === "program_link_open") bucket.opens = count;
 if (byKindType === "coverage_exploration") bucket.exploration = count;
 if (byKindType === "enroll_click") bucket.enrollClicks = count;
 if (byKindType === "eapp_visit") bucket.eappVisits = count;
-addFallbackBucket(createdAt, bucket);
+addFallbackBucket(localCounts, localMonthly, createdAt, bucket);
 continue;
 }
-addFallbackBucket(createdAt, {
-opens: readNumeric(r, ["program_link_opens", "guide_opens", "parent_guide_opens", "opens"]),
-exploration: readNumeric(r, ["coverage_exploration", "coverage_explorations", "coverage_clicks", "exploration"]),
-enrollClicks: readNumeric(r, ["enroll_clicks", "enroll_portal_visits", "enroll_portal_clicks", "total_clicks", "clicks"]),
-eappVisits: readNumeric(r, ["eapp_visits", "eapp_clicks"]),
+addFallbackBucket(localCounts, localMonthly, createdAt, {
+opens: readNumeric(r, ["program_link_opens", "guide_opens", "parent_guide_opens", "opens", "total_opens", "opens_total"]),
+exploration: readNumeric(r, ["coverage_exploration", "coverage_explorations", "coverage_clicks", "exploration", "total_exploration"]),
+enrollClicks: readNumeric(r, ["enroll_clicks", "enroll_portal_visits", "enroll_portal_clicks", "total_clicks", "clicks", "total_enroll_clicks"]),
+eappVisits: readNumeric(r, ["eapp_visits", "eapp_clicks", "total_eapp_visits"]),
 });
 }
+
+const localTotal = localCounts.programLinkOpens + localCounts.coverageExploration + localCounts.enrollClicks + localCounts.eappVisits;
+if (localTotal <= 0) continue;
+
+fallbackCounts.programLinkOpens += localCounts.programLinkOpens;
+fallbackCounts.coverageExploration += localCounts.coverageExploration;
+fallbackCounts.enrollClicks += localCounts.enrollClicks;
+fallbackCounts.eappVisits += localCounts.eappVisits;
+for (let i = 0; i < 12; i++) {
+monthlyFallback[i].opens += localMonthly[i].opens;
+monthlyFallback[i].exploration += localMonthly[i].exploration;
+monthlyFallback[i].enrollClicks += localMonthly[i].enrollClicks;
+monthlyFallback[i].eappVisits += localMonthly[i].eappVisits;
+}
+usedAggregateRelation = relation;
+break;
 } catch (err) {
 console.warn(`sbMetricSummary ${relation} fallback:`, err?.message || err);
 }
 }
-
-// 5) today click summary view fallback
-try {
-const { data: todayRows, error: todayErr } = await ops()
-.from("v_click_summary_today")
-.select("*");
-if (!todayErr && Array.isArray(todayRows)) {
-for (const r of todayRows) {
-addFallbackBucket(now.toISOString(), {
-opens: readNumeric(r, ["program_link_opens", "guide_opens", "parent_guide_opens", "opens"]),
-exploration: readNumeric(r, ["coverage_exploration", "coverage_explorations", "coverage_clicks", "exploration"]),
-enrollClicks: readNumeric(r, ["enroll_clicks", "enroll_portal_visits", "enroll_portal_clicks", "total_clicks", "clicks"]),
-eappVisits: readNumeric(r, ["eapp_visits", "eapp_clicks"]),
-});
-}
-}
-} catch (err) {
-console.warn("sbMetricSummary v_click_summary_today fallback:", err?.message || err);
+if (!usedAggregateRelation) {
+console.warn("sbMetricSummary aggregate fallback: no aggregate relation returned usable data");
 }
 
 const counts = {
@@ -1852,6 +1899,181 @@ return null;
 }
 }
 
+async function sbCountRowsSafe(relation, queryMutator = null) {
+try {
+let q = ops().from(relation).select("*", { count: "exact", head: true });
+if (typeof queryMutator === "function") q = queryMutator(q);
+const { count, error } = await q;
+if (error) return null;
+return Number(count) || 0;
+} catch (_) {
+return null;
+}
+}
+
+async function sbOpsDeliverySummary() {
+const [
+emailTotal,
+emailPending,
+emailFailed,
+smsTotal,
+smsPending,
+smsFailed,
+processedEvents,
+deadLetterEvents,
+deadLetters,
+supportTicketsOpen,
+] = await Promise.all([
+sbCountRowsSafe("email_outbox"),
+sbCountRowsSafe("email_outbox", (q) => q.in("status", ["pending", "queued", "retrying"])),
+sbCountRowsSafe("email_outbox", (q) => q.in("status", ["failed", "dead_letter", "error"])),
+sbCountRowsSafe("sms_outbox"),
+sbCountRowsSafe("sms_outbox", (q) => q.in("status", ["pending", "queued", "retrying"])),
+sbCountRowsSafe("sms_outbox", (q) => q.in("status", ["failed", "dead_letter", "error"])),
+sbCountRowsSafe("processed_events"),
+sbCountRowsSafe("dead_letter_events"),
+sbCountRowsSafe("dead_letters"),
+sbCountRowsSafe("support_tickets", (q) => q.in("status", ["open", "new", "pending"])),
+]);
+
+return {
+emailTotal,
+emailPending,
+emailFailed,
+smsTotal,
+smsPending,
+smsFailed,
+processedEvents,
+deadLetterEvents,
+deadLetters,
+supportTicketsOpen,
+};
+}
+
+async function sbLeadAnalyticsSnapshot() {
+const toNumber = (v) => {
+const n = Number(v);
+return Number.isFinite(n) ? n : 0;
+};
+const metricValue = (row, keys) => {
+for (const k of keys) {
+if (row?.[k] != null) return toNumber(row[k]);
+}
+return 0;
+};
+const { dayStartISO, dayEndISO } = nyParts(new Date());
+const isToday = (ts) => {
+if (!ts) return false;
+const t = new Date(ts).getTime();
+if (!Number.isFinite(t)) return false;
+return t >= new Date(dayStartISO).getTime() && t < new Date(dayEndISO).getTime();
+};
+
+let analytics = null;
+try {
+const { data, error } = await ops()
+.from("v_analytics_summary")
+.select("*")
+.single();
+if (!error && data) analytics = data;
+} catch (_) {}
+
+let topLeads = [];
+try {
+const { data, error } = await ops()
+.from("v_top_leads")
+.select("*")
+.limit(10);
+if (!error && Array.isArray(data)) topLeads = data;
+} catch (_) {}
+if (!topLeads.length) {
+try {
+const { data, error } = await ops()
+.from("leads")
+.select("full_name, organization, engagement_score")
+.order("engagement_score", { ascending: false })
+.limit(10);
+if (!error && Array.isArray(data)) topLeads = data;
+} catch (_) {}
+}
+
+const statuses = { ready: 0, outreach_started: 0, replied: 0, no_email: 0, bounced: 0 };
+try {
+const { data, error } = await ops()
+.from("leads")
+.select("status");
+if (!error && Array.isArray(data)) {
+for (const row of data) {
+if (Object.prototype.hasOwnProperty.call(statuses, row.status)) statuses[row.status]++;
+}
+}
+} catch (_) {}
+
+let leadMetricRows = [];
+try {
+const { data, error } = await ops()
+.from("lead_metrics")
+.select("*")
+.limit(5000);
+if (!error && Array.isArray(data)) leadMetricRows = data;
+} catch (_) {}
+
+const metricTotals = leadMetricRows.reduce((acc, row) => {
+const sent = metricValue(row, ["emails_sent", "total_emails_sent", "sent", "send_count"]);
+const opens = metricValue(row, ["opens", "total_opens", "open_count"]);
+const clicks = metricValue(row, ["clicks", "total_clicks", "click_count"]);
+const replies = metricValue(row, ["replies", "total_replies", "reply_count"]);
+acc.totalSent += sent;
+acc.totalOpens += opens;
+acc.totalClicks += clicks;
+acc.totalReplies += replies;
+if (isToday(row.created_at || row.metric_date || row.date || row.day)) {
+acc.todaySent += sent;
+acc.todayOpens += opens;
+acc.todayClicks += clicks;
+acc.todayReplies += replies;
+}
+return acc;
+}, { totalSent: 0, totalOpens: 0, totalClicks: 0, totalReplies: 0, todaySent: 0, todayOpens: 0, todayClicks: 0, todayReplies: 0 });
+
+const leadSourcesCount = await sbCountRowsSafe("lead_sources");
+const totalLeads = Number(analytics?.total_leads) || Object.values(statuses).reduce((a, b) => a + b, 0);
+const leadsToday = Number(analytics?.leads_today) || 0;
+const totalEmailsSent = Number(analytics?.total_emails_sent) || metricTotals.totalSent;
+const totalOpens = Number(analytics?.total_opens) || metricTotals.totalOpens;
+const totalClicks = Number(analytics?.total_clicks) || metricTotals.totalClicks;
+const totalReplies = Number(analytics?.total_replies) || metricTotals.totalReplies;
+const emailsSentToday = Number(analytics?.emails_sent_today) || metricTotals.todaySent;
+const opensToday = Number(analytics?.opens_today) || metricTotals.todayOpens;
+const clicksToday = Number(analytics?.clicks_today) || metricTotals.todayClicks;
+const repliesToday = Number(analytics?.replies_today) || metricTotals.todayReplies;
+
+const openRatePct = Number(analytics?.open_rate_pct) || (totalEmailsSent ? Math.round((totalOpens / totalEmailsSent) * 100) : 0);
+const clickRatePct = Number(analytics?.click_rate_pct) || (totalEmailsSent ? Math.round((totalClicks / totalEmailsSent) * 100) : 0);
+const replyRatePct = Number(analytics?.reply_rate_pct) || (totalEmailsSent ? Math.round((totalReplies / totalEmailsSent) * 100) : 0);
+
+return {
+statuses,
+topLeads,
+leadSourcesCount,
+analytics: {
+total_leads: totalLeads,
+leads_today: leadsToday,
+total_emails_sent: totalEmailsSent,
+total_opens: totalOpens,
+total_clicks: totalClicks,
+total_replies: totalReplies,
+emails_sent_today: emailsSentToday,
+opens_today: opensToday,
+clicks_today: clicksToday,
+replies_today: repliesToday,
+open_rate_pct: openRatePct,
+click_rate_pct: clickRatePct,
+reply_rate_pct: replyRatePct,
+},
+};
+}
+
 async function smartRender(ctx, text, keyboard) {
 const safeText = sanitizeDisplayText(text);
 // stop Telegram spinner when this was a button click
@@ -1906,31 +2128,11 @@ throw err;
 // ---------- LEADS DISPLAY ----------
 async function leadsText() {
   try {
-    const { data: analytics, error: analyticsErr } = await ops()
-      .from("v_analytics_summary")
-      .select("*")
-      .single();
-    
-    if (analyticsErr) throw new Error(analyticsErr.message);
-    
-    const { data: topLeads, error: leadsErr } = await ops()
-      .from("v_top_leads")
-      .select("*")
-      .limit(10);
-    
-    if (leadsErr) throw new Error(leadsErr.message);
-    
-    const { data: statusCounts, error: statusErr } = await ops()
-      .from("leads")
-      .select("status");
-    
-    const statuses = { ready: 0, outreach_started: 0, replied: 0, no_email: 0, bounced: 0 };
-    
-    if (!statusErr && statusCounts) {
-      for (const row of statusCounts) {
-        if (statuses.hasOwnProperty(row.status)) statuses[row.status]++;
-      }
-    }
+    const snapshot = await sbLeadAnalyticsSnapshot();
+    const analytics = snapshot.analytics || {};
+    const topLeads = snapshot.topLeads || [];
+    const statuses = snapshot.statuses || { ready: 0, outreach_started: 0, replied: 0, no_email: 0, bounced: 0 };
+    const leadSourcesCount = snapshot.leadSourcesCount;
     
     let text = `🎯 NIL LEADS DASHBOARD
 📊 Overview
@@ -1938,6 +2140,7 @@ async function leadsText() {
 • Total Leads: ${analytics?.total_leads || 0}
 • New Today: ${analytics?.leads_today || 0}
 • With Email: ${statuses.ready + statuses.outreach_started + statuses.replied}
+• Lead Sources: ${leadSourcesCount == null ? "n/a" : leadSourcesCount}
 
 📈 Status
 Ready: ${statuses.ready}
@@ -1973,12 +2176,8 @@ function leadsKeyboard() {
 // ---------- ANALYTICS DISPLAY ----------
 async function analyticsText() {
   try {
-    const { data: analytics, error } = await ops()
-      .from("v_analytics_summary")
-      .select("*")
-      .single();
-    
-    if (error) throw new Error(error.message);
+    const snapshot = await sbLeadAnalyticsSnapshot();
+    const analytics = snapshot.analytics || {};
     
     let text = `📊 EMAIL ANALYTICS
 📅 Today
@@ -2031,6 +2230,7 @@ completedCount,
 submissionsCount,
 callsCount,
 lastIngestAt,
+opsDelivery,
 ] = await trackPerf(`dashboard.counts.${filterSource}`, () => Promise.all([
 sbCountHandoffPending({ source: filterSource }),
 sbCountUrgentAuto({ source: filterSource }),
@@ -2044,6 +2244,7 @@ sbCountConversations({ pipeline: "completed", source: filterSource }),
 sbCountSubmissions(),
 sbCountCalls(),
 sbGetLastOpsEventTimestamp(),
+sbOpsDeliverySummary(),
 ]));
 
 const counts = {
@@ -2095,6 +2296,7 @@ filterLabel,
 staleWarning,
 capped,
 metrics: m,
+opsDelivery,
 });
 }
 // ✅ EXACT v5.1 dashboard keyboard: filters row + nav row + metrics row (ONLY 3 rows)
@@ -4251,9 +4453,10 @@ const { dayKey, time, dayStartISO, dayEndISO } = nyParts(now);
 // - dayStartISO: ISO string at NY 00:00
 // - dayEndISO: ISO string at next day NY 00:00
 // Pull counts (parallel)
-const [triageDue, callsToday] = await Promise.all([
+const [triageDue, callsToday, opsDelivery] = await Promise.all([
   sbCountTriageDueNow({ source: filterSource }).catch(() => 0),
   sbCountCallsToday({ source: filterSource, dayStartISO, dayEndISO }).catch(() => 0),
+  sbOpsDeliverySummary().catch(() => ({})),
 ]);
 
 const text =
@@ -4263,6 +4466,10 @@ ${dayKey} • ${time}
 
 ⚡️ Triage Due: ${triageDue}
 📱 Calls Scheduled: ${callsToday}
+📤 Email Pending: ${opsDelivery?.emailPending == null ? "n/a" : opsDelivery.emailPending}
+📲 SMS Pending: ${opsDelivery?.smsPending == null ? "n/a" : opsDelivery.smsPending}
+☠️ Dead Letter Events: ${opsDelivery?.deadLetterEvents == null ? "n/a" : opsDelivery.deadLetterEvents}
+🎟 Open Support Tickets: ${opsDelivery?.supportTicketsOpen == null ? "n/a" : opsDelivery.supportTicketsOpen}
 --`;
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("⚡️ Triage", "TRIAGE:open")],

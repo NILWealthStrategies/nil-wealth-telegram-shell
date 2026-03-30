@@ -60,8 +60,10 @@ function buildDashboardText({
   staleWarning,
   capped,
   metrics,
+  opsDelivery,
 }) {
   const staleBlock = staleWarning ? `${staleWarning}\n` : "";
+  const d = opsDelivery || {};
   return `🏠 NIL WEALTH OPS DASHBOARD
 ${codeVersion} • Build: ${String(buildVersion).slice(0, 8)}
 
@@ -82,6 +84,16 @@ ${formatCappedQueueLabel("📱 Calls", capped.callsCount)}
 ${formatCappedQueueLabel("✅ Completed", capped.completedCount)}
 
 ${buildDashboardMetricsText(metrics)}
+
+🚚 DELIVERY / OPS
+Email Outbox Pending: ${d.emailPending == null ? "n/a" : d.emailPending}
+Email Outbox Failed: ${d.emailFailed == null ? "n/a" : d.emailFailed}
+SMS Outbox Pending: ${d.smsPending == null ? "n/a" : d.smsPending}
+SMS Outbox Failed: ${d.smsFailed == null ? "n/a" : d.smsFailed}
+Processed Events: ${d.processedEvents == null ? "n/a" : d.processedEvents}
+Dead Letter Events: ${d.deadLetterEvents == null ? "n/a" : d.deadLetterEvents}
+Dead Letters: ${d.deadLetters == null ? "n/a" : d.deadLetters}
+Open Support Tickets: ${d.supportTicketsOpen == null ? "n/a" : d.supportTicketsOpen}
 
 Use buttons below.`;
 }
