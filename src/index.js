@@ -1725,16 +1725,36 @@ console.warn("sbMetricSummary metric_events fallback:", err?.message || err);
 
 // 2) click_events fallback (webhook/metric writes here)
 try {
+const clickResult = await dbSelectFirst([
+() => {
 let cq = ops()
 .from("click_events")
 .select("kind, click_source, created_at");
 if (since) cq = cq.gte("created_at", since);
-const { data: clickRows, error: clickErr } = await cq;
-if (!clickErr && Array.isArray(clickRows)) {
-for (const r of clickRows) {
+return cq;
+},
+() => {
+let cq = ops()
+.from("click_events")
+.select("kind, click_source, clicked_at");
+if (since) cq = cq.gte("clicked_at", since);
+return cq;
+},
+() => {
+let cq = ops()
+.from("click_events")
+.select("kind, click_source, event_time");
+if (since) cq = cq.gte("event_time", since);
+return cq;
+},
+() => ops().from("click_events").select("kind, click_source"),
+]);
+if (!clickResult?.error && Array.isArray(clickResult?.data)) {
+for (const r of clickResult.data) {
 rawClickEventCount++;
 const mappedType = normalizeMetricEventType(r.kind || r.click_source);
-if (mappedType) eventRows.push({ event_type: mappedType, created_at: r.created_at });
+const clickCreatedAt = r.created_at || r.clicked_at || r.event_time || now.toISOString();
+if (mappedType) eventRows.push({ event_type: mappedType, created_at: clickCreatedAt });
 }
 }
 } catch (err) {
