@@ -50,7 +50,7 @@ function formatMessageLineFull(m) {
 function formatInstantlyTimelineLine(item, conv) {
   const ts = item?.created_at || "";
   if (item?.timeline_type === "event" && item?.event_type === "cc_support_sent") {
-    return `SYSTEM — CC SUPPORT SENT\n${ts}`;
+    return `SYSTEM — LOOP IN SUPPORT SENT\n${ts}`;
   }
 
   const msg = item || {};

@@ -3752,7 +3752,7 @@ Markup.button.callback(`View Support V2${tagS(2)}`, `CCVIEW:${convId}:support:2:
 Markup.button.callback(`View Support V3${tagS(3)}`, `CCVIEW:${convId}:support:3:${bridgeDraft}:${supportDraft}`),
 ],
 [Markup.button.callback("♻️ Regenerate Drafts", `CCREGEN:${convId}`)],
-[Markup.button.callback("✅ Confirm CC Support", `CCCONFIRM:${convId}:${bridgeDraft}:${supportDraft}`)],
+[Markup.button.callback("✅ Confirm Loop in Support", `CCCONFIRM:${convId}:${bridgeDraft}:${supportDraft}`)],
 [Markup.button.callback("⬅ Back to Conversation", `OPENCARD:${convId}`)]
 ]);
 }
@@ -3760,9 +3760,9 @@ Markup.button.callback(`View Support V3${tagS(3)}`, `CCVIEW:${convId}:support:3:
 async function renderCCCard(ctx, convId, bridgeDraft = 2, supportDraft = 2) {
 const drafts = ccDraftsCache.get(convId);
 if (!drafts) {
-return smartRender(ctx, "❌ CC drafts not found. Click Regenerate.", ccKeyboard(convId, bridgeDraft, supportDraft));
+return smartRender(ctx, "❌ Loop in Support drafts not found. Click Regenerate.", ccKeyboard(convId, bridgeDraft, supportDraft));
 }
-let text = `📇 CC Support\nConversation: ${idShort(convId)}\n\n`;
+let text = `📌 Loop in Support\nConversation: ${idShort(convId)}\n\n`;
 text += `This will:\n• Send bridge message from outreach to contact\n• Send forwardable support message from ${SUPPORT_FROM_EMAIL}\n• Create + link the Support mirror thread\n\n`;
 text += `Threading is preserved using Gmail thread headers and thread id when available.\n\n`;
 text += `Selected:\n• Bridge Draft: V${bridgeDraft}\n• Support Draft: V${supportDraft}\n\n`;
@@ -3782,7 +3782,7 @@ if (!conv) return smartRender(ctx, "❌ Conversation not found.", Markup.inlineK
 if (!isProgramLaneConversation(conv)) {
   return smartRender(
     ctx,
-    "📇 CC Support is only available for program lane conversations.",
+    "📌 Loop in Support is only available for program lane conversations.",
     Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
   );
 }
@@ -3799,14 +3799,14 @@ Markup.inlineKeyboard([[Markup.button.callback("🪞 Open Mirror", `OPENMIRROR:$
 if (!ccDraftsCache.has(convId)) {
 await smartRender(
 ctx,
-`📇 CC Support\nConversation: ${idShort(convId)}\n\n⏳ Generating bridge & support drafts with ChatGPT...`,
+`📌 Loop in Support\nConversation: ${idShort(convId)}\n\n⏳ Generating bridge & support drafts with ChatGPT...`,
 Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
 );
 try {
 const generated = await withTimeout(
 generateCCDrafts(conv),
 15000,
-"CC draft generation timed out"
+"Loop in Support draft generation timed out"
 );
 ccDraftsCache.set(convId, generated);
 } catch (err) {
@@ -3820,7 +3820,7 @@ Markup.inlineKeyboard([
 ])
 );
 }
-return smartRender(ctx, `❌ Failed to generate CC drafts: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
+return smartRender(ctx, `❌ Failed to generate Loop in Support drafts: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
 }
 }
 
@@ -3840,7 +3840,7 @@ const currentBridge = parseInt(ctx.match[4], 10);
 const currentSupport = parseInt(ctx.match[5], 10);
 const drafts = ccDraftsCache.get(convId);
 if (!drafts) {
-return smartRender(ctx, "❌ CC drafts not found. Go back and regenerate.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `CC:${convId}`)]]));
+return smartRender(ctx, "❌ Loop in Support drafts not found. Go back and regenerate.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `CC:${convId}`)]]));
 }
 const draft = drafts[type]?.[`v${version}`];
 if (!draft) {
@@ -3887,14 +3887,14 @@ if (!conv) return smartRender(ctx, "❌ Conversation not found.", Markup.inlineK
 ccDraftsCache.delete(convId);
 await smartRender(
 ctx,
-`📇 CC Support\nConversation: ${idShort(convId)}\n\n⏳ Regenerating bridge & support drafts with ChatGPT...`,
+`📌 Loop in Support\nConversation: ${idShort(convId)}\n\n⏳ Regenerating bridge & support drafts with ChatGPT...`,
 Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
 );
 try {
 const generated = await withTimeout(
 generateCCDrafts(conv),
 15000,
-"CC draft generation timed out"
+"Loop in Support draft generation timed out"
 );
 ccDraftsCache.set(convId, generated);
 await renderCCCard(ctx, convId, 2, 2);
@@ -3909,7 +3909,7 @@ Markup.inlineKeyboard([
 ])
 );
 }
-return smartRender(ctx, `❌ Failed to generate CC drafts: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
+return smartRender(ctx, `❌ Failed to generate Loop in Support drafts: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
 }
 }));
 
@@ -3922,22 +3922,22 @@ const conv = await sbGetConversationById(convId);
 const drafts = ccDraftsCache.get(convId);
 if (!conv) return smartRender(ctx, "❌ Conversation not found.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
 if (!isProgramLaneConversation(conv)) {
-return smartRender(ctx, "📇 CC Support is only available for program lane conversations.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
+return smartRender(ctx, "📌 Loop in Support is only available for program lane conversations.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
 }
 if (!drafts) {
-return smartRender(ctx, "❌ CC drafts expired. Re-open CC Support and regenerate if needed.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `CC:${convId}`)]]));
+return smartRender(ctx, "❌ Loop in Support drafts expired. Re-open Loop in Support and regenerate if needed.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `CC:${convId}`)]]));
 }
 const bridgeMessage = drafts.bridge?.[`v${bridgeDraft}`] || null;
 const supportMessage = drafts.support?.[`v${supportDraft}`] || null;
 if (!bridgeMessage || !supportMessage) {
-return smartRender(ctx, "❌ Selected CC draft content is missing. Re-open CC Support and try again.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `CC:${convId}`)]]));
+return smartRender(ctx, "❌ Selected Loop in Support draft content is missing. Re-open Loop in Support and try again.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `CC:${convId}`)]]));
 }
 const recentCcSent = await sbGetRecentCcSupportSent(convId, 24);
 if (recentCcSent) {
 const sentAt = tFmtDateTimeShort(recentCcSent.created_at);
 return smartRender(
 ctx,
-`⚠ CC support was already sent for this conversation today.\nLast send: ${sentAt}\n\nSend again only if you intend to override duplicate protection.`,
+`⚠ Loop in Support was already sent for this conversation today.\nLast send: ${sentAt}\n\nSend again only if you intend to override duplicate protection.`,
 Markup.inlineKeyboard([
 [Markup.button.callback("✅ Override and Send", `CCFORCE:${convId}:${bridgeDraft}:${supportDraft}`)],
 [Markup.button.callback("⬅ Back", `CC:${convId}`)],
@@ -4005,7 +4005,7 @@ const errorHint = !result.ok
 ? `\n\nReason: ${shorten(result.error || result.bodyText || "unknown_error", 220)}`
 : "";
 const successText = result.ok ? 
-`📇 CC Support queued.\n🔒 Sending lane locked to Support (was Outreach).\nMirror thread will appear when ingested.\n\n${cardText}` : 
+`📌 Loop in Support queued.\n🔒 Sending lane locked to Support (was Outreach).\nMirror thread will appear when ingested.\n\n${cardText}` : 
 `❌ CC failed (${result.status || "?"})${errorHint}`;
 await smartRender(
 ctx,
@@ -4027,15 +4027,15 @@ const conv = await sbGetConversationById(convId);
 const drafts = ccDraftsCache.get(convId);
 if (!conv) return smartRender(ctx, "❌ Conversation not found.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
 if (!isProgramLaneConversation(conv)) {
-return smartRender(ctx, "📇 CC Support is only available for program lane conversations.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
+return smartRender(ctx, "📌 Loop in Support is only available for program lane conversations.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]]));
 }
 if (!drafts) {
-return smartRender(ctx, "❌ CC drafts expired. Re-open CC Support and regenerate if needed.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `CC:${convId}`)]]));
+return smartRender(ctx, "❌ Loop in Support drafts expired. Re-open Loop in Support and regenerate if needed.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `CC:${convId}`)]]));
 }
 const bridgeMessage = drafts.bridge?.[`v${bridgeDraft}`] || null;
 const supportMessage = drafts.support?.[`v${supportDraft}`] || null;
 if (!bridgeMessage || !supportMessage) {
-return smartRender(ctx, "❌ Selected CC draft content is missing. Re-open CC Support and try again.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `CC:${convId}`)]]));
+return smartRender(ctx, "❌ Selected Loop in Support draft content is missing. Re-open Loop in Support and try again.", Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `CC:${convId}`)]]));
 }
 const { error: ccError } = await ops()
 .from("conversations")
@@ -4090,7 +4090,7 @@ const errorHint = !result.ok
 ? `\n\nReason: ${shorten(result.error || result.bodyText || "unknown_error", 220)}`
 : "";
 const successText = result.ok
-? `📇 CC Support override queued.\n\n${cardText}`
+? `📌 Loop in Support override queued.\n\n${cardText}`
 : `❌ CC override failed (${result.status || "?"})${errorHint}`;
 await smartRender(
 ctx,
@@ -4776,7 +4776,7 @@ return;
 }
 if (isInstantlySource(editConv)) {
 draftEditState.delete(userId);
-await ctx.reply("⚠ Draft editing is disabled for Instantly-managed conversations. Use CC Support from the conversation card.");
+await ctx.reply("⚠ Draft editing is disabled for Instantly-managed conversations. Use Loop in Support from the conversation card.");
 return;
 }
 const selected = await sbGetSelectedDraftBody(editState.convId, "conversation");
@@ -6493,7 +6493,7 @@ async function blockInstantlyManagedAction(ctx, conv, convId, actionLabel = "Thi
 if (!isInstantlySource(conv)) return false;
 await smartRender(
 ctx,
-`⚠ ${actionLabel} is disabled for Instantly-managed conversations.\n\nUse 📌 CC Support from the conversation card.`,
+`⚠ ${actionLabel} is disabled for Instantly-managed conversations.\n\nUse 📌 Loop in Support from the conversation card.`,
 Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]])
 );
 return true;
@@ -6522,7 +6522,7 @@ if (isLockedToSupport) {
 // Support mode only
 await smartRender(
 ctx,
-`📤 Send Draft (Support)\n\nSend lane is locked to Support.\n\n${isSupport ? "This is a Support conversation." : "CC Support has been enabled."}`,
+`📤 Send Draft (Support)\n\nSend lane is locked to Support.\n\n${isSupport ? "This is a Support conversation." : "Loop in Support has been enabled."}`,
 Markup.inlineKeyboard([
 [Markup.button.callback("✅ Send as Support", `CONFIRMSEND:${convId}:${useDraft}:support`)],
 [Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)],
@@ -7488,7 +7488,7 @@ ${aiPreview}
 Ref: Campaign ${campaign_id || "—"} • Lead ${lead_id || "—"}`;
 
       const kb = laneProgram
-        ? Markup.inlineKeyboard([[Markup.button.callback("📌 CC Support", `CC:${conversationId}`)]])
+        ? Markup.inlineKeyboard([[Markup.button.callback("📌 Loop in Support", `CC:${conversationId}`)]])
         : undefined;
 
       const notifyAdminIds = ADMIN_IDS.length ? ADMIN_IDS : [];
