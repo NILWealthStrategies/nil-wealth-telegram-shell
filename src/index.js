@@ -1614,12 +1614,17 @@ const t = String(rawType || "").trim().toLowerCase();
 if (!t) return null;
 if (t.includes("thread_created") || t === "conversation.created") return "thread_created";
 if (t.includes("eapp")) return "eapp_visit";
-if (t.includes("coverage")) return "coverage_exploration";
+if (t.includes("parent_guide") || t.includes("parents_guide") || t.includes("program_link") || t.includes("guide_open") || t.includes("guide_click")) return "parent_guide_click";
+if (t.includes("sh_click") || t.includes("supplemental") || t.includes("supp_health")) return "supplemental_health_guide_click";
+if (t.includes("risk_awareness") || (t.includes("risk") && t.includes("click"))) return "risk_awareness_guide_click";
+if (t.includes("tax_education") || (t.includes("tax") && t.includes("click"))) return "tax_education_guide_click";
 if (t.includes("enroll") || t.includes("portal") || t.includes("signup")) return "enroll_click";
-if (t.includes("guide") || t.includes("program_link") || t.includes("parent_link")) return "program_link_open";
 if (t.includes("click")) return "enroll_click";
-if (["program_link_open", "parent_guide_open", "parent_guide_click", "program_guide_open", "guide_open"].includes(t)) return "program_link_open";
-if (["coverage_exploration", "coverage_explore", "coverage_click", "coverage_link_open"].includes(t)) return "coverage_exploration";
+if (["program_link_open", "parent_guide_open", "parent_guide_click", "program_guide_open", "guide_open", "parent_guide_click"].includes(t)) return "parent_guide_click";
+if (["coverage_exploration", "coverage_explore", "coverage_click", "coverage_link_open"].includes(t)) return "supplemental_health_guide_click";
+if (["sh_click", "supplemental_health_click", "supplemental_health_guide_click"].includes(t)) return "supplemental_health_guide_click";
+if (["risk_awareness_click", "risk_awareness_guide_click"].includes(t)) return "risk_awareness_guide_click";
+if (["tax_education_click", "tax_education_guide_click"].includes(t)) return "tax_education_guide_click";
 if (["enroll_click", "enroll_portal_click", "enroll_portal_visit", "enroll_visit", "portal_click"].includes(t)) return "enroll_click";
 if (["eapp_visit", "eapp_click", "eapp_open"].includes(t)) return "eapp_visit";
 if (t === "thread_created" || t === "conversation.created") return "thread_created";
@@ -1660,28 +1665,36 @@ return now.toISOString();
 const eventRows = [];
 let rawClickEventCount = 0;
 const fallbackCounts = {
-programLinkOpens: 0,
-coverageExploration: 0,
-enrollClicks: 0,
+parentGuideClicks: 0,
+supplementalHealthGuideClicks: 0,
+riskAwarenessGuideClicks: 0,
+taxEducationGuideClicks: 0,
+enrollPortalClicks: 0,
 eappVisits: 0,
 };
 const monthlyFallback = Array.from({ length: 12 }, () => ({
-opens: 0,
-exploration: 0,
-enrollClicks: 0,
+parentGuideClicks: 0,
+supplementalHealthGuideClicks: 0,
+riskAwarenessGuideClicks: 0,
+taxEducationGuideClicks: 0,
+enrollPortalClicks: 0,
 eappVisits: 0,
 }));
 
 const emptyCountsBucket = () => ({
-programLinkOpens: 0,
-coverageExploration: 0,
-enrollClicks: 0,
+parentGuideClicks: 0,
+supplementalHealthGuideClicks: 0,
+riskAwarenessGuideClicks: 0,
+taxEducationGuideClicks: 0,
+enrollPortalClicks: 0,
 eappVisits: 0,
 });
 const emptyMonthlyBuckets = () => Array.from({ length: 12 }, () => ({
-opens: 0,
-exploration: 0,
-enrollClicks: 0,
+parentGuideClicks: 0,
+supplementalHealthGuideClicks: 0,
+riskAwarenessGuideClicks: 0,
+taxEducationGuideClicks: 0,
+enrollPortalClicks: 0,
 eappVisits: 0,
 }));
 
@@ -1692,15 +1705,19 @@ if (since) {
 const sinceTs = new Date(since).getTime();
 if (Number.isFinite(sinceTs) && ts < sinceTs) return;
 }
-targetCounts.programLinkOpens += toNumber(bucket.opens);
-targetCounts.coverageExploration += toNumber(bucket.exploration);
-targetCounts.enrollClicks += toNumber(bucket.enrollClicks);
+targetCounts.parentGuideClicks += toNumber(bucket.parentGuideClicks);
+targetCounts.supplementalHealthGuideClicks += toNumber(bucket.supplementalHealthGuideClicks);
+targetCounts.riskAwarenessGuideClicks += toNumber(bucket.riskAwarenessGuideClicks);
+targetCounts.taxEducationGuideClicks += toNumber(bucket.taxEducationGuideClicks);
+targetCounts.enrollPortalClicks += toNumber(bucket.enrollPortalClicks);
 targetCounts.eappVisits += toNumber(bucket.eappVisits);
 const mi = new Date(ts).getMonth();
 if (mi >= 0 && mi <= 11) {
-targetMonthly[mi].opens += toNumber(bucket.opens);
-targetMonthly[mi].exploration += toNumber(bucket.exploration);
-targetMonthly[mi].enrollClicks += toNumber(bucket.enrollClicks);
+targetMonthly[mi].parentGuideClicks += toNumber(bucket.parentGuideClicks);
+targetMonthly[mi].supplementalHealthGuideClicks += toNumber(bucket.supplementalHealthGuideClicks);
+targetMonthly[mi].riskAwarenessGuideClicks += toNumber(bucket.riskAwarenessGuideClicks);
+targetMonthly[mi].taxEducationGuideClicks += toNumber(bucket.taxEducationGuideClicks);
+targetMonthly[mi].enrollPortalClicks += toNumber(bucket.enrollPortalClicks);
 targetMonthly[mi].eappVisits += toNumber(bucket.eappVisits);
 }
 };
@@ -1799,33 +1816,41 @@ const createdAt = rowCreatedAt(r, relation);
 const byKindType = normalizeMetricEventType(r.kind || r.event_type);
 if (byKindType && (r.count != null || r.total != null || r.clicks != null)) {
 const count = toNumber(r.count ?? r.total ?? r.clicks);
-const bucket = { opens: 0, exploration: 0, enrollClicks: 0, eappVisits: 0 };
-if (byKindType === "program_link_open") bucket.opens = count;
-if (byKindType === "coverage_exploration") bucket.exploration = count;
-if (byKindType === "enroll_click") bucket.enrollClicks = count;
+const bucket = { parentGuideClicks: 0, supplementalHealthGuideClicks: 0, riskAwarenessGuideClicks: 0, taxEducationGuideClicks: 0, enrollPortalClicks: 0, eappVisits: 0 };
+if (byKindType === "parent_guide_click") bucket.parentGuideClicks = count;
+if (byKindType === "supplemental_health_guide_click") bucket.supplementalHealthGuideClicks = count;
+if (byKindType === "risk_awareness_guide_click") bucket.riskAwarenessGuideClicks = count;
+if (byKindType === "tax_education_guide_click") bucket.taxEducationGuideClicks = count;
+if (byKindType === "enroll_click") bucket.enrollPortalClicks = count;
 if (byKindType === "eapp_visit") bucket.eappVisits = count;
 addFallbackBucket(localCounts, localMonthly, createdAt, bucket);
 continue;
 }
 addFallbackBucket(localCounts, localMonthly, createdAt, {
-opens: readNumeric(r, ["program_link_opens", "guide_opens", "parent_guide_opens", "opens", "total_opens", "opens_total"]),
-exploration: readNumeric(r, ["coverage_exploration", "coverage_explorations", "coverage_clicks", "exploration", "total_exploration"]),
-enrollClicks: readNumeric(r, ["enroll_clicks", "enroll_portal_visits", "enroll_portal_clicks", "total_clicks", "clicks", "total_enroll_clicks"]),
+parentGuideClicks: readNumeric(r, ["parent_guide_clicks", "program_link_opens", "guide_opens", "parent_guide_opens", "opens", "total_opens", "opens_total"]),
+supplementalHealthGuideClicks: readNumeric(r, ["supplemental_health_guide_clicks", "supplemental_health_clicks", "sh_clicks", "coverage_exploration", "coverage_clicks"]),
+riskAwarenessGuideClicks: readNumeric(r, ["risk_awareness_guide_clicks", "risk_awareness_clicks"]),
+taxEducationGuideClicks: readNumeric(r, ["tax_education_guide_clicks", "tax_education_clicks"]),
+enrollPortalClicks: readNumeric(r, ["enroll_clicks", "enroll_portal_visits", "enroll_portal_clicks", "total_enroll_clicks"]),
 eappVisits: readNumeric(r, ["eapp_visits", "eapp_clicks", "total_eapp_visits"]),
 });
 }
 
-const localTotal = localCounts.programLinkOpens + localCounts.coverageExploration + localCounts.enrollClicks + localCounts.eappVisits;
+const localTotal = localCounts.parentGuideClicks + localCounts.supplementalHealthGuideClicks + localCounts.riskAwarenessGuideClicks + localCounts.taxEducationGuideClicks + localCounts.enrollPortalClicks + localCounts.eappVisits;
 if (localTotal <= 0) continue;
 
-fallbackCounts.programLinkOpens += localCounts.programLinkOpens;
-fallbackCounts.coverageExploration += localCounts.coverageExploration;
-fallbackCounts.enrollClicks += localCounts.enrollClicks;
+fallbackCounts.parentGuideClicks += localCounts.parentGuideClicks;
+fallbackCounts.supplementalHealthGuideClicks += localCounts.supplementalHealthGuideClicks;
+fallbackCounts.riskAwarenessGuideClicks += localCounts.riskAwarenessGuideClicks;
+fallbackCounts.taxEducationGuideClicks += localCounts.taxEducationGuideClicks;
+fallbackCounts.enrollPortalClicks += localCounts.enrollPortalClicks;
 fallbackCounts.eappVisits += localCounts.eappVisits;
 for (let i = 0; i < 12; i++) {
-monthlyFallback[i].opens += localMonthly[i].opens;
-monthlyFallback[i].exploration += localMonthly[i].exploration;
-monthlyFallback[i].enrollClicks += localMonthly[i].enrollClicks;
+monthlyFallback[i].parentGuideClicks += localMonthly[i].parentGuideClicks;
+monthlyFallback[i].supplementalHealthGuideClicks += localMonthly[i].supplementalHealthGuideClicks;
+monthlyFallback[i].riskAwarenessGuideClicks += localMonthly[i].riskAwarenessGuideClicks;
+monthlyFallback[i].taxEducationGuideClicks += localMonthly[i].taxEducationGuideClicks;
+monthlyFallback[i].enrollPortalClicks += localMonthly[i].enrollPortalClicks;
 monthlyFallback[i].eappVisits += localMonthly[i].eappVisits;
 }
 usedAggregateRelation = relation;
@@ -1839,32 +1864,43 @@ console.warn("sbMetricSummary aggregate fallback: no aggregate relation returned
 }
 
 const counts = {
-programLinkOpens: 0,
-coverageExploration: 0,
-enrollClicks: 0,
+parentGuideClicks: 0,
+supplementalHealthGuideClicks: 0,
+riskAwarenessGuideClicks: 0,
+taxEducationGuideClicks: 0,
+enrollPortalClicks: 0,
 eappVisits: 0,
-threadsCreated: 0, // ✅ new
+threadsCreated: 0,
 };
   for (const r of eventRows) {
     const evt = normalizeMetricEventType(r.event_type) || String(r.event_type || "");
-    if (evt === "program_link_open") counts.programLinkOpens++;
-    if (evt === "coverage_exploration") counts.coverageExploration++;
-    if (evt === "enroll_click") counts.enrollClicks++;
+    if (evt === "parent_guide_click") counts.parentGuideClicks++;
+    if (evt === "supplemental_health_guide_click") counts.supplementalHealthGuideClicks++;
+    if (evt === "risk_awareness_guide_click") counts.riskAwarenessGuideClicks++;
+    if (evt === "tax_education_guide_click") counts.taxEducationGuideClicks++;
+    if (evt === "enroll_click") counts.enrollPortalClicks++;
     if (evt === "eapp_visit") counts.eappVisits++;
-    // ✅ choose ONE canonical thread metric event name and stick to it
     if (evt === "thread_created")
       counts.threadsCreated++;
   }
-counts.programLinkOpens = Math.max(counts.programLinkOpens, fallbackCounts.programLinkOpens);
-counts.coverageExploration = Math.max(counts.coverageExploration, fallbackCounts.coverageExploration);
-counts.enrollClicks = Math.max(counts.enrollClicks, fallbackCounts.enrollClicks);
+counts.parentGuideClicks = Math.max(counts.parentGuideClicks, fallbackCounts.parentGuideClicks);
+counts.supplementalHealthGuideClicks = Math.max(counts.supplementalHealthGuideClicks, fallbackCounts.supplementalHealthGuideClicks);
+counts.riskAwarenessGuideClicks = Math.max(counts.riskAwarenessGuideClicks, fallbackCounts.riskAwarenessGuideClicks);
+counts.taxEducationGuideClicks = Math.max(counts.taxEducationGuideClicks, fallbackCounts.taxEducationGuideClicks);
+counts.enrollPortalClicks = Math.max(counts.enrollPortalClicks, fallbackCounts.enrollPortalClicks);
 counts.eappVisits = Math.max(counts.eappVisits, fallbackCounts.eappVisits);
 const categoryTotalClicks =
-  (counts.programLinkOpens || 0) +
-  (counts.coverageExploration || 0) +
-  (counts.enrollClicks || 0) +
+  (counts.parentGuideClicks || 0) +
+  (counts.supplementalHealthGuideClicks || 0) +
+  (counts.riskAwarenessGuideClicks || 0) +
+  (counts.taxEducationGuideClicks || 0) +
+  (counts.enrollPortalClicks || 0) +
   (counts.eappVisits || 0);
 counts.totalClicks = Math.max(categoryTotalClicks, rawClickEventCount);
+// Backward-compatible aliases for existing consumers.
+counts.programLinkOpens = counts.parentGuideClicks;
+counts.coverageExploration = counts.supplementalHealthGuideClicks + counts.riskAwarenessGuideClicks + counts.taxEducationGuideClicks;
+counts.enrollClicks = counts.enrollPortalClicks;
   
   // Fetch calls answered for all windows
   let callsAnswered = 0;
@@ -1889,9 +1925,11 @@ const order = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov"
 const monthIndex = (d) => new Date(d).getMonth(); // 0..11
 const monthly = Array.from({ length: 12 }, (_, i) => ({
 label: order[i],
-opens: 0,
-exploration: 0,
-enrollClicks: 0,
+parentGuideClicks: 0,
+supplementalHealthGuideClicks: 0,
+riskAwarenessGuideClicks: 0,
+taxEducationGuideClicks: 0,
+enrollPortalClicks: 0,
 eappVisits: 0,
 totalClicks: 0,
 threads: 0,
@@ -1902,23 +1940,34 @@ for (const r of eventRows) {
 const mi = monthIndex(r.created_at);
 if (mi < 0 || mi > 11) continue;
 const evt = normalizeMetricEventType(r.event_type) || String(r.event_type || "");
-if (evt === "program_link_open") monthly[mi].opens++;
-if (evt === "coverage_exploration") monthly[mi].exploration++;
-if (evt === "enroll_click") monthly[mi].enrollClicks++;
+if (evt === "parent_guide_click") monthly[mi].parentGuideClicks++;
+if (evt === "supplemental_health_guide_click") monthly[mi].supplementalHealthGuideClicks++;
+if (evt === "risk_awareness_guide_click") monthly[mi].riskAwarenessGuideClicks++;
+if (evt === "tax_education_guide_click") monthly[mi].taxEducationGuideClicks++;
+if (evt === "enroll_click") monthly[mi].enrollPortalClicks++;
 if (evt === "eapp_visit") monthly[mi].eappVisits++;
 if (evt === "thread_created")
 monthly[mi].threads++;
 }
 for (let i = 0; i < 12; i++) {
-monthly[i].opens = Math.max(monthly[i].opens, monthlyFallback[i].opens || 0);
-monthly[i].exploration = Math.max(monthly[i].exploration, monthlyFallback[i].exploration || 0);
-monthly[i].enrollClicks = Math.max(monthly[i].enrollClicks, monthlyFallback[i].enrollClicks || 0);
+monthly[i].parentGuideClicks = Math.max(monthly[i].parentGuideClicks, monthlyFallback[i].parentGuideClicks || 0);
+monthly[i].supplementalHealthGuideClicks = Math.max(monthly[i].supplementalHealthGuideClicks, monthlyFallback[i].supplementalHealthGuideClicks || 0);
+monthly[i].riskAwarenessGuideClicks = Math.max(monthly[i].riskAwarenessGuideClicks, monthlyFallback[i].riskAwarenessGuideClicks || 0);
+monthly[i].taxEducationGuideClicks = Math.max(monthly[i].taxEducationGuideClicks, monthlyFallback[i].taxEducationGuideClicks || 0);
+monthly[i].enrollPortalClicks = Math.max(monthly[i].enrollPortalClicks, monthlyFallback[i].enrollPortalClicks || 0);
 monthly[i].eappVisits = Math.max(monthly[i].eappVisits, monthlyFallback[i].eappVisits || 0);
 monthly[i].totalClicks =
-  (monthly[i].opens || 0) +
-  (monthly[i].exploration || 0) +
-  (monthly[i].enrollClicks || 0) +
+  (monthly[i].parentGuideClicks || 0) +
+  (monthly[i].supplementalHealthGuideClicks || 0) +
+  (monthly[i].riskAwarenessGuideClicks || 0) +
+  (monthly[i].taxEducationGuideClicks || 0) +
+  (monthly[i].enrollPortalClicks || 0) +
   (monthly[i].eappVisits || 0);
+}
+for (let i = 0; i < 12; i++) {
+monthly[i].opens = monthly[i].parentGuideClicks;
+monthly[i].exploration = monthly[i].supplementalHealthGuideClicks + monthly[i].riskAwarenessGuideClicks + monthly[i].taxEducationGuideClicks;
+monthly[i].enrollClicks = monthly[i].enrollPortalClicks;
 }
 
 // Add calls to monthly buckets
@@ -1939,7 +1988,7 @@ if (mi >= 0 && mi <= 11) monthly[mi].callsAnswered++;
 } catch (_) {}
 
 // best month / best month ever (same thing unless you later compare multi-years)
-const bestMonth = monthly.reduce((a, b) => (b.enrollClicks > a.enrollClicks ? b : a),
+const bestMonth = monthly.reduce((a, b) => (b.totalClicks > a.totalClicks ? b : a),
 monthly[0]);
 const bestMonthEver = bestMonth;
 // best week (approx): compute week buckets from rows
@@ -1950,19 +1999,17 @@ const onejan = new Date(y, 0, 1);
 const week = Math.ceil((((d - onejan) / 86400000) + onejan.getDay() + 1) / 7);
 return `${y}-W${String(week).padStart(2, "0")}`;
 };
-const weekAgg = new Map(); // key -> { enrollClicks, threads }
+const weekAgg = new Map(); // key -> { totalClicks }
 for (const r of eventRows) {
 const k = weekKey(r.created_at);
-const cur = weekAgg.get(k) || { enrollClicks: 0, threads: 0 };
+const cur = weekAgg.get(k) || { totalClicks: 0 };
 const evt = normalizeMetricEventType(r.event_type) || String(r.event_type || "");
-if (evt === "enroll_click") cur.enrollClicks++;
-if (evt === "thread_created")
-cur.threads++;
+if (["parent_guide_click", "supplemental_health_guide_click", "risk_awareness_guide_click", "tax_education_guide_click", "enroll_click", "eapp_visit"].includes(evt)) cur.totalClicks++;
 weekAgg.set(k, cur);
 }
 let bestWeek = null;
 for (const [k, v] of weekAgg.entries()) {
-if (!bestWeek || v.enrollClicks > bestWeek.enrollClicks) bestWeek = { label: k, ...v };
+if (!bestWeek || v.totalClicks > bestWeek.totalClicks) bestWeek = { label: k, ...v };
 }
 // trends: compare last month vs month before (simple and matches your definition)
 const lastMonthIdx = now.getMonth();
@@ -1980,17 +2027,16 @@ return {
 ...counts,
 monthlyBreakdown: monthly,
 bestWeek,
-bestMonth: { label: bestMonth.label, enrollClicks: bestMonth.enrollClicks, threads:
-bestMonth.threads },
-bestMonthEver: { label: bestMonthEver.label, enrollClicks: bestMonthEver.enrollClicks,
-threads: bestMonthEver.threads },
+bestMonth: { label: bestMonth.label, totalClicks: bestMonth.totalClicks },
+bestMonthEver: { label: bestMonthEver.label, totalClicks: bestMonthEver.totalClicks },
 trend: {
 totalClicks: trendOf("totalClicks"),
-opens: trendOf("opens"),
-exploration: trendOf("exploration"),
-enrollClicks: trendOf("enrollClicks"),
+parentGuideClicks: trendOf("parentGuideClicks"),
+supplementalHealthGuideClicks: trendOf("supplementalHealthGuideClicks"),
+riskAwarenessGuideClicks: trendOf("riskAwarenessGuideClicks"),
+taxEducationGuideClicks: trendOf("taxEducationGuideClicks"),
+enrollPortalClicks: trendOf("enrollPortalClicks"),
 eappVisits: trendOf("eappVisits"),
-threads: trendOf("threads"),
 callsAnswered: trendOf("callsAnswered"),
 },
 };
@@ -5109,23 +5155,26 @@ const avgDivisor = window === "year" ? 12 : divisor; // year shows per month ave
 const avg = (val) => Math.round((val || 0) / avgDivisor);
 
 let body = `--
-Total Clicks: ${metrics.totalClicks || 0}
+Clicks: ${metrics.totalClicks || 0}
   (Avg ${avg(metrics.totalClicks)}${perLabel})
 
-Parent Guide Link Opens: ${metrics.programLinkOpens || 0}
-  (Avg ${avg(metrics.programLinkOpens)}${perLabel})
+Parent Guide Clicks: ${metrics.parentGuideClicks || 0}
+  (Avg ${avg(metrics.parentGuideClicks)}${perLabel})
 
-Coverage Exploration: ${metrics.coverageExploration || 0}
-  (Avg ${avg(metrics.coverageExploration)}${perLabel})
+Supplemental Health Guide Clicks: ${metrics.supplementalHealthGuideClicks || 0}
+  (Avg ${avg(metrics.supplementalHealthGuideClicks)}${perLabel})
 
-Enroll Portal Visits: ${metrics.enrollClicks || 0}
-  (Avg ${avg(metrics.enrollClicks)}${perLabel})
+Risk Awareness Guide Clicks: ${metrics.riskAwarenessGuideClicks || 0}
+  (Avg ${avg(metrics.riskAwarenessGuideClicks)}${perLabel})
+
+Tax Education Guide Clicks: ${metrics.taxEducationGuideClicks || 0}
+  (Avg ${avg(metrics.taxEducationGuideClicks)}${perLabel})
+
+Enroll Portal Clicks: ${metrics.enrollPortalClicks || 0}
+  (Avg ${avg(metrics.enrollPortalClicks)}${perLabel})
 
 eApp Visits: ${metrics.eappVisits || 0}
   (Avg ${avg(metrics.eappVisits)}${perLabel})
-
-Threads Created (replies): ${metrics.threadsCreated || 0}
-  (Avg ${avg(metrics.threadsCreated)}${perLabel})
 
 Calls Answered: ${metrics.callsAnswered || 0}
   (Avg ${avg(metrics.callsAnswered)}${perLabel})
@@ -5133,8 +5182,8 @@ Calls Answered: ${metrics.callsAnswered || 0}
 
 // Add best week/month for year view
 if (window === "year" && metrics.bestWeek && metrics.bestMonth) {
-const bestWeek = `🏆 Best Week: ${metrics.bestWeek.label || "—"} (Enroll ${metrics.bestWeek.enrollClicks || 0}, Threads ${metrics.bestWeek.threads || 0})`;
-const bestMonth = `⭐ Best Month: ${metrics.bestMonth.label || "—"} (Enroll ${metrics.bestMonth.enrollClicks || 0}, Threads ${metrics.bestMonth.threads || 0})`;
+const bestWeek = `🏆 Best Week: ${metrics.bestWeek.label || "—"} (Total Clicks ${metrics.bestWeek.totalClicks || 0})`;
+const bestMonth = `⭐ Best Month: ${metrics.bestMonth.label || "—"} (Total Clicks ${metrics.bestMonth.totalClicks || 0})`;
 body += `\n\n${bestWeek}\n${bestMonth}`;
 }
 
@@ -6111,7 +6160,7 @@ coverage_exploration_total_year: coverageExplorationYear,
 };
 const programsSystemPrompt = "You write concise professional outreach follow-up replies for coach conversations. Return JSON with v1,v2,v3 each containing subject and body.";
 const supportSystemPrompt = "You write concise professional support replies. Return JSON with v1,v2,v3 each containing subject and body.";
-const programsUserPrompt = `Create 3 follow-up reply drafts for this Programs conversation:\n${JSON.stringify(prompt)}\n\nRules:\n- This is a manual follow-up reply in the outreach lane (not autonomous AI send)\n- Use metric context naturally when helpful: Enroll Clicks, Parent Guide Opens, and Total Coverage Exploration\n- Keep under 130 words\n- Include one clear next step\n- Keep tone human, confident, and concise\n- Do not mention AI\nReturn: {\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}}`;
+const programsUserPrompt = `Create 3 follow-up reply drafts for this Programs conversation:\n${JSON.stringify(prompt)}\n\nRules:\n- This is a manual follow-up reply in the outreach lane (not autonomous AI send)\n- Use metric context naturally when helpful: Enroll Portal Clicks, Parent Guide Clicks, and Total Clicks\n- Keep under 130 words\n- Include one clear next step\n- Keep tone human, confident, and concise\n- Do not mention AI\nReturn: {\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}}`;
 const supportUserPrompt = `Create 3 reply drafts for this inbound conversation:\n${JSON.stringify(prompt)}\n\nRules:\n- V1 direct/helpful\n- V2 warm/relationship-focused\n- V3 concise/executive\n- Keep under 130 words\n- Include clear next step\n- Do not mention AI\nReturn: {\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}}`;
 const res = await fetch("https://api.openai.com/v1/chat/completions", {
 method: "POST",
