@@ -3601,19 +3601,17 @@ return THREAD_ORDER === "newest_first" ? (msgs[0]?.id || null) : (msgs[msgs.leng
 async function buildThreadPage(convId, offset, limit) {
 const conv = await sbGetConversationById(convId);
 if (!conv) return { ok: false, error: "Conversation not found." };
-const total = await sbCountMessages(convId);
-const msgs = await sbListMessages(convId, { offset, limit });
-const shownFrom = total === 0 ? 0 : Math.min(offset + 1, total);
-
-const shownTo = total === 0 ? 0 : Math.min(offset + limit, total);
-const header =
+const safeOffset = Math.max(0, Number(offset || 0));
+const headerBase =
 `${headerLine("thread", "full")}\n` +
 `${conv.subject || "Thread"}\n` +
-`${laneLabel(sourceSafe(conv.source))}\n` +
-`💬 Messages: ${total}\n` +
-(total > 0 ? `Showing: ${shownFrom}-${shownTo}` : `Showing: 0-0`);
+`${laneLabel(sourceSafe(conv.source))}`;
 const isInstantlyThread = isInstantlySource(conv);
-let body;
+let total = 0;
+let msgs = [];
+let body = "(No messages yet)";
+let pageIndex = 0;
+let totalPages = 0;
 if (isInstantlyThread) {
 const timelineMsgs = await sbListMessages(convId, { offset: 0, limit: MAX_QUEUE_DISPLAY }).catch(() => []);
 const ccEvents = await sbListCcSupportEvents(convId, { limit: MAX_QUEUE_DISPLAY }).catch(() => []);
@@ -3624,49 +3622,41 @@ const timeline = [
 .sort((a, b) => {
 const at = a?.created_at ? new Date(a.created_at).getTime() : 0;
 const bt = b?.created_at ? new Date(b.created_at).getTime() : 0;
-return at - bt;
+return bt - at;
 });
-body = timeline.length
-? timeline.map((entry) => formatInstantlyTimelineLine(entry, conv)).join("\n\n--------------------\n\n")
-: "(No messages yet)";
-} else {
-body = msgs?.length
-? msgs.map(formatMessageLineFull).join("\n\n--------------------\n\n")
-: "(No messages yet)";
+total = timeline.length;
+if (total > 0) {
+  pageIndex = Math.min(safeOffset, total - 1);
+  totalPages = total;
+  body = formatInstantlyTimelineLine(timeline[pageIndex], conv);
 }
+} else {
+total = await sbCountMessages(convId);
+if (total > 0) {
+  pageIndex = Math.min(safeOffset, total - 1);
+  msgs = await sbListMessages(convId, { offset: pageIndex, limit }).catch(() => []);
+  const msg = msgs?.[0] || null;
+  body = msg ? formatMessageLineFull(msg) : "(No messages yet)";
+  totalPages = total;
+}
+}
+const pageLabel = total > 0 ? `Page ${pageIndex + 1}/${totalPages}` : "Page 0/0";
+const header = `${headerBase}\n💬 Messages: ${total}\n${pageLabel}`;
 // Pagination controls
-const prevOffset = Math.max(0, offset - limit);
-const nextOffset = offset + limit;
-const hasPrev = offset > 0;
+const prevOffset = Math.max(0, pageIndex - 1);
+const nextOffset = pageIndex + 1;
+const hasPrev = pageIndex > 0;
 const hasNext = nextOffset < total;
 // Latest jump
 const latestOffset = computeLatestOffset(total, limit);
 const kbRows = [];
-if (isInstantlyThread) {
-if (conv?.mirror_conversation_id) {
-kbRows.push([Markup.button.callback("🪞 Open Mirror", `OPENMIRROR:${conv.id}`)]);
-}
-kbRows.push([Markup.button.callback("⬅ Back to Card", `OPENCARD:${convId}`)]);
-kbRows.push([Markup.button.callback("⬅ Dashboard", "DASH:back")]);
-return {
-ok: true,
-conv,
-total,
-msgs,
-text: `${header}\n\n${body}`,
-keyboard: Markup.inlineKeyboard(kbRows),
-latestOffset,
-};
-}
 // paging row
 const paging = [];
-if (hasPrev) paging.push(Markup.button.callback("◀ Older",
-`THREAD:${convId}:${prevOffset}`));
-if (hasNext) paging.push(Markup.button.callback("▶ Newer",
-`THREAD:${convId}:${nextOffset}`));
+if (hasPrev) paging.push(Markup.button.callback("◀ Prev", `THREAD:${convId}:${prevOffset}`));
+if (hasNext) paging.push(Markup.button.callback("Next ▶", `THREAD:${convId}:${nextOffset}`));
 if (paging.length) kbRows.push(paging);
 // latest row (only show if not already on latest)
-if (offset !== latestOffset && total > 0) {
+if (pageIndex !== latestOffset && total > 0) {
 kbRows.push([Markup.button.callback("⏩ Latest", `THREAD:${convId}:${latestOffset}`)]);
 }
 // 🪞 mirror row (recommended)
@@ -3692,7 +3682,7 @@ bot.action(/^THREAD:(.+):(\d+)$/, safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const convId = ctx.match[1];
 const offset = Number(ctx.match[2] || 0);
-const limit = 6;
+const limit = 1;
 try {
 const page = await buildThreadPage(convId, offset, limit);
 if (!page.ok) {
