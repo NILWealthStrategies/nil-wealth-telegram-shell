@@ -2956,9 +2956,6 @@ const id = conv.id;
 const mirrorRow = conv.mirror_conversation_id
 ? [Markup.button.callback("Open Mirror", `OPENMIRROR:${id}`)]
 : [];
-// CC label
-const ccOn = conv.cc_support_suggested === true;
-const ccBtnLabel = ccOn ? "📇 CC ON" : "CC OFF";
 // Role conflict confirmation row (if pending role exists)
 const roleConflictRow = conv?.role_pending && conv?.role_confidence === "low"
 ? [Markup.button.callback(`✅ Confirm [${roleLabel(conv.role_pending)}]`, `CONFIRMROLE:${id}:${conv.role_pending}`)]
@@ -2973,7 +2970,9 @@ return `🧵 Thread (${msgCount} msgs)`;
 if (isInstantlyInbound) {
 const rows = [
 [Markup.button.callback("🧵 View Thread", `THREAD:${id}:0`)],
-[Markup.button.callback("📌 CC Support", `CC:${id}`)],
+[Markup.button.callback("✏️ Drafts V1/V2/V3", `DRAFTS:open:${id}`)],
+[Markup.button.callback("📌 Loop in Support", `CC:${id}`)],
+[Markup.button.callback("👥 People", `PEOPLE:${id}`)],
 ];
 rows.push([Markup.button.callback("⬅ Dashboard", "DASH:back")]);
 return Markup.inlineKeyboard(rows);
@@ -2983,10 +2982,12 @@ const isInstantlyManaged = isInstantlySource(conv);
 const loopBtnLabel = conv.needs_support_handoff ? "🚨 Loop in Support NOW" : "📌 Loop in Support";
 
 if (isInstantlyManaged) {
-  // Instantly-owned thread: keep this card minimal (thread + support handoff only).
+  // Program/outreach card: simple and consistent ordering.
   const rows = [
     [Markup.button.callback(threadLabel, `THREAD:${id}:0`)],
+    [Markup.button.callback("✏️ Drafts V1/V2/V3", `DRAFTS:open:${id}`)],
     [Markup.button.callback(loopBtnLabel, `CC:${id}`)],
+    [Markup.button.callback("👥 People", `PEOPLE:${id}`)],
   ];
   const conflictAndMirror = [...roleConflictRow, ...mirrorRow];
   if (conflictAndMirror.length) rows.push(conflictAndMirror);
@@ -2994,18 +2995,14 @@ if (isInstantlyManaged) {
   return Markup.inlineKeyboard(rows);
 }
 
-// Support lane or CC-locked — full send/draft flow via Gmail
+// Support lane card: no loop-in-support action.
 const rows = [
   [Markup.button.callback(threadLabel, `THREAD:${id}:0`)],
-  [
-    Markup.button.callback(ccBtnLabel, `CC:${id}`),
-    Markup.button.callback("👥 People", `PEOPLE:${id}`),
-  ],
+  [Markup.button.callback("✏️ Drafts V1/V2/V3", `DRAFTS:open:${id}`)],
+  [Markup.button.callback("👥 People", `PEOPLE:${id}`)],
 ];
 const conflictAndMirror = [...roleConflictRow, ...mirrorRow];
 if (conflictAndMirror.length) rows.push(conflictAndMirror);
-rows.push([Markup.button.callback("✏️ Drafts V1/V2/V3", `DRAFTS:open:${id}`)]);
-rows.push([Markup.button.callback("📤 Send (Support) 🔒", `SEND:${id}:1`)]);
 rows.push([Markup.button.callback("⬅ Dashboard", "DASH:back")]);
 return Markup.inlineKeyboard(rows);
 }
