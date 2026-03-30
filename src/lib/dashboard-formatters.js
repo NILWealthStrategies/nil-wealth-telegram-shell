@@ -68,6 +68,34 @@ Total Threads: ${metrics.threadsCreated || 0}
 Total Calls Answered: ${metrics.callsAnswered || 0}`;
 }
 
+function deriveDeliveryHealth(delivery = {}) {
+  const n = (v) => {
+    const x = Number(v);
+    return Number.isFinite(x) ? x : 0;
+  };
+  const processed = n(delivery.processedEvents);
+  const deadEvent = n(delivery.deadLetterEvents);
+  const deadQueue = n(delivery.deadLetters);
+  const emailFailed = n(delivery.emailFailed);
+  const smsFailed = n(delivery.smsFailed);
+  const failureSignals = deadEvent + deadQueue + emailFailed + smsFailed;
+
+  if (processed === 0 && failureSignals === 0) {
+    return { emoji: "🟡", label: "Monitor", note: "No recent throughput yet" };
+  }
+
+  const deadRate = processed > 0 ? (deadEvent + deadQueue) / processed : 1;
+  if (deadRate >= 0.25 || deadEvent + deadQueue >= 25 || emailFailed + smsFailed >= 20) {
+    return { emoji: "🔴", label: "Action Required", note: "High failure/dead-letter pressure" };
+  }
+
+  if (deadRate >= 0.08 || deadEvent + deadQueue >= 8 || emailFailed + smsFailed >= 8) {
+    return { emoji: "🟡", label: "Monitor", note: "Some delivery failures detected" };
+  }
+
+  return { emoji: "🟢", label: "Healthy", note: "Processed high, dead letters low" };
+}
+
 function buildDashboardText({
   codeVersion,
   buildVersion,
@@ -81,6 +109,7 @@ function buildDashboardText({
 }) {
   const staleBlock = staleWarning ? `${staleWarning}\n` : "";
   const d = opsDelivery || {};
+  const health = deriveDeliveryHealth(d);
   return `🏠 NIL WEALTH OPS DASHBOARD
 ${codeVersion} • Build: ${String(buildVersion).slice(0, 8)}
 
@@ -102,7 +131,9 @@ ${formatCappedQueueLabel("✅ Completed", capped.completedCount)}
 
 ${buildDashboardMetricsText(metrics)}
 
-🚚 DELIVERY / OPS
+🚚 DELIVERY HEALTH
+Overall: ${health.emoji} ${health.label}
+Signal: ${health.note}
 Email Outbox Pending: ${d.emailPending == null ? "n/a" : d.emailPending}
 Email Outbox Failed: ${d.emailFailed == null ? "n/a" : d.emailFailed}
 SMS Outbox Pending: ${d.smsPending == null ? "n/a" : d.smsPending}
