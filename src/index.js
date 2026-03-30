@@ -1023,10 +1023,10 @@ return 0;
 }
 }
 // Auto-urgent: list needs_reply items with >24h wait time
-async function sbListUrgentAuto({ source = "all", role = "all", limit = 8 } = {}) {
+async function sbListUrgentAuto({ source = "all", role = "all", limit = 8, scanLimit = 500 } = {}) {
 try {
 const OVERDUE_MINUTES = 24 * 60;
-const rows = await sbListConversations({ pipeline: "needs_reply", source, role, limit: 100 });
+const rows = await sbListConversations({ pipeline: "needs_reply", source, role, limit: scanLimit });
 const urgent = [];
 for (const c of rows || []) {
 const waitingMin = tComputeWaitingMinutes(c);
@@ -1091,7 +1091,7 @@ return 0;
 }
 }
 
-async function sbNeedsReplyBreakdown({ source = "all", role = "all", limit = 100 } = {}) {
+async function sbNeedsReplyBreakdown({ source = "all", role = "all", limit = 500 } = {}) {
 try {
 const OVERDUE_MINUTES = 24 * 60;
 const rows = await sbListConversations({ pipeline: "needs_reply", source, role, limit });
@@ -1110,6 +1110,49 @@ return { urgentCount, nonUrgentCount };
 console.warn("sbNeedsReplyBreakdown exception:", err.message);
 return { urgentCount: 0, nonUrgentCount: 0 };
 }
+}
+
+async function sbCountUrgentCombined({ source = "all", role = "all" } = {}) {
+  try {
+    const [autoUrgentCount, pipelineUrgentCount] = await Promise.all([
+      sbCountUrgentAuto({ source, role }),
+      sbCountConversations({ pipeline: "urgent", source, role }),
+    ]);
+    return Number(autoUrgentCount || 0) + Number(pipelineUrgentCount || 0);
+  } catch (err) {
+    console.warn("sbCountUrgentCombined exception:", err.message);
+    return 0;
+  }
+}
+
+async function sbListUrgentCombined({ source = "all", role = "all", limit = 8 } = {}) {
+  try {
+    const [autoUrgentRows, pipelineUrgentRows] = await Promise.all([
+      sbListUrgentAuto({ source, role, limit: Math.max(limit * 4, 24), scanLimit: 500 }),
+      sbListConversations({ pipeline: "urgent", source, role, limit: Math.max(limit * 4, 24) }),
+    ]);
+
+    const deduped = new Map();
+    for (const row of [...(pipelineUrgentRows || []), ...(autoUrgentRows || [])]) {
+      if (!row?.id) continue;
+      if (!deduped.has(row.id)) deduped.set(row.id, row);
+    }
+
+    const rows = Array.from(deduped.values());
+    rows.sort((a, b) => {
+      const aw = tComputeWaitingMinutes(a) || 0;
+      const bw = tComputeWaitingMinutes(b) || 0;
+      if (bw !== aw) return bw - aw;
+      const at = new Date(a.updated_at || 0).getTime() || 0;
+      const bt = new Date(b.updated_at || 0).getTime() || 0;
+      return bt - at;
+    });
+
+    return rows.slice(0, limit);
+  } catch (err) {
+    console.warn("sbListUrgentCombined exception:", err.message);
+    return [];
+  }
 }
 async function sbCountDeadLetters() {
 try {
@@ -2926,11 +2969,13 @@ filterSource === "support" ? "🧑‍🧒 Support" : filterSource === "programs"
 "🌐 All";
 
 const needsReplyBreakdownPromise = sbNeedsReplyBreakdown({ source: filterSource });
+const urgentCombinedPromise = sbCountUrgentCombined({ source: filterSource, role: "all" });
 const metricSummaryPromise = getCachedDashboardMetrics();
 const opsDeliveryPromise = getCachedOpsDelivery();
 const [
 handoffCount,
 needsReplyBreakdown,
+urgentCombinedCount,
 waitingCount,
 activeCount,
 forwardedCount,
@@ -2943,6 +2988,7 @@ opsDelivery,
 ] = await trackPerf(`dashboard.counts.${filterSource}`, () => Promise.all([
 sbCountHandoffPending({ source: filterSource }),
 needsReplyBreakdownPromise,
+urgentCombinedPromise,
 sbCountConversations({ pipeline: "actions_waiting", source: filterSource }),
 sbCountConversations({ pipeline: "active", source: filterSource }),
 sbCountConversations({ pipeline: "forwarded", source: filterSource }),
@@ -2955,7 +3001,7 @@ DASHBOARD_SPEED_MODE ? Promise.resolve(null) : sbGetLastOpsEventTimestamp(),
 opsDeliveryPromise,
 ]));
 
-const urgentCount = needsReplyBreakdown?.urgentCount || 0;
+const urgentCount = Number(urgentCombinedCount || 0);
 const needsReplyCount = needsReplyBreakdown?.nonUrgentCount || 0;
 const threadsCount = DASHBOARD_SPEED_MODE
   ? urgentCount + needsReplyCount + waitingCount + activeCount + forwardedCount + followCount + completedCount
@@ -3459,7 +3505,7 @@ return;
 }
 // Handle urgent with auto-escalation logic
 const rows = viewKey === "urgent" 
-? await sbListUrgentAuto({ source: filterSource, role: roleFilter, limit: 8 })
+? await sbListUrgentCombined({ source: filterSource, role: roleFilter, limit: 8 })
 : await sbListConversations({ pipeline: viewKey, source: filterSource, role: roleFilter, limit: 8 });
 await showConversationList(ctx, viewKey, rows, filterSource, roleFilter);
 // If you want queue lists to live-refresh too, update showConversationList
