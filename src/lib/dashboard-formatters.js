@@ -52,6 +52,7 @@ ${laneHint}`;
 
 function buildDashboardMetricsText(metrics = {}) {
   return `📊 METRICS
+Total Clicks: ${metrics.totalClicks || 0}
 Total Parent Guide Opens: ${metrics.programLinkOpens || 0}
 Total Coverage Exploration: ${metrics.coverageExploration || 0}
 Total Enroll Portal Visits: ${metrics.enrollClicks || 0}
@@ -120,7 +121,7 @@ function buildYearSummaryText(y, filterSource) {
   const order = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   const pick = (mon) => byLabel.get(mon.toLowerCase()) || {};
   const monthLine = order
-    .map((mon) => `${mon} ${String(n(pick(mon).enrollClicks)).padStart(2, " ")}`)
+    .map((mon) => `${mon} ${String(n(pick(mon).totalClicks)).padStart(2, " ")}`)
     .join("  ");
   const bestWeek = d.bestWeek
     ? `🏆 Best Week: ${d.bestWeek.label || "—"} (Enroll ${n(d.bestWeek.enrollClicks)}, Threads ${n(d.bestWeek.threads)})`
@@ -138,6 +139,7 @@ function buildYearSummaryText(y, filterSource) {
 TOTALS
 
 ` +
+  `• Total Clicks (All): ${n(d.totalClicks)} (Avg ${avg(d.totalClicks)}/mo)\n` +
     `• Total Parent Guides Opened: ${n(d.programLinkOpens)} (Avg ${avg(d.programLinkOpens)}/mo)\n` +
     `• Coverage Exploration: ${n(d.coverageExploration)} (Avg ${avg(d.coverageExploration)}/mo)\n` +
     `• Enroll Clicks: ${n(d.enrollClicks)} (Avg ${avg(d.enrollClicks)}/mo)\n` +
@@ -154,6 +156,7 @@ HIGHLIGHTS\n\n` +
     `${bestMonthEver}\n\n` +
     `--
 TRENDS (vs last month)\n\n` +
+  `• Total Clicks: ${trendEmoji(t.totalClicks)}\n` +
     `• Parent Guides: ${trendEmoji(t.opens)}\n` +
     `• Exploration: ${trendEmoji(t.exploration)}\n` +
     `• Enroll Clicks: ${trendEmoji(t.enrollClicks)}\n` +

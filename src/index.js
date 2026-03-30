@@ -141,6 +141,8 @@ const WATCHDOG_INTERVAL_MS = Number(process.env.WATCHDOG_INTERVAL_MS || 5 * 60 *
 const WATCHDOG_STALE_MINUTES = Number(process.env.WATCHDOG_STALE_MINUTES || 45);
 const WATCHDOG_SCHEMA_CHECK_INTERVAL_MS = Number(process.env.WATCHDOG_SCHEMA_CHECK_INTERVAL_MS || 30 * 60 * 1000);
 const WATCHDOG_ALERT_COOLDOWN_MINUTES = Number(process.env.WATCHDOG_ALERT_COOLDOWN_MINUTES || 30);
+const WATCHDOG_ALERT_BUSINESS_START_HOUR = Number(process.env.WATCHDOG_ALERT_BUSINESS_START_HOUR || 9);
+const WATCHDOG_ALERT_BUSINESS_END_HOUR = Number(process.env.WATCHDOG_ALERT_BUSINESS_END_HOUR || 18);
 // NY time
 const NY_TZ = "America/New_York";
 // ---------- GUARDS ----------
@@ -1824,6 +1826,11 @@ counts.programLinkOpens = Math.max(counts.programLinkOpens, fallbackCounts.progr
 counts.coverageExploration = Math.max(counts.coverageExploration, fallbackCounts.coverageExploration);
 counts.enrollClicks = Math.max(counts.enrollClicks, fallbackCounts.enrollClicks);
 counts.eappVisits = Math.max(counts.eappVisits, fallbackCounts.eappVisits);
+counts.totalClicks =
+  (counts.programLinkOpens || 0) +
+  (counts.coverageExploration || 0) +
+  (counts.enrollClicks || 0) +
+  (counts.eappVisits || 0);
   
   // Fetch calls answered for all windows
   let callsAnswered = 0;
@@ -1852,6 +1859,7 @@ opens: 0,
 exploration: 0,
 enrollClicks: 0,
 eappVisits: 0,
+totalClicks: 0,
 threads: 0,
 callsAnswered: 0,
 }));
@@ -1872,6 +1880,11 @@ monthly[i].opens = Math.max(monthly[i].opens, monthlyFallback[i].opens || 0);
 monthly[i].exploration = Math.max(monthly[i].exploration, monthlyFallback[i].exploration || 0);
 monthly[i].enrollClicks = Math.max(monthly[i].enrollClicks, monthlyFallback[i].enrollClicks || 0);
 monthly[i].eappVisits = Math.max(monthly[i].eappVisits, monthlyFallback[i].eappVisits || 0);
+monthly[i].totalClicks =
+  (monthly[i].opens || 0) +
+  (monthly[i].exploration || 0) +
+  (monthly[i].enrollClicks || 0) +
+  (monthly[i].eappVisits || 0);
 }
 
 // Add calls to monthly buckets
@@ -1938,6 +1951,7 @@ bestMonth.threads },
 bestMonthEver: { label: bestMonthEver.label, enrollClicks: bestMonthEver.enrollClicks,
 threads: bestMonthEver.threads },
 trend: {
+totalClicks: trendOf("totalClicks"),
 opens: trendOf("opens"),
 exploration: trendOf("exploration"),
 enrollClicks: trendOf("enrollClicks"),
@@ -2279,8 +2293,22 @@ function buildWatchdogAlertText(snapshot, previousStatus) {
     `Checked: ${snapshot.lastRunAt || new Date().toISOString()}`;
 }
 
+function isWithinNyBusinessHours(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: NY_TZ,
+    weekday: "short",
+    hour: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const weekday = parts.find((p) => p.type === "weekday")?.value || "";
+  const hour = Number(parts.find((p) => p.type === "hour")?.value || "0");
+  const isWeekday = ["Mon", "Tue", "Wed", "Thu", "Fri"].includes(weekday);
+  return isWeekday && hour >= WATCHDOG_ALERT_BUSINESS_START_HOUR && hour < WATCHDOG_ALERT_BUSINESS_END_HOUR;
+}
+
 async function sendWatchdogAdminAlert(snapshot, previousStatus) {
   if (!ENABLE_TELEGRAM_BOT || !ADMIN_IDS.length) return;
+  if (!isWithinNyBusinessHours()) return;
   const now = Date.now();
   const cooldownMs = WATCHDOG_ALERT_COOLDOWN_MINUTES * 60 * 1000;
   const severe = snapshot.overallStatus === "warn" || snapshot.overallStatus === "degraded";
@@ -5042,6 +5070,9 @@ const avgDivisor = window === "year" ? 12 : divisor; // year shows per month ave
 const avg = (val) => Math.round((val || 0) / avgDivisor);
 
 let body = `--
+Total Clicks: ${metrics.totalClicks || 0}
+  (Avg ${avg(metrics.totalClicks)}${perLabel})
+
 Parent Guide Link Opens: ${metrics.programLinkOpens || 0}
   (Avg ${avg(metrics.programLinkOpens)}${perLabel})
 
