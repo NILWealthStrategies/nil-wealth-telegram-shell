@@ -251,13 +251,15 @@ Your schema is already deployed with all 18 objects in nil schema.
 ```bash
 TELEGRAM_BOT_TOKEN=your_bot_token
 SUPABASE_URL=https://xxxxx.supabase.co
-SUPABASE_KEY=your_service_role_key
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
+BASE_WEBHOOK_SECRET=your_shared_secret
 PORT=3000
 NODE_ENV=production
 ```
 
 **Deploy:**
 ```bash
+npm run start:bot
 git add .
 git commit -m "Production-ready nil-only schema"
 git push origin main

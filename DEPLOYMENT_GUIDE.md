@@ -30,10 +30,19 @@ Set in Render dashboard:
 ```bash
 TELEGRAM_BOT_TOKEN=7123456789:AAH...
 SUPABASE_URL=https://xxxxx.supabase.co
-SUPABASE_KEY=eyJhbG...
+SUPABASE_SERVICE_ROLE_KEY=eyJhbG...
+BASE_WEBHOOK_SECRET=your_shared_secret
 PORT=3000
 NODE_ENV=production
 ```
+
+### Step 1.5: Start Command
+Use this Render start command for the Telegram bot service:
+```bash
+npm run start:bot
+```
+
+Do not rely on the default `npm start` if this Render service is supposed to run the Telegram bot, because the repo's default web start path is separate.
 
 ### Step 2: Deploy Code
 ```bash
