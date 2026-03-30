@@ -447,6 +447,14 @@ function fastAnswerCbQuery(ctx, text = undefined) {
   });
 }
 
+async function safeReplyWithFallback(ctx, text, extra = undefined) {
+  const primary = await ctx.reply(text, extra).catch(() => null);
+  if (primary?.message_id) return primary;
+  const chatId = ctx?.chat?.id ?? ctx?.update?.callback_query?.message?.chat?.id ?? ctx?.from?.id;
+  if (chatId == null) return null;
+  return bot.telegram.sendMessage(chatId, text, extra).catch(() => null);
+}
+
 // Action handler wrapper - ensures callbacks are answered and errors handled
 function safeAction(handler) {
   return async (ctx) => {
@@ -472,11 +480,11 @@ function safeAction(handler) {
         // Attempt to show user-friendly error
         const errMsg = String(err?.message || "Unknown error");
         if (errMsg.includes("timed out") || errMsg.includes("timeout")) {
-          await ctx.reply("⏱ Request timed out. Please try again.").catch(() => {});
+          await safeReplyWithFallback(ctx, "⏱ Request timed out. Please try again.");
         } else if (errMsg.includes("not found")) {
-          await ctx.reply("❌ Item not found. It may have been deleted.").catch(() => {});
+          await safeReplyWithFallback(ctx, "❌ Item not found. It may have been deleted.");
         } else {
-          await ctx.reply("❌ An error occurred. Please try /dashboard to refresh.").catch(() => {});
+          await safeReplyWithFallback(ctx, "❌ An error occurred. Please try /dashboard to refresh.");
         }
       } catch (_) {}
     }
@@ -501,7 +509,7 @@ function safeCommand(handler) {
     } catch (err) {
       logError("bot.command", err);
       try {
-        await ctx.reply("❌ An error occurred. Please try again.").catch(() => {});
+        await safeReplyWithFallback(ctx, "❌ An error occurred. Please try again.");
       } catch (_) {}
     }
   };
@@ -519,7 +527,7 @@ async function requireAdminOrNotify(ctx, origin = "unknown") {
   const chatId = String(ctx.chat?.id || "unknown");
   console.warn(`[AUTH] blocked ${origin} for user ${userId} in chat ${chatId}`);
   try {
-    await ctx.reply(`⛔ Access denied for this bot.\nYour Telegram ID: ${userId}\nAsk admin to add it to ADMIN_TELEGRAM_IDS.`).catch(() => {});
+    await safeReplyWithFallback(ctx, `⛔ Access denied for this bot.\nYour Telegram ID: ${userId}\nAsk admin to add it to ADMIN_TELEGRAM_IDS.`);
   } catch (_) {}
   return false;
 }
@@ -2912,6 +2920,7 @@ followCount,
 completedCount,
 submissionsCount,
 callsCount,
+lastIngestAt,
 opsDelivery,
 ] = await trackPerf(`dashboard.counts.${filterSource}`, () => Promise.all([
 sbCountHandoffPending({ source: filterSource }),
