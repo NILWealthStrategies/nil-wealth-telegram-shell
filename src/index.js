@@ -147,6 +147,8 @@ const WATCHDOG_NOTIFY_ADMINS =
 String(process.env.WATCHDOG_NOTIFY_ADMINS || "true").toLowerCase() === "true";
 const WATCHDOG_ALERT_ONLY_WARN =
 String(process.env.WATCHDOG_ALERT_ONLY_WARN || "true").toLowerCase() === "true";
+const ADMIN_IDLE_DASHBOARD_RESET_HOURS = Number(process.env.ADMIN_IDLE_DASHBOARD_RESET_HOURS || 5);
+const ADMIN_IDLE_DASHBOARD_CHECK_MS = Number(process.env.ADMIN_IDLE_DASHBOARD_CHECK_MS || 5 * 60 * 1000);
 // NY time
 const NY_TZ = "America/New_York";
 // ---------- GUARDS ----------
@@ -191,6 +193,7 @@ bot.telegram.editMessageText = async (...args) => {
 const userFilters = new Map(); // userId -> filter value ("all" | "programs" | "support")
 const userRoleFilters = new Map(); // userId -> role filter ("all" | "parent" | "athlete" | "coach" | "trainer" | "other")
 const draftEditState = new Map(); // userId -> { convId, version }
+const adminActivity = new Map(); // userId -> { chatId, lastActivityAt, lastCardType, lastMessageId, lastResetAt }
 const EVENT_TYPES = {
   LEAD_CREATED: "lead.created",
   LEAD_UPDATED: "lead.updated",
@@ -441,6 +444,12 @@ function fastAnswerCbQuery(ctx, text = undefined) {
 function safeAction(handler) {
   return async (ctx) => {
     try {
+      if (isAdmin(ctx)) {
+        markAdminActivity({
+          userId: String(ctx.from?.id || ""),
+          chatId: ctx.chat?.id ?? ctx.from?.id,
+        });
+      }
       // Answer callback query immediately without blocking handler.
       fastAnswerCbQuery(ctx);
       
@@ -471,6 +480,12 @@ function safeAction(handler) {
 function safeCommand(handler) {
   return async (ctx) => {
     try {
+      if (isAdmin(ctx)) {
+        markAdminActivity({
+          userId: String(ctx.from?.id || ""),
+          chatId: ctx.chat?.id ?? ctx.from?.id,
+        });
+      }
       await withTimeout(
         handler(ctx),
         30000,
@@ -546,6 +561,63 @@ try {
 const userId = String(ctx.from?.id || "");
 userRoleFilters.set(userId, v);
 } catch (_) {}
+}
+function markAdminActivity({ userId = null, chatId = null, cardType = null, messageId = null } = {}) {
+  try {
+    const resolvedUserId = String(userId || chatId || "");
+    if (!resolvedUserId) return;
+    if (ADMIN_IDS.length && !ADMIN_IDS.includes(resolvedUserId)) return;
+    const prev = adminActivity.get(resolvedUserId) || {};
+    adminActivity.set(resolvedUserId, {
+      ...prev,
+      chatId: String(chatId || prev.chatId || resolvedUserId),
+      lastActivityAt: Date.now(),
+      lastCardType: cardType || prev.lastCardType || null,
+      lastMessageId: messageId || prev.lastMessageId || null,
+      lastResetAt: prev.lastResetAt || 0,
+    });
+  } catch (_) {}
+}
+async function runIdleDashboardResetSweep() {
+  if (!ENABLE_TELEGRAM_BOT) return;
+  const idleMs = ADMIN_IDLE_DASHBOARD_RESET_HOURS * 60 * 60 * 1000;
+  if (!Number.isFinite(idleMs) || idleMs <= 0) return;
+  const now = Date.now();
+
+  for (const [userId, state] of adminActivity.entries()) {
+    const chatId = state?.chatId || userId;
+    const lastActivityAt = Number(state?.lastActivityAt || 0);
+    if (!lastActivityAt || now - lastActivityAt < idleMs) continue;
+
+    const currentFilter = userFilters.get(userId) || "all";
+    const currentCardType = String(state?.lastCardType || "");
+    const needsReset = currentFilter !== "all" || (currentCardType && currentCardType !== "dashboard");
+    if (!needsReset) continue;
+
+    userFilters.set(userId, "all");
+    userRoleFilters.set(userId, "all");
+
+    const text = await dashboardText("all").catch(() => null);
+    if (!text) continue;
+    const msg = await bot.telegram.sendMessage(String(chatId), text, dashboardKeyboardV50()).catch(() => null);
+    if (msg?.message_id) {
+      registerLiveCard(msg, {
+        type: "dashboard",
+        card_key: "dashboard:all:all:idle_reset",
+        ref_id: "all",
+        filterSource: "all",
+        user_id: userId,
+      });
+    }
+    adminActivity.set(userId, {
+      ...state,
+      chatId: String(chatId),
+      lastActivityAt: now,
+      lastCardType: "dashboard",
+      lastMessageId: msg?.message_id || state?.lastMessageId || null,
+      lastResetAt: now,
+    });
+  }
 }
 // ---------- v5.4 UTILITY FUNCTIONS ----------
 function compact(v) {
@@ -3024,7 +3096,16 @@ await ctx.reply("✅ NIL Wealth Ops Bot running.\nType /dashboard");
 bot.command("dashboard", safeCommand(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const filterSource = getAdminFilter(ctx);
-await ctx.reply(await dashboardText(filterSource), dashboardKeyboardV50());
+const msg = await ctx.reply(await dashboardText(filterSource), dashboardKeyboardV50());
+if (msg?.message_id) {
+  registerLiveCard(msg, {
+    type: "dashboard",
+    card_key: `dashboard:${filterSource}:all:command`,
+    ref_id: "all",
+    filterSource,
+    user_id: String(ctx.from?.id || ""),
+  });
+}
 }));
 
 bot.command("leads", safeCommand(async (ctx) => {
@@ -6731,10 +6812,18 @@ function registerLiveCard(msg, meta = {}) {
 if (!msg?.message_id) return;
 const chatId = msg.chat?.id ?? meta.chat_id;
 if (!chatId) return;
+const userId = String(meta.user_id || chatId);
 liveCards.set(msg.message_id, {
 ...meta,
 chat_id: chatId,
+user_id: userId,
 added_at: Date.now(),
+});
+markAdminActivity({
+  userId,
+  chatId,
+  cardType: meta.type || null,
+  messageId: msg.message_id,
 });
 }
 // ----------------------------------------------------------
@@ -7080,6 +7169,9 @@ runOutboxSenderTick().catch(() => {});
 setInterval(() => {
 runDataWatchdog().catch(() => {});
 }, WATCHDOG_INTERVAL_MS);
+setInterval(() => {
+runIdleDashboardResetSweep().catch(() => {});
+}, ADMIN_IDLE_DASHBOARD_CHECK_MS);
 setTimeout(() => {
 runOutboxSenderTick().catch(() => {});
 }, 1500);
@@ -8283,6 +8375,12 @@ if (ENABLE_TELEGRAM_BOT) {
 // for ALL bot actions and commands, preventing timeouts and freezes
 
 bot.use(async (ctx, next) => {
+if (isAdmin(ctx)) {
+  markAdminActivity({
+    userId: String(ctx.from?.id || ""),
+    chatId: ctx.chat?.id ?? ctx.from?.id,
+  });
+}
 // Harden raw Telegram calls used throughout handlers
 if (ctx && typeof ctx.reply === "function" && !ctx.__safeReplyWrapped) {
 const originalReply = ctx.reply.bind(ctx);
