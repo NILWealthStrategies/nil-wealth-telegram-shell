@@ -132,6 +132,12 @@ const REFRESH_MIN_INTERVAL_MS = 1200;
 const MAX_QUEUE_DISPLAY = 500;
 const ENABLE_TELEGRAM_BOT =
 String(process.env.ENABLE_TELEGRAM_BOT || "true").toLowerCase() !== "false";
+const TELEGRAM_BOT_ACTIVE = ENABLE_TELEGRAM_BOT && !!BOT_TOKEN;
+const TELEGRAM_BOT_DISABLED_REASON = !ENABLE_TELEGRAM_BOT
+? "ENABLE_TELEGRAM_BOT=false"
+: !BOT_TOKEN
+? "Missing TELEGRAM_BOT_TOKEN"
+: "";
 const ENABLE_TELEGRAM_LIVE_REFRESH =
 String(process.env.ENABLE_TELEGRAM_LIVE_REFRESH || "true").toLowerCase() !== "false";
 const ENABLE_PERF_LOGS =
@@ -156,23 +162,35 @@ const DASHBOARD_OPS_CACHE_TTL_MS = Number(process.env.DASHBOARD_OPS_CACHE_TTL_MS
 // NY time
 const NY_TZ = "America/New_York";
 // ---------- GUARDS ----------
-if (!BOT_TOKEN) throw new Error("Missing TELEGRAM_BOT_TOKEN");
+const STARTUP_CONFIG_ERRORS = [];
 if (!BASE_WEBHOOK_SECRET && !OPS_WEBHOOK_HMAC_SECRET) {
-  throw new Error("Missing BASE_WEBHOOK_SECRET or OPS_WEBHOOK_HMAC_SECRET");
+  STARTUP_CONFIG_ERRORS.push("Missing BASE_WEBHOOK_SECRET or OPS_WEBHOOK_HMAC_SECRET");
 }
-if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY)
-throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+  STARTUP_CONFIG_ERRORS.push("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+}
 // ---------- CLIENTS ----------
-const bot = new Telegraf(BOT_TOKEN);
+if (!TELEGRAM_BOT_ACTIVE) {
+  console.error(`[CONFIG] Telegram bot disabled at runtime: ${TELEGRAM_BOT_DISABLED_REASON}`);
+}
+for (const msg of STARTUP_CONFIG_ERRORS) {
+  console.error(`[CONFIG] ${msg}`);
+}
+const bot = new Telegraf(BOT_TOKEN || "0:telegram-bot-disabled");
 const app = express();
 app.use(express.json({ limit: "1mb" }));
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+const supabase = createClient(
+SUPABASE_URL || "https://placeholder.supabase.co",
+SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key",
+{
 auth: { persistSession: false },
-});
+}
+);
 const ops = () => supabase.schema("nil");
 
 const _tgSendMessage = bot.telegram.sendMessage.bind(bot.telegram);
 bot.telegram.sendMessage = async (...args) => {
+  if (!TELEGRAM_BOT_ACTIVE) return null;
   try {
     return await _tgSendMessage(...args);
   } catch (err) {
@@ -605,7 +623,7 @@ function markAdminActivity({ userId = null, chatId = null, cardType = null, mess
   } catch (_) {}
 }
 async function runIdleDashboardResetSweep() {
-  if (!ENABLE_TELEGRAM_BOT) return;
+  if (!TELEGRAM_BOT_ACTIVE) return;
   const idleMs = ADMIN_IDLE_DASHBOARD_RESET_HOURS * 60 * 60 * 1000;
   if (!Number.isFinite(idleMs) || idleMs <= 0) return;
   const now = Date.now();
@@ -2524,7 +2542,7 @@ function isWithinNyBusinessHours(date = new Date()) {
 }
 
 async function sendWatchdogAdminAlert(snapshot, previousStatus) {
-  if (!WATCHDOG_NOTIFY_ADMINS || !ENABLE_TELEGRAM_BOT || !ADMIN_IDS.length) return;
+  if (!WATCHDOG_NOTIFY_ADMINS || !TELEGRAM_BOT_ACTIVE || !ADMIN_IDS.length) return;
   if (!isWithinNyBusinessHours()) return;
   const now = Date.now();
   const cooldownMs = WATCHDOG_ALERT_COOLDOWN_MINUTES * 60 * 1000;
@@ -3290,6 +3308,8 @@ const diag = [
   `Admin Allowed: ${adminAllowed ? "yes" : "no"}`,
   `Configured Admin IDs: ${ADMIN_IDS.length}`,
   `Bot Enabled: ${ENABLE_TELEGRAM_BOT ? "yes" : "no"}`,
+  `Bot Active: ${TELEGRAM_BOT_ACTIVE ? "yes" : "no"}`,
+  `Bot Disabled Reason: ${TELEGRAM_BOT_DISABLED_REASON || "none"}`,
   `Live Refresh: ${ENABLE_TELEGRAM_LIVE_REFRESH ? "yes" : "no"}`,
   `Filter: ${filterSource}`,
   `Role Filter: ${roleFilter}`,
@@ -8507,6 +8527,7 @@ app.get("/health", (_req, res) => {
     },
     features: {
       telegram_bot_enabled: ENABLE_TELEGRAM_BOT,
+      telegram_bot_active: TELEGRAM_BOT_ACTIVE,
       live_refresh_enabled: ENABLE_TELEGRAM_LIVE_REFRESH,
     },
     timestamp: new Date().toISOString(),
@@ -8517,6 +8538,9 @@ app.get("/ready", (_req, res) => {
   const missing = [];
   if (!SUPABASE_URL) missing.push("SUPABASE_URL");
   if (!SUPABASE_SERVICE_ROLE_KEY) missing.push("SUPABASE_SERVICE_ROLE_KEY");
+  if (!BASE_WEBHOOK_SECRET && !OPS_WEBHOOK_HMAC_SECRET) {
+    missing.push("BASE_WEBHOOK_SECRET or OPS_WEBHOOK_HMAC_SECRET");
+  }
   if (!BOT_TOKEN && ENABLE_TELEGRAM_BOT) missing.push("TELEGRAM_BOT_TOKEN");
 
   if (missing.length > 0) {
@@ -8531,7 +8555,7 @@ const server = app.listen(PORT, "0.0.0.0", () => {
 console.log(`Webhook server listening on 0.0.0.0:${PORT}`);
 console.log(`${CODE_VERSION} · Build ${BUILD_VERSION}`);
 });
-if (ENABLE_TELEGRAM_BOT) {
+if (TELEGRAM_BOT_ACTIVE) {
 // ==========================================================
 // CRITICAL: GLOBAL TELEGRAM BOT PROTECTION MIDDLEWARE
 // ==========================================================
@@ -8681,7 +8705,7 @@ startBotLaunchLoop().catch((err) => {
 console.log(`Bot running: ${CODE_VERSION}`);
 console.log(`✅ Global protection middleware active`);
 } else {
-console.log("Telegram bot launch disabled (ENABLE_TELEGRAM_BOT=false)");
+console.log(`Telegram bot launch disabled (${TELEGRAM_BOT_DISABLED_REASON || "unknown reason"})`);
 }
 
 let isShuttingDown = false;
@@ -8691,7 +8715,7 @@ async function gracefulShutdown(signal) {
   console.log(`[INFO] Received ${signal}. Starting graceful shutdown...`);
 
   try {
-    if (ENABLE_TELEGRAM_BOT) {
+    if (TELEGRAM_BOT_ACTIVE) {
       await bot.stop(signal).catch(() => {});
     }
   } catch (_) {}
