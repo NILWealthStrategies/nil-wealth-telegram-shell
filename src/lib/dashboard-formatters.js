@@ -8,6 +8,7 @@ const {
 function buildOpsHealthText(summary) {
   const cfg = summary?.config || {};
   const rt = summary?.runtime || {};
+  const wd = summary?.watchdog || {};
   const b = (v) => (v ? "yes" : "no");
   return `🩺 OPS HEALTH
 --
@@ -23,6 +24,14 @@ Runtime
 Last Outbox Tick: ${rt.last_outbox_tick_at || "never"}
 Dead Letter Backlog: ${rt.dead_letter_backlog == null ? "n/a" : rt.dead_letter_backlog}
 Pending Handoffs: ${rt.pending_handoff_conversations == null ? "n/a" : rt.pending_handoff_conversations}
+
+Watchdog
+Last Run: ${wd.lastRunAt || "never"}
+Overall: ${wd.overallStatus || "unknown"}
+Freshness: ${wd.freshness?.overall || "unknown"}
+Reconciliation: ${wd.reconciliation?.overall || "unknown"}
+Schema Contract: ${wd.schema?.overall || "unknown"}
+Schema Coverage: ${wd.schema?.coveredCount ?? 0}/${wd.schema?.expectedCount ?? 0}
 --`;
 }
 

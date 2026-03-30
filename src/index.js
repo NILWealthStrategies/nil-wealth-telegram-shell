@@ -137,6 +137,9 @@ String(process.env.ENABLE_TELEGRAM_LIVE_REFRESH || "true").toLowerCase() !== "fa
 const ENABLE_PERF_LOGS =
 String(process.env.ENABLE_PERF_LOGS || "false").toLowerCase() === "true";
 const PERF_LOG_WARN_MS = Number(process.env.PERF_LOG_WARN_MS || 1200);
+const WATCHDOG_INTERVAL_MS = Number(process.env.WATCHDOG_INTERVAL_MS || 5 * 60 * 1000);
+const WATCHDOG_STALE_MINUTES = Number(process.env.WATCHDOG_STALE_MINUTES || 45);
+const WATCHDOG_SCHEMA_CHECK_INTERVAL_MS = Number(process.env.WATCHDOG_SCHEMA_CHECK_INTERVAL_MS || 30 * 60 * 1000);
 // NY time
 const NY_TZ = "America/New_York";
 // ---------- GUARDS ----------
@@ -195,6 +198,69 @@ const EVENT_TYPES = {
   CC_SUPPORT_ACTIVATED: "cc_support.activated",
   ANALYTICS_RECORDED: "analytics.recorded",
 };
+const EXPECTED_NIL_RELATIONS = [
+  "analytics_metrics",
+  "calls",
+  "card_mirrors",
+  "click_analytics_daily",
+  "click_events",
+  "click_link_registry",
+  "coaches",
+  "conversations",
+  "dead_letter_events",
+  "dead_letters",
+  "drafts",
+  "eapp_visits",
+  "email_messages",
+  "email_outbox",
+  "email_sequences",
+  "events",
+  "lead_metrics",
+  "lead_sources",
+  "leads",
+  "message_drafts",
+  "messages",
+  "metric_events",
+  "n8n_outbox",
+  "ops_events",
+  "people",
+  "processed_events",
+  "sms_outbox",
+  "submissions",
+  "support_tickets",
+  "v_analytics_summary",
+  "v_calls_card",
+  "v_click_conversion_funnel",
+  "v_click_daily_summary",
+  "v_click_device_breakdown",
+  "v_click_email_client_breakdown",
+  "v_click_geographic_breakdown",
+  "v_click_lead_stats",
+  "v_click_monthly_summary",
+  "v_click_summary_today",
+  "v_click_top_guide_sections",
+  "v_click_weekly_summary",
+  "v_click_yearly_summary",
+  "v_coach_followups_due_now",
+  "v_conversations_card",
+  "v_search",
+  "v_top_leads",
+  "v_triage_due_now",
+];
+let watchdogSnapshot = {
+  lastRunAt: null,
+  overallStatus: "unknown",
+  freshness: { overall: "unknown", checks: [] },
+  reconciliation: { overall: "unknown", checks: [] },
+  schema: {
+    overall: "unknown",
+    checkedAt: null,
+    expectedCount: EXPECTED_NIL_RELATIONS.length,
+    coveredCount: 0,
+    missing: EXPECTED_NIL_RELATIONS,
+  },
+};
+let lastSchemaCheckAt = null;
 // ==========================================================
 // CRITICAL: TELEGRAM BOT RELIABILITY WRAPPERS
 // ==========================================================
@@ -916,6 +982,7 @@ return 0;
 async function buildOpsHealthSummary() {
   const deadLetterBacklog = await sbCountDeadLetters();
   const pendingHandoffs = await sbCountHandoffPending({ source: "all" });
+  const wd = await runDataWatchdog();
   return {
     config: {
       make_send_webhook_configured: !!MAKE_SEND_WEBHOOK_URL,
@@ -930,7 +997,48 @@ async function buildOpsHealthSummary() {
       dead_letter_backlog: deadLetterBacklog,
       pending_handoff_conversations: Number.isFinite(pendingHandoffs) ? pendingHandoffs : null,
     },
+    watchdog: wd,
   };
+}
+
+function watchdogKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("🔄 Refresh", "HEALTH:refresh")],
+    [Markup.button.callback("⬅ Dashboard", "DASH:back")],
+  ]);
+}
+
+function buildWatchdogCardText(wd) {
+  const snapshot = wd || {};
+  const freshness = snapshot.freshness || {};
+  const rec = snapshot.reconciliation || {};
+  const schema = snapshot.schema || {};
+  const staleItems = (freshness.checks || [])
+    .filter((c) => c.status === "stale")
+    .map((c) => `${c.name} (${c.ageMinutes}m)`)
+    .slice(0, 5);
+  const warnChecks = (rec.checks || [])
+    .filter((c) => c.status === "warn")
+    .map((c) => c.name)
+    .slice(0, 5);
+  const missingSample = (schema.missing || []).slice(0, 8);
+
+  return `🛡 DATA WATCHDOG
+--
+Last Run: ${snapshot.lastRunAt || "never"}
+Overall: ${snapshot.overallStatus || "unknown"}
+
+Freshness: ${freshness.overall || "unknown"}
+Stale Threshold: ${freshness.staleThresholdMinutes || WATCHDOG_STALE_MINUTES}m
+Stale Sources: ${staleItems.length ? staleItems.join(", ") : "none"}
+
+Reconciliation: ${rec.overall || "unknown"}
+Warnings: ${warnChecks.length ? warnChecks.join(", ") : "none"}
+
+Schema Contract: ${schema.overall || "unknown"}
+Covered: ${schema.coveredCount ?? 0}/${schema.expectedCount ?? EXPECTED_NIL_RELATIONS.length}
+Missing: ${schema.missing?.length || 0}${missingSample.length ? `\n${missingSample.join(", ")}${schema.missing.length > missingSample.length ? " ..." : ""}` : ""}
+--`;
 }
 
 // ---------- LISTS ----------
@@ -1950,6 +2058,242 @@ supportTicketsOpen,
 };
 }
 
+function ageMinutesSince(ts) {
+  if (!ts) return null;
+  const t = new Date(ts).getTime();
+  if (!Number.isFinite(t)) return null;
+  return Math.floor((Date.now() - t) / 60000);
+}
+
+async function sbLatestTimestampFromRelation(relation, columnCandidates) {
+  for (const col of columnCandidates) {
+    try {
+      const { data, error } = await ops()
+        .from(relation)
+        .select(col)
+        .order(col, { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) continue;
+      const val = data?.[col];
+      if (val) return val;
+    } catch (_) {
+      // Try the next column fallback.
+    }
+  }
+  return null;
+}
+
+async function sbWatchdogFreshnessChecks() {
+  const targets = [
+    { name: "ops_events", relation: "ops_events", columns: ["created_at"] },
+    { name: "conversations", relation: "conversations", columns: ["updated_at", "created_at"] },
+    { name: "metric_events", relation: "metric_events", columns: ["created_at"] },
+    { name: "click_events", relation: "click_events", columns: ["created_at"] },
+    { name: "email_outbox", relation: "email_outbox", columns: ["updated_at", "created_at", "sent_at"] },
+    { name: "sms_outbox", relation: "sms_outbox", columns: ["updated_at", "created_at", "sent_at"] },
+    { name: "processed_events", relation: "processed_events", columns: ["created_at"] },
+    { name: "dead_letter_events", relation: "dead_letter_events", columns: ["created_at"] },
+    { name: "support_tickets", relation: "support_tickets", columns: ["updated_at", "created_at"] },
+  ];
+
+  const checks = [];
+  for (const t of targets) {
+    const latestAt = await sbLatestTimestampFromRelation(t.relation, t.columns);
+    const ageMinutes = ageMinutesSince(latestAt);
+    const status = ageMinutes == null
+      ? "unknown"
+      : ageMinutes > WATCHDOG_STALE_MINUTES
+        ? "stale"
+        : "ok";
+    checks.push({
+      name: t.name,
+      relation: t.relation,
+      latestAt: latestAt || null,
+      ageMinutes,
+      status,
+    });
+  }
+
+  const hasStale = checks.some((c) => c.status === "stale");
+  const hasUnknown = checks.some((c) => c.status === "unknown");
+  return {
+    overall: hasStale ? "warn" : hasUnknown ? "degraded" : "ok",
+    staleThresholdMinutes: WATCHDOG_STALE_MINUTES,
+    checks,
+  };
+}
+
+async function sbWatchdogReconciliationChecks() {
+  const checks = [];
+  const since = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+
+  // Reconcile click_events against first available aggregate relation.
+  try {
+    const { count, error } = await ops()
+      .from("click_events")
+      .select("id", { count: "exact", head: true })
+      .gte("created_at", since);
+    const eventClicks = error ? null : Number(count || 0);
+
+    let aggregateClicks = null;
+    let aggregateRelation = null;
+    for (const relation of ["v_click_monthly_summary", "v_click_daily_summary", "click_analytics_daily", "v_click_summary_today"]) {
+      try {
+        const { data, error: relErr } = await ops().from(relation).select("*");
+        if (relErr || !Array.isArray(data) || !data.length) continue;
+        const total = data.reduce((acc, row) => {
+          const n = Number(
+            row?.enroll_clicks ??
+            row?.total_clicks ??
+            row?.clicks ??
+            row?.count ??
+            row?.total ??
+            0
+          );
+          return acc + (Number.isFinite(n) ? n : 0);
+        }, 0);
+        if (total > 0) {
+          aggregateClicks = total;
+          aggregateRelation = relation;
+          break;
+        }
+      } catch (_) {
+        // Try next aggregate relation.
+      }
+    }
+
+    if (eventClicks != null && aggregateClicks != null) {
+      const baseline = Math.max(eventClicks, aggregateClicks, 1);
+      const driftPct = Math.round((Math.abs(eventClicks - aggregateClicks) / baseline) * 100);
+      checks.push({
+        name: "click_events_vs_aggregate",
+        status: driftPct > 30 ? "warn" : "ok",
+        driftPct,
+        eventClicks,
+        aggregateClicks,
+        aggregateRelation,
+      });
+    } else {
+      checks.push({
+        name: "click_events_vs_aggregate",
+        status: "unknown",
+        note: "insufficient_data",
+      });
+    }
+  } catch (err) {
+    checks.push({
+      name: "click_events_vs_aggregate",
+      status: "unknown",
+      note: err?.message || String(err),
+    });
+  }
+
+  // Reconcile processed events and dead-letter events ratio.
+  try {
+    const [processed, dead] = await Promise.all([
+      sbCountRowsSafe("processed_events"),
+      sbCountRowsSafe("dead_letter_events"),
+    ]);
+    if (processed != null && dead != null) {
+      const failureRatePct = processed + dead > 0
+        ? Math.round((dead / Math.max(processed + dead, 1)) * 100)
+        : 0;
+      checks.push({
+        name: "processed_vs_dead_letter",
+        status: failureRatePct > 20 ? "warn" : "ok",
+        failureRatePct,
+        processed,
+        dead,
+      });
+    } else {
+      checks.push({
+        name: "processed_vs_dead_letter",
+        status: "unknown",
+        note: "insufficient_data",
+      });
+    }
+  } catch (err) {
+    checks.push({
+      name: "processed_vs_dead_letter",
+      status: "unknown",
+      note: err?.message || String(err),
+    });
+  }
+
+  const hasWarn = checks.some((c) => c.status === "warn");
+  const hasUnknown = checks.some((c) => c.status === "unknown");
+  return {
+    overall: hasWarn ? "warn" : hasUnknown ? "degraded" : "ok",
+    checks,
+  };
+}
+
+async function sbWatchdogSchemaContract(force = false) {
+  const nowMs = Date.now();
+  if (!force && lastSchemaCheckAt && nowMs - lastSchemaCheckAt < WATCHDOG_SCHEMA_CHECK_INTERVAL_MS) {
+    return watchdogSnapshot.schema;
+  }
+
+  const missing = [];
+  const covered = [];
+  for (const relation of EXPECTED_NIL_RELATIONS) {
+    try {
+      const { error } = await ops().from(relation).select("*").limit(1);
+      if (error) {
+        missing.push(relation);
+      } else {
+        covered.push(relation);
+      }
+    } catch (_) {
+      missing.push(relation);
+    }
+  }
+
+  lastSchemaCheckAt = nowMs;
+  return {
+    overall: missing.length ? "warn" : "ok",
+    checkedAt: new Date(nowMs).toISOString(),
+    expectedCount: EXPECTED_NIL_RELATIONS.length,
+    coveredCount: covered.length,
+    missing,
+  };
+}
+
+async function runDataWatchdog({ forceSchema = false } = {}) {
+  try {
+    const [freshness, reconciliation, schema] = await Promise.all([
+      sbWatchdogFreshnessChecks(),
+      sbWatchdogReconciliationChecks(),
+      sbWatchdogSchemaContract(forceSchema),
+    ]);
+
+    const statuses = [freshness?.overall, reconciliation?.overall, schema?.overall];
+    const overallStatus = statuses.includes("warn")
+      ? "warn"
+      : statuses.includes("degraded")
+        ? "degraded"
+        : "ok";
+
+    watchdogSnapshot = {
+      lastRunAt: new Date().toISOString(),
+      overallStatus,
+      freshness,
+      reconciliation,
+      schema,
+    };
+    return watchdogSnapshot;
+  } catch (err) {
+    watchdogSnapshot = {
+      ...watchdogSnapshot,
+      lastRunAt: new Date().toISOString(),
+      overallStatus: "warn",
+      error: err?.message || String(err),
+    };
+    return watchdogSnapshot;
+  }
+}
+
 async function sbLeadAnalyticsSnapshot() {
 const toNumber = (v) => {
 const n = Number(v);
@@ -2321,6 +2665,9 @@ Markup.button.callback("📊 Metrics", "METRICS:open"),
 Markup.button.callback("📅 Today", "TODAY:open"),
 Markup.button.callback("👥 Clients", "CLIENTS:open"),
 ],
+[
+Markup.button.callback("🩺 Health", "HEALTH:open"),
+],
 ]);
 }
 // ======================================================
@@ -2544,6 +2891,12 @@ const summary = await buildOpsHealthSummary();
 await ctx.reply(buildOpsHealthText(summary));
 }));
 
+bot.command("watchdog", safeCommand(async (ctx) => {
+if (!isAdmin(ctx)) return;
+const wd = await runDataWatchdog({ forceSchema: true });
+await ctx.reply(buildWatchdogCardText(wd), watchdogKeyboard());
+}));
+
 bot.action("DASH:back", safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
 const filterSource = getAdminFilter(ctx);
@@ -2558,6 +2911,18 @@ const filterSource = getAdminFilter(ctx);
 await trackPerf(`handler.dashboard.refresh.${filterSource}`, async () => {
 await smartRender(ctx, await dashboardText(filterSource), dashboardKeyboardV50());
 });
+}));
+
+bot.action("HEALTH:open", safeAction(async (ctx) => {
+if (!isAdmin(ctx)) return;
+const wd = await runDataWatchdog({ forceSchema: true });
+await smartRender(ctx, buildWatchdogCardText(wd), watchdogKeyboard());
+}));
+
+bot.action("HEALTH:refresh", safeAction(async (ctx) => {
+if (!isAdmin(ctx)) return;
+const wd = await runDataWatchdog({ forceSchema: true });
+await smartRender(ctx, buildWatchdogCardText(wd), watchdogKeyboard());
 }));
 
 // ---------- FILTER ----------
@@ -6537,9 +6902,15 @@ refreshLiveCards(false).catch(() => {});
 setInterval(() => {
 runOutboxSenderTick().catch(() => {});
 }, OUTBOX_POLL_MS);
+setInterval(() => {
+runDataWatchdog().catch(() => {});
+}, WATCHDOG_INTERVAL_MS);
 setTimeout(() => {
 runOutboxSenderTick().catch(() => {});
 }, 1500);
+setTimeout(() => {
+runDataWatchdog({ forceSchema: true }).catch(() => {});
+}, 2500);
 async function syncConversationRoleFromSubmission({ email, role, submission_id, nowIso }) {
 const normalized = normalizeEmail(email);
 if (!normalized) return null;
