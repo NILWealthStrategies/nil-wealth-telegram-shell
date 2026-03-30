@@ -1239,10 +1239,20 @@ async function sbListForwardedCombined({ source = "all", limit = 8 } = {}) {
       .select("id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at")
       .in("coach_id", ids)
       .order("updated_at", { ascending: false })
-      .limit(Math.max(limit * 3, 24));
+      .limit(Math.max(limit * 8, 64));
     if (convErr) return [];
 
-    return (convs || []).slice(0, limit);
+    // One forwarded row per coach: multiple family clicks should not duplicate queue rows.
+    const latestByCoach = new Map();
+    for (const conv of convs || []) {
+      const coachId = String(conv?.coach_id || "").trim();
+      if (!coachId) continue;
+      if (!latestByCoach.has(coachId)) {
+        latestByCoach.set(coachId, conv);
+      }
+    }
+
+    return Array.from(latestByCoach.values()).slice(0, limit);
   } catch (err) {
     console.warn("sbListForwardedCombined exception:", err.message);
     return [];
