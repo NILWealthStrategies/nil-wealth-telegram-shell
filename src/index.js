@@ -105,7 +105,7 @@ const BASE_WEBHOOK_SECRET = process.env.BASE_WEBHOOK_SECRET || "";
 const OPS_WEBHOOK_HMAC_SECRET = process.env.OPS_WEBHOOK_HMAC_SECRET ||
 ""; // optional, preferred if set
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ||
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY ||
 "";
 // v5.1 send integration (Make/n8n “send” hook). If empty, send actions stub.
 const MAKE_SEND_WEBHOOK_URL = process.env.MAKE_SEND_WEBHOOK_URL || "";
