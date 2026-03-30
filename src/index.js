@@ -140,6 +140,7 @@ const PERF_LOG_WARN_MS = Number(process.env.PERF_LOG_WARN_MS || 1200);
 const WATCHDOG_INTERVAL_MS = Number(process.env.WATCHDOG_INTERVAL_MS || 5 * 60 * 1000);
 const WATCHDOG_STALE_MINUTES = Number(process.env.WATCHDOG_STALE_MINUTES || 45);
 const WATCHDOG_SCHEMA_CHECK_INTERVAL_MS = Number(process.env.WATCHDOG_SCHEMA_CHECK_INTERVAL_MS || 30 * 60 * 1000);
+const WATCHDOG_ALERT_COOLDOWN_MINUTES = Number(process.env.WATCHDOG_ALERT_COOLDOWN_MINUTES || 30);
 // NY time
 const NY_TZ = "America/New_York";
 // ---------- GUARDS ----------
@@ -261,6 +262,8 @@ let watchdogSnapshot = {
   },
 };
 let lastSchemaCheckAt = null;
+let lastWatchdogAlertAt = 0;
+let lastWatchdogAlertStatus = "unknown";
 // ==========================================================
 // CRITICAL: TELEGRAM BOT RELIABILITY WRAPPERS
 // ==========================================================
@@ -2260,7 +2263,44 @@ async function sbWatchdogSchemaContract(force = false) {
   };
 }
 
-async function runDataWatchdog({ forceSchema = false } = {}) {
+function buildWatchdogAlertText(snapshot, previousStatus) {
+  const freshness = snapshot?.freshness || {};
+  const reconciliation = snapshot?.reconciliation || {};
+  const schema = snapshot?.schema || {};
+  const staleCount = (freshness.checks || []).filter((c) => c.status === "stale").length;
+  const recWarnCount = (reconciliation.checks || []).filter((c) => c.status === "warn").length;
+  const schemaMissing = (schema.missing || []).length;
+  const trend = previousStatus && previousStatus !== "unknown" ? `${previousStatus} -> ${snapshot.overallStatus}` : snapshot.overallStatus;
+  return `🛡 Watchdog Alert\n` +
+    `Status: ${trend}\n` +
+    `Freshness: ${freshness.overall || "unknown"} (stale: ${staleCount})\n` +
+    `Reconciliation: ${reconciliation.overall || "unknown"} (warn: ${recWarnCount})\n` +
+    `Schema: ${schema.overall || "unknown"} (missing: ${schemaMissing})\n` +
+    `Checked: ${snapshot.lastRunAt || new Date().toISOString()}`;
+}
+
+async function sendWatchdogAdminAlert(snapshot, previousStatus) {
+  if (!ENABLE_TELEGRAM_BOT || !ADMIN_IDS.length) return;
+  const now = Date.now();
+  const cooldownMs = WATCHDOG_ALERT_COOLDOWN_MINUTES * 60 * 1000;
+  const severe = snapshot.overallStatus === "warn" || snapshot.overallStatus === "degraded";
+  const changed = previousStatus !== snapshot.overallStatus;
+  const recovered = snapshot.overallStatus === "ok" && (previousStatus === "warn" || previousStatus === "degraded");
+  const cooldownElapsed = !lastWatchdogAlertAt || (now - lastWatchdogAlertAt) >= cooldownMs;
+
+  // Alert on status transitions, on recovery, and periodic reminders while degraded.
+  if (!(changed || recovered || (severe && cooldownElapsed))) return;
+
+  const text = buildWatchdogAlertText(snapshot, previousStatus);
+  for (const adminId of ADMIN_IDS) {
+    await bot.telegram.sendMessage(String(adminId), text).catch(() => null);
+  }
+  lastWatchdogAlertAt = now;
+  lastWatchdogAlertStatus = snapshot.overallStatus;
+}
+
+async function runDataWatchdog({ forceSchema = false, notifyAdmins = false } = {}) {
+  const previousStatus = watchdogSnapshot?.overallStatus || "unknown";
   try {
     const [freshness, reconciliation, schema] = await Promise.all([
       sbWatchdogFreshnessChecks(),
@@ -2282,6 +2322,11 @@ async function runDataWatchdog({ forceSchema = false } = {}) {
       reconciliation,
       schema,
     };
+    if (notifyAdmins) {
+      await sendWatchdogAdminAlert(watchdogSnapshot, previousStatus);
+    } else {
+      lastWatchdogAlertStatus = watchdogSnapshot.overallStatus;
+    }
     return watchdogSnapshot;
   } catch (err) {
     watchdogSnapshot = {
@@ -2290,6 +2335,11 @@ async function runDataWatchdog({ forceSchema = false } = {}) {
       overallStatus: "warn",
       error: err?.message || String(err),
     };
+    if (notifyAdmins) {
+      await sendWatchdogAdminAlert(watchdogSnapshot, previousStatus);
+    } else {
+      lastWatchdogAlertStatus = watchdogSnapshot.overallStatus;
+    }
     return watchdogSnapshot;
   }
 }
@@ -6903,13 +6953,13 @@ setInterval(() => {
 runOutboxSenderTick().catch(() => {});
 }, OUTBOX_POLL_MS);
 setInterval(() => {
-runDataWatchdog().catch(() => {});
+runDataWatchdog({ notifyAdmins: true }).catch(() => {});
 }, WATCHDOG_INTERVAL_MS);
 setTimeout(() => {
 runOutboxSenderTick().catch(() => {});
 }, 1500);
 setTimeout(() => {
-runDataWatchdog({ forceSchema: true }).catch(() => {});
+runDataWatchdog({ forceSchema: true, notifyAdmins: true }).catch(() => {});
 }, 2500);
 async function syncConversationRoleFromSubmission({ email, role, submission_id, nowIso }) {
 const normalized = normalizeEmail(email);
