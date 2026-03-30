@@ -146,7 +146,7 @@ const WATCHDOG_ALERT_BUSINESS_END_HOUR = Number(process.env.WATCHDOG_ALERT_BUSIN
 const WATCHDOG_NOTIFY_ADMINS =
 String(process.env.WATCHDOG_NOTIFY_ADMINS || "true").toLowerCase() === "true";
 const WATCHDOG_ALERT_ONLY_WARN =
-String(process.env.WATCHDOG_ALERT_ONLY_WARN || "false").toLowerCase() === "true";
+String(process.env.WATCHDOG_ALERT_ONLY_WARN || "true").toLowerCase() === "true";
 // NY time
 const NY_TZ = "America/New_York";
 // ---------- GUARDS ----------
@@ -1017,6 +1017,13 @@ function watchdogKeyboard() {
   ]);
 }
 
+function watchdogStatusLabel(status) {
+  if (status === "ok") return "Healthy";
+  if (status === "degraded") return "Monitor";
+  if (status === "warn") return "Action Required";
+  return "Unknown";
+}
+
 function buildWatchdogCardText(wd) {
   const snapshot = wd || {};
   const freshness = snapshot.freshness || {};
@@ -1035,16 +1042,16 @@ function buildWatchdogCardText(wd) {
   return `🛡 DATA WATCHDOG
 --
 Last Run: ${snapshot.lastRunAt || "never"}
-Overall: ${snapshot.overallStatus || "unknown"}
+Overall: ${watchdogStatusLabel(snapshot.overallStatus)}
 
-Freshness: ${freshness.overall || "unknown"}
+Freshness: ${watchdogStatusLabel(freshness.overall)}
 Stale Threshold: ${freshness.staleThresholdMinutes || WATCHDOG_STALE_MINUTES}m
 Stale Sources: ${staleItems.length ? staleItems.join(", ") : "none"}
 
-Reconciliation: ${rec.overall || "unknown"}
+Reconciliation: ${watchdogStatusLabel(rec.overall)}
 Warnings: ${warnChecks.length ? warnChecks.join(", ") : "none"}
 
-Schema Contract: ${schema.overall || "unknown"}
+Schema Contract: ${watchdogStatusLabel(schema.overall)}
 Covered: ${schema.coveredCount ?? 0}/${schema.expectedCount ?? EXPECTED_NIL_RELATIONS.length}
 Missing: ${schema.missing?.length || 0}${missingSample.length ? `\n${missingSample.join(", ")}${schema.missing.length > missingSample.length ? " ..." : ""}` : ""}
 --`;
@@ -2288,12 +2295,14 @@ function buildWatchdogAlertText(snapshot, previousStatus) {
   const staleCount = (freshness.checks || []).filter((c) => c.status === "stale").length;
   const recWarnCount = (reconciliation.checks || []).filter((c) => c.status === "warn").length;
   const schemaMissing = (schema.missing || []).length;
-  const trend = previousStatus && previousStatus !== "unknown" ? `${previousStatus} -> ${snapshot.overallStatus}` : snapshot.overallStatus;
+  const prevLabel = watchdogStatusLabel(previousStatus);
+  const nextLabel = watchdogStatusLabel(snapshot.overallStatus);
+  const trend = previousStatus && previousStatus !== "unknown" ? `${prevLabel} -> ${nextLabel}` : nextLabel;
   return `🛡 Watchdog Alert\n` +
     `Status: ${trend}\n` +
-    `Freshness: ${freshness.overall || "unknown"} (stale: ${staleCount})\n` +
-    `Reconciliation: ${reconciliation.overall || "unknown"} (warn: ${recWarnCount})\n` +
-    `Schema: ${schema.overall || "unknown"} (missing: ${schemaMissing})\n` +
+    `Freshness: ${watchdogStatusLabel(freshness.overall)} (stale: ${staleCount})\n` +
+    `Reconciliation: ${watchdogStatusLabel(reconciliation.overall)} (warn: ${recWarnCount})\n` +
+    `Schema: ${watchdogStatusLabel(schema.overall)} (missing: ${schemaMissing})\n` +
     `Checked: ${snapshot.lastRunAt || new Date().toISOString()}`;
 }
 

@@ -5,6 +5,13 @@ const {
   headerLine,
 } = require("./view-utils");
 
+function watchdogStatusLabel(status) {
+  if (status === "ok") return "Healthy";
+  if (status === "degraded") return "Monitor";
+  if (status === "warn") return "Action Required";
+  return "Unknown";
+}
+
 function buildOpsHealthText(summary) {
   const cfg = summary?.config || {};
   const rt = summary?.runtime || {};
@@ -27,10 +34,10 @@ Pending Handoffs: ${rt.pending_handoff_conversations == null ? "n/a" : rt.pendin
 
 Watchdog
 Last Run: ${wd.lastRunAt || "never"}
-Overall: ${wd.overallStatus || "unknown"}
-Freshness: ${wd.freshness?.overall || "unknown"}
-Reconciliation: ${wd.reconciliation?.overall || "unknown"}
-Schema Contract: ${wd.schema?.overall || "unknown"}
+Overall: ${watchdogStatusLabel(wd.overallStatus)}
+Freshness: ${watchdogStatusLabel(wd.freshness?.overall)}
+Reconciliation: ${watchdogStatusLabel(wd.reconciliation?.overall)}
+Schema Contract: ${watchdogStatusLabel(wd.schema?.overall)}
 Schema Coverage: ${wd.schema?.coveredCount ?? 0}/${wd.schema?.expectedCount ?? 0}
 --`;
 }
