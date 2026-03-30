@@ -3599,6 +3599,26 @@ if (lane) return lane === "program";
 const s = sourceSafe(conv?.source);
 return s === "programs";
 }
+function buildThreadingContext(conv) {
+  const gmailThreadId = conv?.gmail_thread_id || null;
+  const messageIdHeader = conv?.message_id_header || null;
+  const inReplyTo = conv?.in_reply_to || null;
+  const references = conv?.references || null;
+  const replyAnchor = inReplyTo || messageIdHeader || null;
+  return {
+    gmail_thread_id: gmailThreadId,
+    message_id_header: messageIdHeader,
+    in_reply_to: inReplyTo,
+    references: references,
+    reply_anchor: replyAnchor,
+    threading: {
+      gmail_thread_id: gmailThreadId,
+      in_reply_to: inReplyTo,
+      references: references,
+      reply_anchor: replyAnchor,
+    },
+  };
+}
 async function sbGetRecentCcSupportSent(conversationId, withinHours = 24) {
   try {
     const sinceIso = new Date(Date.now() - withinHours * 60 * 60 * 1000).toISOString();
@@ -3627,6 +3647,7 @@ function buildCcSupportDispatchPayload(
 ) {
   const trace_id = makeTraceId();
   const idempotency_key = makeCcIdempotencyKey(conv.id);
+  const threadingContext = buildThreadingContext(conv);
   const payload = {
     schema_version: "5.3",
     event_type: "cc_support.requested",
@@ -3655,10 +3676,7 @@ function buildCcSupportDispatchPayload(
           body: support_message.body || "",
         }
       : null,
-    gmail_thread_id: conv.gmail_thread_id || null,
-    message_id_header: conv.message_id_header || null,
-    in_reply_to: conv.in_reply_to || null,
-    references: conv.references || null,
+    ...threadingContext,
     mirror_conversation_id: conv.mirror_conversation_id || null,
     payload: {
       lane_source: sourceSafe(conv.source),
@@ -3749,6 +3767,7 @@ return smartRender(ctx, "❌ CC drafts not found. Click Regenerate.", ccKeyboard
 }
 let text = `📇 CC Support\nConversation: ${idShort(convId)}\n\n`;
 text += `This will:\n• Send bridge message from outreach to contact\n• Send forwardable support message from ${SUPPORT_FROM_EMAIL}\n• Create + link the Support mirror thread\n\n`;
+text += `Threading is preserved using Gmail thread headers and thread id when available.\n\n`;
 text += `Selected:\n• Bridge Draft: V${bridgeDraft}\n• Support Draft: V${supportDraft}\n\n`;
 text += `Click "View" buttons to see full message text before confirming.`;
 return smartRender(ctx, text, ccKeyboard(convId, bridgeDraft, supportDraft));
@@ -6406,6 +6425,7 @@ null } = {}
 const trace_id = makeTraceId();
 const idempotency_key = makeSendIdempotencyKey(conv, useDraft, sendAs);
 const fromEmail = await resolveFromEmail(conv, sendAs);
+const threadingContext = buildThreadingContext(conv);
 if (sendAs === "outreach" && !fromEmail) {
 return {
 ok: false,
@@ -6435,10 +6455,7 @@ cc_support: !!ccSupport,
 send_as: sendAs,
 from_email: fromEmail,
 // threading support
-gmail_thread_id: conv.gmail_thread_id || null,
-message_id_header: conv.message_id_header || null,
-in_reply_to: conv.in_reply_to || null,
-references: conv.references || null,
+...threadingContext,
 mirror_conversation_id: conv.mirror_conversation_id || null,
 use_draft: Number(useDraft),
 };
