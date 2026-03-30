@@ -7021,6 +7021,9 @@ console.log("[INFO] Refresh already in progress, skipping");
 return;
 }
 
+// Fast path: if no targeted refresh was queued, skip periodic sweep work.
+if (!force && refreshQueue.size === 0) return;
+
 cleanupLiveCards();
 const now = Date.now();
 if (!force && now - lastRefreshMs < (REFRESH_MIN_INTERVAL_MS || 1500)) return;
