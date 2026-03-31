@@ -5227,7 +5227,7 @@ const pageItems = allItems.slice(start, start + pageSize);
 const lines = [];
 const title = (typeof viewTitle === "function") ? viewTitle("triage") : "⚡ Triage";
 lines.push(`${title} · ${roleFilterLabel(roleFilter)}`);
-lines.push(`${handoff.length > 0 ? `📌 ${handoff.length} · ` : ""}‼ ${urgent.length} · ⏳ ${needs.length} · 📱 ${calls.length} · 📚 ${followups.length}`);
+lines.push(`‼ ${urgent.length} · 📌 ${handoff.length} · 📝 ${needs.length} · 📱 ${calls.length} · 📚 ${followups.length}`);
 lines.push("");
 
 if (pageItems.length === 0) {
@@ -5243,7 +5243,7 @@ if (pageItems.length === 0) {
       const tierHeaders = {
         handoff: "📌 NEEDS LOOP — AI Ready (Instantly)",
         urgent: "‼ URGENT (Overdue > 24h)",
-        needs: "⏳ NEEDS REPLY",
+        needs: "📝 NEEDS REPLY",
         calls: "📱 CALLS (DUE)",
         followups: "📚 COACH FOLLOW-UPS (DUE)"
       };
@@ -5258,11 +5258,13 @@ if (pageItems.length === 0) {
       lines.push(tFollowupLine(entry.item, itemNum));
     } else {
       const baseLine = tConvoLine(entry.item, itemNum);
+      const prefixByTier = { handoff: "📌", urgent: "‼", needs: "📝" };
+      const lineWithTierPrefix = baseLine.replace(/^(\d+\))\s+•\s/, `$1 ${prefixByTier[entry.tier] || "•"} `);
       if (entry.item?.needs_support_handoff === true && !entry.item?.cc_support_suggested) {
         const reason = entry.item?.handoff_detected_reason ? `\n Reason: ${entry.item.handoff_detected_reason}` : "";
-        lines.push(`${baseLine}\n 🤖 AI Ready for Loop in Support${reason}`);
+        lines.push(`${lineWithTierPrefix}\n 🤖 AI Ready for Loop in Support${reason}`);
       } else {
-        lines.push(baseLine);
+        lines.push(lineWithTierPrefix);
       }
     }
     itemNum++;

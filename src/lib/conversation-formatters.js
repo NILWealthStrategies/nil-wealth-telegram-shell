@@ -88,7 +88,7 @@ function buildConversationCardText(conv, { msgCount, latestMessage, instantlyThr
       case "urgent":
         return "‼️ Urgent";
       case "needs_reply":
-        return "⏳ Needs Reply";
+        return "📝 Needs Reply";
       case "active":
         return "💬 Active";
       case "completed":

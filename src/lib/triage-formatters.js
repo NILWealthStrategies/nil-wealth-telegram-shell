@@ -60,7 +60,7 @@ function tConvoLine(c, idx) {
   const programBit = program ? ` (${tShortProgram(program)})` : "";
   const waitBit = waiting ? `\n Waiting: ${waiting}` : "";
   const msgBit = snippet ? `\n "${tSafe(snippet, 92)}"` : "";
-  return `${idx}) ⏳ ${name}${programBit}${waitBit}${msgBit}`;
+  return `${idx}) • ${name}${programBit}${waitBit}${msgBit}`;
 }
 
 function tConvoBtnLabel(c) {
