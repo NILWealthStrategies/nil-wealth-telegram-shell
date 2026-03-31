@@ -1032,7 +1032,7 @@ return 0;
 }
 }
 // Auto-urgent: list needs_reply items with >24h wait time
-async function sbListUrgentAuto({ source = "all", role = "all", limit = 8, scanLimit = 500 } = {}) {
+async function sbListUrgentAuto({ source = "all", role = "all", limit = 8, offset = 0, scanLimit = 500 } = {}) {
 try {
 const OVERDUE_MINUTES = 24 * 60;
 const rows = await sbListConversations({ pipeline: "needs_reply", source, role, limit: scanLimit });
@@ -1046,7 +1046,7 @@ urgent.push(c);
 // Sort by wait time descending
 const waitSort = (a, b) => (tComputeWaitingMinutes(b) || 0) - (tComputeWaitingMinutes(a) || 0);
 urgent.sort(waitSort);
-return urgent.slice(0, limit);
+return urgent.slice(offset, offset + limit);
 } catch (err) {
 console.warn("sbListUrgentAuto exception:", err.message);
 return [];
@@ -1134,11 +1134,12 @@ async function sbCountUrgentCombined({ source = "all", role = "all" } = {}) {
   }
 }
 
-async function sbListUrgentCombined({ source = "all", role = "all", limit = 8 } = {}) {
+async function sbListUrgentCombined({ source = "all", role = "all", limit = 8, offset = 0 } = {}) {
   try {
+    const fetchSpan = Math.max((offset + limit) * 4, 24);
     const [autoUrgentRows, pipelineUrgentRows] = await Promise.all([
-      sbListUrgentAuto({ source, role, limit: Math.max(limit * 4, 24), scanLimit: 500 }),
-      sbListConversations({ pipeline: "urgent", source, role, limit: Math.max(limit * 4, 24) }),
+      sbListUrgentAuto({ source, role, limit: fetchSpan, offset: 0, scanLimit: 500 }),
+      sbListConversations({ pipeline: "urgent", source, role, limit: fetchSpan, offset: 0 }),
     ]);
 
     const deduped = new Map();
@@ -1157,7 +1158,7 @@ async function sbListUrgentCombined({ source = "all", role = "all", limit = 8 } 
       return bt - at;
     });
 
-    return rows.slice(0, limit);
+    return rows.slice(offset, offset + limit);
   } catch (err) {
     console.warn("sbListUrgentCombined exception:", err.message);
     return [];
@@ -1287,8 +1288,9 @@ async function sbCountForwardedCombined({ source = "all" } = {}) {
   }
 }
 
-async function sbListForwardedCombined({ source = "all", limit = 8 } = {}) {
+async function sbListForwardedCombined({ source = "all", limit = 8, offset = 0 } = {}) {
   try {
+    const fetchSpan = Math.max((offset + limit) * 8, 64);
     const fromRegistry = await sbForwardedCoachIdsFromRegistry({ source });
     if (fromRegistry && fromRegistry.size) {
       const ids = Array.from(fromRegistry).slice(0, 200);
@@ -1297,7 +1299,7 @@ async function sbListForwardedCombined({ source = "all", limit = 8 } = {}) {
         .select("id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at")
         .in("coach_id", ids)
         .order("updated_at", { ascending: false })
-        .limit(Math.max(limit * 8, 64));
+        .limit(fetchSpan);
       if (convErr) return [];
 
       const latestByCoach = new Map();
@@ -1306,7 +1308,7 @@ async function sbListForwardedCombined({ source = "all", limit = 8 } = {}) {
         if (!coachId) continue;
         if (!latestByCoach.has(coachId)) latestByCoach.set(coachId, conv);
       }
-      return Array.from(latestByCoach.values()).slice(0, limit);
+      return Array.from(latestByCoach.values()).slice(offset, offset + limit);
     }
 
     const coachIdsForSource = await sbCoachIdsForSource(source);
@@ -1334,7 +1336,7 @@ async function sbListForwardedCombined({ source = "all", limit = 8 } = {}) {
       .select("id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at")
       .in("coach_id", ids)
       .order("updated_at", { ascending: false })
-      .limit(Math.max(limit * 8, 64));
+      .limit(fetchSpan);
     if (convErr) return [];
 
     // One forwarded row per coach: multiple family clicks should not duplicate queue rows.
@@ -1347,7 +1349,7 @@ async function sbListForwardedCombined({ source = "all", limit = 8 } = {}) {
       }
     }
 
-    return Array.from(latestByCoach.values()).slice(0, limit);
+    return Array.from(latestByCoach.values()).slice(offset, offset + limit);
   } catch (err) {
     console.warn("sbListForwardedCombined exception:", err.message);
     return [];
@@ -1463,10 +1465,11 @@ Missing: ${schema.missing?.length || 0}${missingSample.length ? `\n${missingSamp
 }
 
 // ---------- LISTS ----------
-async function sbListConversations({ pipeline, source = "all", role = "all", limit = 8 }) {
+async function sbListConversations({ pipeline, source = "all", role = "all", limit = 8, offset = 0 }) {
 const buildQuery = (withRole, withHandoff, withCardExtras = true) => {
   const handoffCols = withHandoff ? ', needs_support_handoff, needs_support_handoff_at, handoff_detected_reason' : '';
   const cardCols = withCardExtras ? ', cc_support_suggested, gmail_url, mirror_conversation_id' : '';
+  const fetchLimit = Math.max((offset + limit) * 2, limit * 2);
   let q = ops()
     .from("conversations")
     .select(
@@ -1475,7 +1478,7 @@ const buildQuery = (withRole, withHandoff, withCardExtras = true) => {
         : `id, thread_key, source, pipeline, coach_id, coach_name, contact_email, subject, preview, updated_at${cardCols}${handoffCols}`
     )
     .order("updated_at", { ascending: false })
-    .limit(limit * 2); // Fetch 2x limit for sorting
+    .limit(fetchLimit); // Fetch wider window for stable priority sorting with pagination
   if (pipeline) q = q.eq("pipeline", pipeline);
   // Source filtering: include specific source OR null OR empty (for unmigrated test data)
   if (source !== "all") {
@@ -1495,7 +1498,7 @@ const result = await dbSelectFirst([
 ]);
 if (result?.error) throw new Error(result.error.message || result.error);
 const sorted = smartSortByPriority(result?.data || []);
-return sorted.slice(0, limit);
+return sorted.slice(offset, offset + limit);
 }
 async function sbGetConversationById(id) {
 const { data, error } = await ops()
@@ -2303,7 +2306,6 @@ const categoryTotalClicks =
 counts.totalClicks = Math.max(categoryTotalClicks, rawClickEventCount);
 // Backward-compatible aliases for existing consumers.
 counts.programLinkOpens = counts.parentGuideClicks;
-counts.coverageExploration = counts.supplementalHealthGuideClicks + counts.riskAwarenessGuideClicks + counts.taxEducationGuideClicks;
 counts.enrollClicks = counts.enrollPortalClicks;
   
   // Fetch calls answered for all windows
@@ -2370,7 +2372,6 @@ monthly[i].totalClicks =
 }
 for (let i = 0; i < 12; i++) {
 monthly[i].opens = monthly[i].parentGuideClicks;
-monthly[i].exploration = monthly[i].supplementalHealthGuideClicks + monthly[i].riskAwarenessGuideClicks + monthly[i].taxEducationGuideClicks;
 monthly[i].enrollClicks = monthly[i].enrollPortalClicks;
 }
 
@@ -3562,7 +3563,7 @@ Markup.button.callback("🌊 Pools", "POOLS:open"),
 // CONVERSATION SUMMARY LIST
 // ======================================================
 // ---------- SHOW LIST ----------
-async function showConversationList(ctx, viewKey, rows, filterSource, roleFilter = "all") {
+async function showConversationList(ctx, viewKey, rows, filterSource, roleFilter = "all", pageMeta = null) {
 const filterLabel =
 filterSource === "support"
 ? "🧑‍🧒 Support"
@@ -3580,10 +3581,28 @@ const overflowNote = safeRows.length > MAX_QUEUE_DISPLAY
 const body = cappedRows.length
 ? cappedRows.map((conv) => convoSummaryLine(conv, URGENT_AFTER_MINUTES)).join("\n") + "\n─────"
 : "No items.";
-// buttons - just back navigation, no individual open buttons
-const kb = [[Markup.button.callback("⬅ Back", "ALLQ:open")]];
+const pageInfo = pageMeta
+? `Page ${pageMeta.currentPage}/${pageMeta.totalPages} (${pageMeta.totalCount} total)`
+: null;
+
+// buttons - queue pagination + back navigation
+const kb = [];
+if (pageMeta && pageMeta.totalPages > 1) {
+  const nav = [];
+  if (pageMeta.currentPage > 1) {
+    nav.push(Markup.button.callback("◀️ Prev", `VIEW:${viewKey}:${pageMeta.currentPage - 1}`));
+  }
+  if (pageMeta.currentPage < pageMeta.totalPages) {
+    nav.push(Markup.button.callback("Next ▶️", `VIEW:${viewKey}:${pageMeta.currentPage + 1}`));
+  }
+  if (pageMeta.currentPage !== pageMeta.totalPages) {
+    nav.push(Markup.button.callback("⏩ Last", `VIEW:${viewKey}:${pageMeta.totalPages}`));
+  }
+  if (nav.length) kb.push(nav);
+}
+kb.push([Markup.button.callback("⬅️ Back", "ALLQ:open")]);
 const msg = await smartRender(ctx,
-`${header}${overflowNote}\n\n${body}`,
+`${header}${overflowNote}${pageInfo ? `\n${pageInfo}` : ""}\n\n${body}`,
 Markup.inlineKeyboard(kb)
 );
 // ==================================================
@@ -3858,11 +3877,10 @@ if (!isAdmin(ctx)) return;
 const viewKey = ctx.match[1];
 const page = parseInt(ctx.match[2]) || 1;
 const filterSource = getAdminFilter(ctx);
-const roleFilter = "all";
+const roleFilter = getAdminRoleFilter(ctx) || "all";
 try {
 if (viewKey === "website_submissions") {
-const pageSize = 5;
-const offset = (page - 1) * pageSize;
+const pageSize = 1;
 // Get total count + page of data
 const { count: totalCount, error: countErr } = await trackPerf("view.website_submissions.count", () => ops()
 .from("submissions")
@@ -3877,7 +3895,9 @@ Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "ALLQ:open")]])
 }
 const safeTotalCount = totalCount || 0;
 const totalPages = Math.max(1, Math.ceil(safeTotalCount / pageSize));
-const currentPage = Math.min(page, totalPages);
+const safePage = Number.isFinite(page) && page > 0 ? page : 1;
+const currentPage = Math.min(safePage, totalPages);
+const offset = (currentPage - 1) * pageSize;
   
 const subs = await trackPerf("view.website_submissions.list", () => sbListSubmissions({ limit: pageSize, offset }));
 const lineForSub = (s, idx) => {
@@ -3900,13 +3920,16 @@ const kb = [];
 // Pagination buttons
 const navRow = [];
 if (currentPage > 1) {
-navRow.push(Markup.button.callback("◀ Prev", `VIEW:website_submissions:${currentPage - 1}`));
+navRow.push(Markup.button.callback("◀️ Prev", `VIEW:website_submissions:${currentPage - 1}`));
 }
 if (currentPage < totalPages) {
-navRow.push(Markup.button.callback("Next ▶", `VIEW:website_submissions:${currentPage + 1}`));
+navRow.push(Markup.button.callback("Next ▶️", `VIEW:website_submissions:${currentPage + 1}`));
+}
+if (currentPage !== totalPages) {
+navRow.push(Markup.button.callback("⏩ Last", `VIEW:website_submissions:${totalPages}`));
 }
 if (navRow.length > 0) kb.push(navRow);
-kb.push([Markup.button.callback("⬅ Back", "ALLQ:open")]);
+kb.push([Markup.button.callback("⬅️ Back", "ALLQ:open")]);
 const msg = await smartRender(ctx,
 `${headerLine("🧾 Submissions", filterSource)}\n${pageInfo}\n\n${lines}`,
 Markup.inlineKeyboard(kb)
@@ -3922,13 +3945,28 @@ filterSource,
 }
 return;
 }
+const pageSize = 1;
+const safePage = Number.isFinite(page) && page > 0 ? page : 1;
+const totalCount = viewKey === "urgent"
+  ? await sbCountUrgentCombined({ source: filterSource, role: roleFilter })
+  : viewKey === "forwarded"
+  ? await sbCountForwardedCombined({ source: filterSource })
+  : await sbCountConversations({ pipeline: viewKey, source: filterSource, role: roleFilter });
+const totalPages = Math.max(1, Math.ceil((Number(totalCount) || 0) / pageSize));
+const currentPage = Math.min(safePage, totalPages);
+const offset = (currentPage - 1) * pageSize;
+
 // Handle urgent with auto-escalation logic
-const rows = viewKey === "urgent" 
-? await sbListUrgentCombined({ source: filterSource, role: roleFilter, limit: 8 })
+const rows = viewKey === "urgent"
+? await sbListUrgentCombined({ source: filterSource, role: roleFilter, limit: pageSize, offset })
 : viewKey === "forwarded"
-? await sbListForwardedCombined({ source: filterSource, limit: 8 })
-: await sbListConversations({ pipeline: viewKey, source: filterSource, role: roleFilter, limit: 8 });
-await showConversationList(ctx, viewKey, rows, filterSource, roleFilter);
+? await sbListForwardedCombined({ source: filterSource, limit: pageSize, offset })
+: await sbListConversations({ pipeline: viewKey, source: filterSource, role: roleFilter, limit: pageSize, offset });
+await showConversationList(ctx, viewKey, rows, filterSource, roleFilter, {
+  currentPage,
+  totalPages,
+  totalCount: Number(totalCount) || 0,
+});
 // If you want queue lists to live-refresh too, update showConversationList
 // to return the sent message and register it there.
 } catch (err) {
@@ -5130,6 +5168,10 @@ const [handoffRaw, needsRaw, callsRaw, followupsRaw] = await Promise.all([
   }),
 ]);
 
+const handoff = roleFilter === "all"
+  ? (handoffRaw || [])
+  : (handoffRaw || []).filter((c) => conversationRoleForDisplay(c) === roleFilter);
+
 // Separate overdue needs_reply from regular needs_reply
 const seen = new Set();
 const urgent = [];
@@ -5169,7 +5211,7 @@ const followups = (followupsRaw || []).slice().sort((a, b) => {
 
 // Build unified item list with tier info
 const allItems = [];
-handoffRaw.forEach(c => allItems.push({ type: "convo", tier: "handoff", item: c }));
+handoff.forEach(c => allItems.push({ type: "convo", tier: "handoff", item: c }));
 urgent.forEach(c => allItems.push({ type: "convo", tier: "urgent", item: c }));
 needs.forEach(c => allItems.push({ type: "convo", tier: "needs", item: c }));
 calls.forEach(c => allItems.push({ type: "call", tier: "calls", item: c }));
@@ -5185,7 +5227,7 @@ const pageItems = allItems.slice(start, start + pageSize);
 const lines = [];
 const title = (typeof viewTitle === "function") ? viewTitle("triage") : "⚡ Triage";
 lines.push(`${title} · ${roleFilterLabel(roleFilter)}`);
-lines.push(`${handoffRaw.length > 0 ? `📌 ${handoffRaw.length} · ` : ""}‼ ${urgent.length} · ⏳ ${needs.length} · 📱 ${calls.length} · 📚 ${followups.length}`);
+lines.push(`${handoff.length > 0 ? `📌 ${handoff.length} · ` : ""}‼ ${urgent.length} · ⏳ ${needs.length} · 📱 ${calls.length} · 📚 ${followups.length}`);
 lines.push("");
 
 if (pageItems.length === 0) {
@@ -5199,7 +5241,7 @@ if (pageItems.length === 0) {
     if (entry.tier !== currentTier) {
       if (currentTier !== null) lines.push(""); // Blank line between tiers
       const tierHeaders = {
-        handoff: "📌 LOOP IN SUPPORT — Flagged by Instantly",
+        handoff: "📌 NEEDS LOOP — AI Ready (Instantly)",
         urgent: "‼ URGENT (Overdue > 24h)",
         needs: "⏳ NEEDS REPLY",
         calls: "📱 CALLS (DUE)",
@@ -5215,7 +5257,13 @@ if (pageItems.length === 0) {
     } else if (entry.type === "followup") {
       lines.push(tFollowupLine(entry.item, itemNum));
     } else {
-      lines.push(tConvoLine(entry.item, itemNum));
+      const baseLine = tConvoLine(entry.item, itemNum);
+      if (entry.item?.needs_support_handoff === true && !entry.item?.cc_support_suggested) {
+        const reason = entry.item?.handoff_detected_reason ? `\n Reason: ${entry.item.handoff_detected_reason}` : "";
+        lines.push(`${baseLine}\n 🤖 AI Ready for Loop in Support${reason}`);
+      } else {
+        lines.push(baseLine);
+      }
     }
     itemNum++;
   });
@@ -5247,7 +5295,12 @@ pageItems.forEach((entry) => {
     const action = tFollowupTargetAction(entry.item);
     if (action) kb.push([Markup.button.callback(tFollowupBtnLabel(entry.item), action)]);
   } else {
-    kb.push([Markup.button.callback(tConvoBtnLabelTriage(entry.item), `OPENCARD:${entry.item.id}`)]);
+    const row = [Markup.button.callback(tConvoBtnLabelTriage(entry.item), `OPENCARD:${entry.item.id}`)];
+    const needsLoop = entry.item?.needs_support_handoff === true && !entry.item?.cc_support_suggested && isProgramLaneConversation(entry.item);
+    if (needsLoop) {
+      row.push(Markup.button.callback("📌 Needs Loop", `CC:${entry.item.id}`));
+    }
+    kb.push(row);
   }
 });
 
@@ -6868,13 +6921,16 @@ throw new Error("Missing OPENAI_API_KEY");
 }
 const inbound = await sbLatestInboundMessage(conv.id);
 const isPrograms = sourceSafe(conv.source) === "programs";
-let coverageExplorationYear = null;
+let guideCategoryClicksYear = null;
 if (isPrograms) {
   try {
     const yearly = await sbMetricSummary({ source: "programs", window: "year" });
-    coverageExplorationYear = Number(yearly?.coverageExploration || 0);
+    guideCategoryClicksYear =
+      Number(yearly?.supplementalHealthGuideClicks || 0) +
+      Number(yearly?.riskAwarenessGuideClicks || 0) +
+      Number(yearly?.taxEducationGuideClicks || 0);
   } catch (_) {
-    coverageExplorationYear = null;
+    guideCategoryClicksYear = null;
   }
 }
 const prompt = {
@@ -6888,7 +6944,7 @@ followup_due_at: conv.followup_next_action_at || conv.next_action_at || null,
 metrics_window: "year",
 enroll_clicks_year: Number(conv.enroll_clicks_year || 0),
 guide_opens_year: Number(conv.guide_opens_year || 0),
-coverage_exploration_total_year: coverageExplorationYear,
+guide_category_clicks_total_year: guideCategoryClicksYear,
 };
 const programsSystemPrompt = "You write concise professional outreach follow-up replies for coach conversations. Return JSON with v1,v2,v3 each containing subject and body.";
 const supportSystemPrompt = "You write concise professional support replies. Return JSON with v1,v2,v3 each containing subject and body.";
