@@ -9184,6 +9184,82 @@ app.post("/api/nil-outbox/result", async (req, res) => {
 });
 
 // ---------- HEALTH ----------
+async function buildFirmReadinessReport() {
+  const criticalFailures = [];
+  const warnings = [];
+  const schemaChecks = [];
+
+  const requireConfigured = (value, name) => {
+    if (!value) criticalFailures.push(`${name} missing`);
+  };
+
+  requireConfigured(SUPABASE_URL, "SUPABASE_URL");
+  requireConfigured(SUPABASE_SERVICE_ROLE_KEY, "SUPABASE_SERVICE_ROLE_KEY");
+  if (ENABLE_TELEGRAM_BOT) requireConfigured(BOT_TOKEN, "TELEGRAM_BOT_TOKEN");
+  requireConfigured(BASE_WEBHOOK_SECRET, "BASE_WEBHOOK_SECRET");
+  requireConfigured(OPS_WEBHOOK_HMAC_SECRET, "OPS_WEBHOOK_HMAC_SECRET");
+  requireConfigured(CC_SUPPORT_WEBHOOK_URL, "CC_SUPPORT_WEBHOOK_URL");
+  requireConfigured(HANDOFF_WEBHOOK_URL, "HANDOFF_WEBHOOK_URL");
+
+  if (!FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY) {
+    criticalFailures.push("FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY must be true");
+  }
+  if (!ADMIN_IDS.length) {
+    criticalFailures.push("ADMIN_TELEGRAM_IDS must include at least one admin user");
+  }
+
+  if (!OPENAI_API_KEY) warnings.push("OPENAI_API_KEY missing (draft generation disabled)");
+  if (!MAKE_SEND_WEBHOOK_URL) warnings.push("MAKE_SEND_WEBHOOK_URL missing (send workflow fallback inactive)");
+  if (!OUTREACH_FROM_EMAIL) warnings.push("OUTREACH_FROM_EMAIL missing");
+
+  const runSchemaCheck = async (name, queryFactory, critical = true) => {
+    try {
+      const { error } = await queryFactory();
+      if (error) throw error;
+      schemaChecks.push({ name, ok: true });
+    } catch (err) {
+      const msg = String(err?.message || err || "unknown");
+      schemaChecks.push({ name, ok: false, error: msg });
+      if (critical) criticalFailures.push(`schema check failed: ${name}`);
+      else warnings.push(`schema check degraded: ${name}`);
+    }
+  };
+
+  await runSchemaCheck("ops_events_contract", () =>
+    ops().from("ops_events").select("id, event_type, idempotency_key").limit(1)
+  );
+  await runSchemaCheck("conversation_handoff_columns", () =>
+    ops()
+      .from("conversations")
+      .select("id, pipeline, needs_support_handoff, needs_support_handoff_at, handoff_detected_reason, cc_support_suggested")
+      .limit(1)
+  );
+  await runSchemaCheck("click_registry_contract", () =>
+    ops().from("click_link_registry").select("id, dedupe_key, coach_id, guide_key, person_key").limit(1)
+  );
+  await runSchemaCheck("click_events_forwarded_columns", () =>
+    ops().from("click_events").select("id, dedupe_key, is_unique_forwarded, person_key, actor_type, actor_id").limit(1)
+  );
+
+  const ok = criticalFailures.length === 0;
+  return {
+    ok,
+    grade: ok ? "firm-ready" : "not-ready",
+    critical_failures: criticalFailures,
+    warnings,
+    controls: {
+      forwarded_strict_identity: FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY,
+      ops_hmac_enabled: !!OPS_WEBHOOK_HMAC_SECRET,
+      base_secret_enabled: !!BASE_WEBHOOK_SECRET,
+      watchdog_admin_notify: WATCHDOG_NOTIFY_ADMINS,
+      watchdog_alert_only_warn: WATCHDOG_ALERT_ONLY_WARN,
+      admin_idle_reset_hours: ADMIN_IDLE_DASHBOARD_RESET_HOURS,
+    },
+    schema_checks: schemaChecks,
+    checked_at: new Date().toISOString(),
+  };
+}
+
 app.get("/health", (_req, res) => {
   const warnings = [];
   if (!MAKE_SEND_WEBHOOK_URL) warnings.push("MAKE_SEND_WEBHOOK_URL missing");
@@ -9230,6 +9306,14 @@ app.get("/ready", (_req, res) => {
   }
 
   return res.json({ ok: true, missing: [] });
+});
+
+app.get("/ready/firm", async (_req, res) => {
+  const report = await buildFirmReadinessReport();
+  if (!report.ok) {
+    return res.status(503).json(report);
+  }
+  return res.json(report);
 });
 
 // ---------- START ----------
