@@ -1252,6 +1252,9 @@ function buildTrackedGuideLink(rawUrl, conv) {
     if (coachId && !parsed.searchParams.get("coach_id")) {
       parsed.searchParams.set("coach_id", coachId);
     }
+    if (!parsed.searchParams.get("actor_type")) {
+      parsed.searchParams.set("actor_type", "parent");
+    }
     return parsed.toString();
   }
 
@@ -1262,6 +1265,7 @@ function buildTrackedGuideLink(rawUrl, conv) {
   tracker.pathname = `/go/${guideKey}${coachSuffix}`;
   tracker.searchParams.set("person_email", recipientEmail);
   if (coachId) tracker.searchParams.set("coach_id", coachId);
+  tracker.searchParams.set("actor_type", "parent");
   return tracker.toString();
 }
 
@@ -1305,6 +1309,7 @@ function isLikelyCoachSelfClick(row = {}) {
 
 function includesForwardedFamilyEvidence(row = {}) {
   if (isLikelyCoachSelfClick(row)) return false;
+  if (isCoachLikeActorType(row?.actor_type)) return false;
   if (isBotLikeActorType(row?.actor_type)) return false;
   const guideKey = normalizeGuideKey(row?.guide_key || row?.click_type || row?.kind || row?.event_type);
   if (guideKey) return true;
@@ -1329,6 +1334,7 @@ async function sbForwardedCoachIdsFromRegistry({ source = "all" } = {}) {
       if (!coachId) continue;
       if (coachIdsForSource && !coachIdsForSource.has(coachId)) continue;
       if (isLikelyCoachSelfClick(row)) continue;
+      if (isCoachLikeActorType(row?.actor_type)) continue;
       if (!isForwardedGuideSignal(row?.guide_key)) continue;
       coachIds.add(coachId);
     }
@@ -8759,6 +8765,7 @@ app.post("/webhook/metric", async (req, res) => {
       isCoachLikeActorType(resolvedActorType) &&
       String(resolvedCoachId) === String(resolvedActorId)
     );
+    const isCoachActor = isCoachLikeActorType(resolvedActorType);
     const dedupeKey = (resolvedCoachId && resolvedGuideKey && resolvedPersonKey)
       ? crypto.createHash("sha256").update(`${resolvedCoachId}|${resolvedGuideKey}|${resolvedPersonKey}`).digest("hex")
       : null;
@@ -8791,8 +8798,7 @@ app.post("/webhook/metric", async (req, res) => {
 
     let forwardedUnique = false;
     let forwardedDedupeState = "not_applicable";
-    if (dedupeKey && !isCoachSelfClick && resolvedGuideKey && !isBotTraffic &&
-      (!FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY || hasExplicitRecipientIdentity)) {
+    if (dedupeKey && !isCoachSelfClick && !isCoachActor && resolvedGuideKey && !isBotTraffic && hasExplicitRecipientIdentity) {
       const registryRow = {
         dedupe_key: dedupeKey,
         coach_id: resolvedCoachId,
@@ -8823,7 +8829,9 @@ app.post("/webhook/metric", async (req, res) => {
       }
     } else if (isBotTraffic) {
       forwardedDedupeState = "ignored_bot";
-    } else if (FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY && !hasExplicitRecipientIdentity) {
+    } else if (isCoachActor) {
+      forwardedDedupeState = "ignored_coach_actor";
+    } else if (!hasExplicitRecipientIdentity) {
       forwardedDedupeState = "ignored_weak_identity";
     }
 

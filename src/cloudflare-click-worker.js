@@ -236,10 +236,11 @@ export default {
     const personKey = personKeyFromQuery || cookiePersonKey || makePersonCookieValue();
     const personKeySource = personKeyFromQuery ? "query" : (cookiePersonKey ? "cookie" : "generated");
 
-    // Default to parent/family clicker for coach-generated links unless explicitly overridden.
+    // Default coach-id links without recipient identity to coach; only treat as parent when recipient identity is present.
+    const hasRecipientIdentity = Boolean(personId || personEmail || personKeyFromQuery);
     const actorType = explicitCoachSelfClick
       ? "coach"
-      : (actorTypeFromQuery || (isCoach ? "parent" : "support"));
+      : (actorTypeFromQuery || (isCoach ? (hasRecipientIdentity ? "parent" : "coach") : "support"));
     const actorIsCoachLike = actorType.includes("coach") || actorType.includes("program");
     const actor = actorIdFromQuery || (actorIsCoachLike ? (coachIdFromPath || "support") : personKey);
     const isBotLike = detectBotLikeTraffic(request);
