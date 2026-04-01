@@ -565,16 +565,25 @@ return got && String(got) === String(BASE_WEBHOOK_SECRET);
 function verifyHmac(req) {
 if (!OPS_WEBHOOK_HMAC_SECRET) return false;
 
-const sig = req.headers["x-ops-signature"];
+const sig = String(req.headers["x-ops-signature"] || "").trim();
 if (!sig) return false;
-const raw = typeof req.rawBody === "string" && req.rawBody.length > 0
-? req.rawBody
-: JSON.stringify(req.body ?? {});
-const expected = crypto
-.createHmac("sha256", OPS_WEBHOOK_HMAC_SECRET)
-.update(raw)
-.digest("hex");
-return String(sig) === String(expected);
+const candidates = [];
+if (typeof req.rawBody === "string" && req.rawBody.length > 0) {
+  candidates.push(req.rawBody);
+}
+const normalized = JSON.stringify(req.body ?? {});
+if (!candidates.includes(normalized)) {
+  candidates.push(normalized);
+}
+
+for (const body of candidates) {
+  const expected = crypto
+    .createHmac("sha256", OPS_WEBHOOK_HMAC_SECRET)
+    .update(body)
+    .digest("hex");
+  if (sig === expected) return true;
+}
+return false;
 }
 function verifyOpsIngestAuth(req) {
 if (OPS_WEBHOOK_HMAC_SECRET) return verifyHmac(req);
