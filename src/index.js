@@ -9125,18 +9125,20 @@ app.get("/api/nil-outbox/claim", async (req, res) => {
       }
     }
 
-    // Update claimed rows to 'sending'
+    // Update claimed rows to 'sending' — increment attempt_count per-row
+    // (Supabase JS v2 does not support SQL expressions in .update(), so we use JS arithmetic)
     if (claimableRows.length > 0) {
-      const outboxIds = claimableRows.map((r) => r.outbox_id);
-      const { error: updateError } = await ops()
-        .from("n8n_outbox")
-        .update({
-          status: "sending",
-          attempt_count: supabase.sql`attempt_count + 1`,
-        })
-        .in("outbox_id", outboxIds);
-
-      if (updateError) throw updateError;
+      for (const row of claimableRows) {
+        const { error: updateError } = await ops()
+          .from("n8n_outbox")
+          .update({
+            status: "sending",
+            attempt_count: (row.attempt_count || 0) + 1,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("outbox_id", row.outbox_id);
+        if (updateError) throw updateError;
+      }
     }
 
     return res.status(200).json({

@@ -1,0 +1,106 @@
+{
+  "name": "nil-ops-ingest-sender",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "nil-ops-ingest-sender",
+        "responseMode": "onReceived",
+        "responseData": "successResponse"
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [100, 300],
+      "webhookId": ""
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst body = JSON.stringify($node.Webhook.json.payload || {});\nconst secret = process.env.OPS_WEBHOOK_HMAC_SECRET || '';\nconst signature = crypto\n  .createHmac('sha256', secret)\n  .update(body)\n  .digest('hex');\n\nreturn {\n  payload: $node.Webhook.json.payload,\n  signature: signature,\n  timestamp: new Date().toISOString()\n};"
+      },
+      "name": "Generate HMAC Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [300, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.OPS_INGEST_ENDPOINT || 'http://localhost:3000/ops/ingest' }}",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-ops-signature",
+              "value": "{{ $node['Generate HMAC Signature'].json.signature }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "application/json",
+        "body": "={{ JSON.stringify($node['Generate HMAC Signature'].json.payload) }}"
+      },
+      "name": "Forward to bot /ops/ingest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "return {\n  ok: true,\n  forwarded_at: new Date().toISOString(),\n  event_type: $node.Webhook.json.payload?.event_type,\n  source: $node.Webhook.json.payload?.source\n};"
+      },
+      "name": "Return Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Generate HMAC Signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate HMAC Signature": {
+      "main": [
+        [
+          {
+            "node": "Forward to bot /ops/ingest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Forward to bot /ops/ingest": {
+      "main": [
+        [
+          {
+            "node": "Return Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "0d9b8c5f-1234-5678-9abc-def012345682",
+  "meta": {
+    "instanceId": "00000000000000000000000",
+    "templateId": null
+  },
+  "pinData": {}
+}
