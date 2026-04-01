@@ -159,6 +159,7 @@ const DASHBOARD_CACHE_TTL_MS = Number(process.env.DASHBOARD_CACHE_TTL_MS || 3000
 const DASHBOARD_SPEED_MODE = String(process.env.DASHBOARD_SPEED_MODE || "true").toLowerCase() !== "false";
 const DASHBOARD_METRICS_CACHE_TTL_MS = Number(process.env.DASHBOARD_METRICS_CACHE_TTL_MS || 10000);
 const DASHBOARD_OPS_CACHE_TTL_MS = Number(process.env.DASHBOARD_OPS_CACHE_TTL_MS || 20000);
+const CLICK_TRACKER_BASE_URL = String(process.env.CLICK_TRACKER_BASE_URL || "").trim().replace(/\/+$/g, "");
 const FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY =
 String(process.env.FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY || "false").toLowerCase() === "true";
 // NY time
@@ -1194,6 +1195,87 @@ function normalizeGuideKey(rawType) {
   if (t.includes("eapp")) return "eapp";
   if (t.includes("guide")) return "guide";
   return "";
+}
+
+function guideKeyFromUrl(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(String(rawUrl || ""));
+  } catch (_) {
+    return "";
+  }
+
+  const host = String(parsed.hostname || "").toLowerCase();
+  const path = String(parsed.pathname || "").toLowerCase();
+
+  if (path.startsWith("/go/")) {
+    const slug = path.slice(4).split("/")[0].split("-");
+    const candidate = slug.length > 1 ? slug.slice(0, -1).join("-") : slug[0] || "";
+    if (candidate === "parent-guide") return "parent-guide";
+    if (candidate === "supplemental-health-guide") return "supplemental-health-guide";
+    if (candidate === "risk-awareness-guide") return "risk-awareness-guide";
+    if (candidate === "tax-education-guide") return "tax-education-guide";
+    if (candidate === "enroll") return "enroll";
+    if (candidate === "eapp") return "eapp";
+  }
+
+  if (host.includes("parentsguide.mynilwealthstrategies.com")) return "parent-guide";
+  if (host.includes("supplementalhealth.mynilwealthstrategies.com")) return "supplemental-health-guide";
+  if (host.includes("riskawareness.mynilwealthstrategies.com")) return "risk-awareness-guide";
+  if (host.includes("taxeducation.mynilwealthstrategies.com")) return "tax-education-guide";
+  if (host.includes("enrollment.mynilwealthstrategies.com")) {
+    if (path.includes("eapp")) return "eapp";
+    return "enroll";
+  }
+
+  return "";
+}
+
+function buildTrackedGuideLink(rawUrl, conv) {
+  const guideKey = guideKeyFromUrl(rawUrl);
+  if (!guideKey) return rawUrl;
+
+  let parsed;
+  try {
+    parsed = new URL(String(rawUrl || ""));
+  } catch (_) {
+    return rawUrl;
+  }
+
+  const recipientEmail = normalizeEmail(conv?.contact_email || "");
+  const coachId = String(conv?.coach_id || "").trim();
+
+  if (parsed.pathname.startsWith("/go/")) {
+    if (recipientEmail && !parsed.searchParams.get("person_email")) {
+      parsed.searchParams.set("person_email", recipientEmail);
+    }
+    if (coachId && !parsed.searchParams.get("coach_id")) {
+      parsed.searchParams.set("coach_id", coachId);
+    }
+    return parsed.toString();
+  }
+
+  if (!CLICK_TRACKER_BASE_URL || !recipientEmail) return rawUrl;
+
+  const tracker = new URL(CLICK_TRACKER_BASE_URL);
+  const coachSuffix = coachId ? `-${encodeURIComponent(coachId)}` : "";
+  tracker.pathname = `/go/${guideKey}${coachSuffix}`;
+  tracker.searchParams.set("person_email", recipientEmail);
+  if (coachId) tracker.searchParams.set("coach_id", coachId);
+  return tracker.toString();
+}
+
+function rewriteOutboundTrackedLinks(rawBody, conv) {
+  const body = String(rawBody || "");
+  if (!body) return body;
+
+  const urlRegex = /https?:\/\/[^\s<>()]+/gi;
+  return body.replace(urlRegex, (fullMatch) => {
+    const trimmed = fullMatch.replace(/[),.;!?]+$/g, "");
+    const suffix = fullMatch.slice(trimmed.length);
+    const rewritten = buildTrackedGuideLink(trimmed, conv);
+    return `${rewritten}${suffix}`;
+  });
 }
 
 function isForwardedGuideSignal(rawType) {
@@ -7229,7 +7311,7 @@ coach_id: conv.coach_id || null,
 coach_name: conv.coach_name || null,
 contact_email: conv.contact_email || null,
 subject: subjectOverride ?? (conv.subject || ""),
-body: bodyOverride ?? "",
+body: rewriteOutboundTrackedLinks(bodyOverride ?? "", conv),
 cc_support: !!ccSupport,
 send_as: sendAs,
 from_email: fromEmail,
@@ -9211,6 +9293,9 @@ async function buildFirmReadinessReport() {
   if (!OPENAI_API_KEY) warnings.push("OPENAI_API_KEY missing (draft generation disabled)");
   if (!MAKE_SEND_WEBHOOK_URL) warnings.push("MAKE_SEND_WEBHOOK_URL missing (send workflow fallback inactive)");
   if (!OUTREACH_FROM_EMAIL) warnings.push("OUTREACH_FROM_EMAIL missing");
+  if (FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY && !CLICK_TRACKER_BASE_URL) {
+    warnings.push("CLICK_TRACKER_BASE_URL missing (strict forwarded identity may not be enforced in outbound links)");
+  }
 
   const runSchemaCheck = async (name, queryFactory, critical = true) => {
     try {
@@ -9249,6 +9334,7 @@ async function buildFirmReadinessReport() {
     warnings,
     controls: {
       forwarded_strict_identity: FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY,
+      click_tracker_base_configured: !!CLICK_TRACKER_BASE_URL,
       ops_hmac_enabled: !!OPS_WEBHOOK_HMAC_SECRET,
       base_secret_enabled: !!BASE_WEBHOOK_SECRET,
       watchdog_admin_notify: WATCHDOG_NOTIFY_ADMINS,
@@ -9268,6 +9354,9 @@ app.get("/health", (_req, res) => {
   if (!OPENAI_API_KEY) warnings.push("OPENAI_API_KEY missing");
   if (!SUPPORT_FROM_EMAIL) warnings.push("SUPPORT_FROM_EMAIL missing");
   if (!OUTREACH_FROM_EMAIL) warnings.push("OUTREACH_FROM_EMAIL missing");
+  if (FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY && !CLICK_TRACKER_BASE_URL) {
+    warnings.push("CLICK_TRACKER_BASE_URL missing");
+  }
 
   res.json({
     ok: true,
@@ -9282,6 +9371,7 @@ app.get("/health", (_req, res) => {
       openai_api_key_configured: !!OPENAI_API_KEY,
       support_from_email_configured: !!SUPPORT_FROM_EMAIL,
       outreach_from_email_configured: !!OUTREACH_FROM_EMAIL,
+      click_tracker_base_configured: !!CLICK_TRACKER_BASE_URL,
     },
     features: {
       telegram_bot_enabled: ENABLE_TELEGRAM_BOT,
