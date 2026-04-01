@@ -562,9 +562,10 @@ if (!OPS_WEBHOOK_HMAC_SECRET) return false;
 
 const sig = req.headers["x-ops-signature"];
 if (!sig) return false;
+const raw = JSON.stringify(req.body ?? {});
 const expected = crypto
 .createHmac("sha256", OPS_WEBHOOK_HMAC_SECRET)
-.update(JSON.stringify(req.body))
+.update(raw)
 .digest("hex");
 return String(sig) === String(expected);
 }
