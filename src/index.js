@@ -898,21 +898,23 @@ return String(raw)
 }
 function buildOpsSignature(bodyObj) {
 if (!OPS_WEBHOOK_HMAC_SECRET) return "";
+const payload = JSON.stringify(bodyObj ?? {});
 return crypto
 .createHmac("sha256", OPS_WEBHOOK_HMAC_SECRET)
-.update(JSON.stringify(bodyObj))
+.update(payload)
 .digest("hex");
 }
 async function postOpsIngestEvent(eventBody) {
+const safeBody = eventBody ?? {};
 const headers = { "content-type": "application/json" };
 if (BASE_WEBHOOK_SECRET) headers["x-nil-secret"] = BASE_WEBHOOK_SECRET;
 if (OPS_WEBHOOK_HMAC_SECRET) {
-headers["x-ops-signature"] = buildOpsSignature(eventBody);
+headers["x-ops-signature"] = buildOpsSignature(safeBody);
 }
 const resp = await fetch(`http://127.0.0.1:${PORT}/ops/ingest`, {
 method: "POST",
 headers,
-body: JSON.stringify(eventBody),
+body: JSON.stringify(safeBody),
 });
 if (!resp.ok) {
 const txt = await resp.text().catch(() => "");
