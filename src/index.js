@@ -101,9 +101,9 @@ const ADMIN_IDS = (process.env.ADMIN_TELEGRAM_IDS || "")
 .map((s) => s.trim())
 .filter(Boolean);
 const PORT = Number(process.env.PORT || 3000);
-const BASE_WEBHOOK_SECRET = process.env.BASE_WEBHOOK_SECRET || "";
-const OPS_WEBHOOK_HMAC_SECRET = process.env.OPS_WEBHOOK_HMAC_SECRET ||
-""; // optional, preferred if set
+const BASE_WEBHOOK_SECRET = (process.env.BASE_WEBHOOK_SECRET || "").trim();
+const OPS_WEBHOOK_HMAC_SECRET = (process.env.OPS_WEBHOOK_HMAC_SECRET ||
+"").trim(); // optional, preferred if set
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY ||
 "";
@@ -181,7 +181,12 @@ for (const msg of STARTUP_CONFIG_ERRORS) {
 }
 const bot = new Telegraf(BOT_TOKEN || "0:telegram-bot-disabled");
 const app = express();
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({
+  limit: "1mb",
+  verify: (req, _res, buf) => {
+    req.rawBody = buf ? buf.toString("utf8") : "";
+  },
+}));
 const supabase = createClient(
 SUPABASE_URL || "https://placeholder.supabase.co",
 SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key",
@@ -562,7 +567,9 @@ if (!OPS_WEBHOOK_HMAC_SECRET) return false;
 
 const sig = req.headers["x-ops-signature"];
 if (!sig) return false;
-const raw = JSON.stringify(req.body ?? {});
+const raw = typeof req.rawBody === "string" && req.rawBody.length > 0
+? req.rawBody
+: JSON.stringify(req.body ?? {});
 const expected = crypto
 .createHmac("sha256", OPS_WEBHOOK_HMAC_SECRET)
 .update(raw)
