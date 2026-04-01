@@ -24,7 +24,7 @@
     },
     {
       "parameters": {
-        "url": "={{ $env.OPS_INGEST_ENDPOINT || 'http://localhost:3000/ops/ingest' }}",
+        "url": "={{ $env.OPS_INGEST_ENDPOINT || 'https://nil-wealth-telegram-shell.onrender.com/ops/ingest' }}",
         "method": "POST",
         "sendHeaders": true,
         "headerParameters": {

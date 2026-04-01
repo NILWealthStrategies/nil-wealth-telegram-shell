@@ -1,0 +1,76 @@
+{
+  "name": "nil-analytics-ingest",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "nil-analytics-ingest",
+        "responseMode": "onReceived",
+        "responseData": "successResponse"
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [100, 300],
+      "webhookId": ""
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "nil",
+        "table": "analytics_metrics",
+        "columns": "event_type,entity_id,entity_type,source,payload",
+        "data": "{\n  \"event_type\": \"{{ $node.Webhook.json.event_type || 'unknown.event' }}\",\n  \"entity_id\": \"{{ $node.Webhook.json.entity_id || $node.Webhook.json.coach_id || '' }}\",\n  \"entity_type\": \"{{ $node.Webhook.json.entity_type || 'event' }}\",\n  \"source\": \"{{ $node.Webhook.json.source || 'n8n' }}\",\n  \"payload\": {{ JSON.stringify($node.Webhook.json) }}\n}"
+      },
+      "name": "Store in Analytics Table",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [300, 300],
+      "credentials": {
+        "supabaseApi": "supabase_analytics"
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return {\n  ok: true,\n  recorded_at: new Date().toISOString(),\n  event_type: $node.Webhook.json.event_type || 'unknown.event',\n  entity_id: $node.Webhook.json.entity_id || $node.Webhook.json.coach_id || null,\n  source: $node.Webhook.json.source || 'n8n'\n};"
+      },
+      "name": "Return Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Store in Analytics Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store in Analytics Table": {
+      "main": [
+        [
+          {
+            "node": "Return Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "0d9b8c5f-1234-5678-9abc-def012345681",
+  "meta": {
+    "instanceId": "00000000000000000000000",
+    "templateId": null
+  },
+  "pinData": {}
+}
