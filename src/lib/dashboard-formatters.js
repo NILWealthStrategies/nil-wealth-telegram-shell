@@ -54,7 +54,7 @@ function buildDashboardMetricsText(metrics = {}) {
       (metrics.eappVisits || 0));
   return `📊 METRICS
 Total Clicks: ${totalClicks}
-NILWS Website Opens: ${metrics.websiteOpens || metrics.nilwsWebsiteOpens || 0}
+Total NILWS Website Opens: ${metrics.websiteOpens || metrics.nilwsWebsiteOpens || 0}
 Total Parent Guide Opens: ${metrics.programLinkOpens || 0}
 Total Supplemental Health Guide Clicks: ${metrics.supplementalHealthGuideClicks || 0}
 Total Risk Awareness Guide Clicks: ${metrics.riskAwarenessGuideClicks || 0}
@@ -173,9 +173,9 @@ function buildYearSummaryText(y, filterSource) {
 TOTALS
 
 ` +
-    `• Total Clicks: ${n(d.totalClicks)} (Avg ${avg(d.totalClicks)}/mo)\n` +
+    `• Clicks: ${n(d.totalClicks)} (Avg ${avg(d.totalClicks)}/mo)\n` +
     `• NILWS Website Opens: ${n(d.websiteOpens || d.nilwsWebsiteOpens)} (Avg ${avg(d.websiteOpens || d.nilwsWebsiteOpens)}/mo)\n` +
-    `• Total Parent Guides Opened: ${n(d.programLinkOpens)} (Avg ${avg(d.programLinkOpens)}/mo)\n` +
+    `• Parent Guides Opened: ${n(d.programLinkOpens)} (Avg ${avg(d.programLinkOpens)}/mo)\n` +
     `• Supplemental Health Guide Clicks: ${n(d.supplementalHealthGuideClicks)} (Avg ${avg(d.supplementalHealthGuideClicks)}/mo)\n` +
     `• Risk Awareness Guide Clicks: ${n(d.riskAwarenessGuideClicks)} (Avg ${avg(d.riskAwarenessGuideClicks)}/mo)\n` +
     `• Tax Education Guide Clicks: ${n(d.taxEducationGuideClicks)} (Avg ${avg(d.taxEducationGuideClicks)}/mo)\n` +
@@ -184,7 +184,7 @@ TOTALS
     `• Threads (Replies): ${n(d.threadsCreated)} (Avg ${avg(d.threadsCreated)}/mo)\n` +
     `• Calls Answered: ${n(d.callsAnswered)} (Avg ${avg(d.callsAnswered)}/mo)\n\n` +
     `--
-MONTHLY BREAKDOWN (Total Clicks)\n\n` +
+  MONTHLY BREAKDOWN (Clicks)\n\n` +
     `${monthLine}\n\n` +
     `--
 HIGHLIGHTS\n\n` +
@@ -193,7 +193,7 @@ HIGHLIGHTS\n\n` +
     `${bestMonthEver}\n\n` +
     `--
 TRENDS (vs last month)\n\n` +
-    `• Total Clicks: ${trendEmoji(t.totalClicks)}\n` +
+    `• Clicks: ${trendEmoji(t.totalClicks)}\n` +
     `• NILWS Website Opens: ${trendEmoji(t.websiteOpens)}\n` +
     `• Parent Guides: ${trendEmoji(t.opens)}\n` +
     `• Supplemental Health: ${trendEmoji(t.supplementalHealthGuideClicks)}\n` +

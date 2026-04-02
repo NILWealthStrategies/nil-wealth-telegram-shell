@@ -6095,8 +6095,8 @@ Calls Answered: ${metrics.callsAnswered || 0}
 
 // Add best week/month for year view
 if (window === "year" && metrics.bestWeek && metrics.bestMonth) {
-const bestWeek = `🏆 Best Week: ${metrics.bestWeek.label || "—"} (Total Clicks ${metrics.bestWeek.totalClicks || 0})`;
-const bestMonth = `⭐ Best Month: ${metrics.bestMonth.label || "—"} (Total Clicks ${metrics.bestMonth.totalClicks || 0})`;
+const bestWeek = `🏆 Best Week: ${metrics.bestWeek.label || "—"} (Clicks ${metrics.bestWeek.totalClicks || 0})`;
+const bestMonth = `⭐ Best Month: ${metrics.bestMonth.label || "—"} (Clicks ${metrics.bestMonth.totalClicks || 0})`;
 body += `\n\n${bestWeek}\n${bestMonth}`;
 }
 
