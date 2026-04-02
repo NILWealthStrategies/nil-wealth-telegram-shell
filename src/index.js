@@ -2423,7 +2423,7 @@ const categoryTotalClicks =
   (counts.taxEducationGuideClicks || 0) +
   (counts.enrollPortalClicks || 0) +
   (counts.eappVisits || 0);
-counts.totalClicks = Math.max(categoryTotalClicks, rawClickEventCount);
+counts.totalClicks = categoryTotalClicks;
 // Backward-compatible aliases for existing consumers.
 counts.programLinkOpens = counts.parentGuideClicks;
 counts.enrollClicks = counts.enrollPortalClicks;
