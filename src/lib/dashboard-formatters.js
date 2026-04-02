@@ -45,7 +45,8 @@ ${laneHint}`;
 function buildDashboardMetricsText(metrics = {}) {
   const totalClicks =
     metrics.totalClicks ||
-    ((metrics.parentGuideClicks || metrics.programLinkOpens || 0) +
+    ((metrics.websiteOpens || metrics.nilwsWebsiteOpens || 0) +
+      (metrics.parentGuideClicks || metrics.programLinkOpens || 0) +
       (metrics.supplementalHealthGuideClicks || 0) +
       (metrics.riskAwarenessGuideClicks || 0) +
       (metrics.taxEducationGuideClicks || 0) +
@@ -53,6 +54,7 @@ function buildDashboardMetricsText(metrics = {}) {
       (metrics.eappVisits || 0));
   return `📊 METRICS
 Total Clicks: ${totalClicks}
+NILWS Website Opens: ${metrics.websiteOpens || metrics.nilwsWebsiteOpens || 0}
 Total Parent Guide Opens: ${metrics.programLinkOpens || 0}
 Total Supplemental Health Guide Clicks: ${metrics.supplementalHealthGuideClicks || 0}
 Total Risk Awareness Guide Clicks: ${metrics.riskAwarenessGuideClicks || 0}
@@ -172,6 +174,7 @@ TOTALS
 
 ` +
     `• Total Clicks: ${n(d.totalClicks)} (Avg ${avg(d.totalClicks)}/mo)\n` +
+    `• NILWS Website Opens: ${n(d.websiteOpens || d.nilwsWebsiteOpens)} (Avg ${avg(d.websiteOpens || d.nilwsWebsiteOpens)}/mo)\n` +
     `• Total Parent Guides Opened: ${n(d.programLinkOpens)} (Avg ${avg(d.programLinkOpens)}/mo)\n` +
     `• Supplemental Health Guide Clicks: ${n(d.supplementalHealthGuideClicks)} (Avg ${avg(d.supplementalHealthGuideClicks)}/mo)\n` +
     `• Risk Awareness Guide Clicks: ${n(d.riskAwarenessGuideClicks)} (Avg ${avg(d.riskAwarenessGuideClicks)}/mo)\n` +
@@ -191,6 +194,7 @@ HIGHLIGHTS\n\n` +
     `--
 TRENDS (vs last month)\n\n` +
     `• Total Clicks: ${trendEmoji(t.totalClicks)}\n` +
+    `• NILWS Website Opens: ${trendEmoji(t.websiteOpens)}\n` +
     `• Parent Guides: ${trendEmoji(t.opens)}\n` +
     `• Supplemental Health: ${trendEmoji(t.supplementalHealthGuideClicks)}\n` +
     `• Risk Awareness: ${trendEmoji(t.riskAwarenessGuideClicks)}\n` +

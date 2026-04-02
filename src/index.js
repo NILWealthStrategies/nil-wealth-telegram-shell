@@ -2127,6 +2127,7 @@ const since = sinceDays ? new Date(now.getTime() - sinceDays * 24 * 3600 * 1000)
 const normalizeMetricEventType = (rawType) => {
 const t = String(rawType || "").trim().toLowerCase();
 if (!t) return null;
+  if (t.includes("website_open") || t.includes("website opens") || t.includes("nilws_website_open") || t.includes("nilws website open")) return "website_open";
 if (t.includes("thread_created") || t === "conversation.created") return "thread_created";
 if (t.includes("eapp")) return "eapp_visit";
 if (t.includes("parent_guide") || t.includes("parents_guide") || t.includes("program_link") || t.includes("guide_open") || t.includes("guide_click")) return "parent_guide_click";
@@ -2179,6 +2180,7 @@ return now.toISOString();
 const eventRows = [];
 let rawClickEventCount = 0;
 const fallbackCounts = {
+  websiteOpens: 0,
 parentGuideClicks: 0,
 supplementalHealthGuideClicks: 0,
 riskAwarenessGuideClicks: 0,
@@ -2187,6 +2189,7 @@ enrollPortalClicks: 0,
 eappVisits: 0,
 };
 const monthlyFallback = Array.from({ length: 12 }, () => ({
+  websiteOpens: 0,
 parentGuideClicks: 0,
 supplementalHealthGuideClicks: 0,
 riskAwarenessGuideClicks: 0,
@@ -2196,6 +2199,7 @@ eappVisits: 0,
 }));
 
 const emptyCountsBucket = () => ({
+  websiteOpens: 0,
 parentGuideClicks: 0,
 supplementalHealthGuideClicks: 0,
 riskAwarenessGuideClicks: 0,
@@ -2204,6 +2208,7 @@ enrollPortalClicks: 0,
 eappVisits: 0,
 });
 const emptyMonthlyBuckets = () => Array.from({ length: 12 }, () => ({
+  websiteOpens: 0,
 parentGuideClicks: 0,
 supplementalHealthGuideClicks: 0,
 riskAwarenessGuideClicks: 0,
@@ -2227,6 +2232,7 @@ targetCounts.enrollPortalClicks += toNumber(bucket.enrollPortalClicks);
 targetCounts.eappVisits += toNumber(bucket.eappVisits);
 const mi = new Date(ts).getMonth();
 if (mi >= 0 && mi <= 11) {
+  targetMonthly[mi].websiteOpens += toNumber(bucket.websiteOpens);
 targetMonthly[mi].parentGuideClicks += toNumber(bucket.parentGuideClicks);
 targetMonthly[mi].supplementalHealthGuideClicks += toNumber(bucket.supplementalHealthGuideClicks);
 targetMonthly[mi].riskAwarenessGuideClicks += toNumber(bucket.riskAwarenessGuideClicks);
@@ -2331,6 +2337,7 @@ const byKindType = normalizeMetricEventType(r.kind || r.event_type);
 if (byKindType && (r.count != null || r.total != null || r.clicks != null)) {
 const count = toNumber(r.count ?? r.total ?? r.clicks);
 const bucket = { parentGuideClicks: 0, supplementalHealthGuideClicks: 0, riskAwarenessGuideClicks: 0, taxEducationGuideClicks: 0, enrollPortalClicks: 0, eappVisits: 0 };
+if (byKindType === "website_open") bucket.websiteOpens = count;
 if (byKindType === "parent_guide_click") bucket.parentGuideClicks = count;
 if (byKindType === "supplemental_health_guide_click") bucket.supplementalHealthGuideClicks = count;
 if (byKindType === "risk_awareness_guide_click") bucket.riskAwarenessGuideClicks = count;
@@ -2341,6 +2348,7 @@ addFallbackBucket(localCounts, localMonthly, createdAt, bucket);
 continue;
 }
 addFallbackBucket(localCounts, localMonthly, createdAt, {
+  websiteOpens: readNumeric(r, ["website_opens", "nilws_website_opens", "total_website_opens"]),
 parentGuideClicks: readNumeric(r, ["parent_guide_clicks", "program_link_opens", "guide_opens", "parent_guide_opens", "opens", "total_opens", "opens_total"]),
 supplementalHealthGuideClicks: readNumeric(r, ["supplemental_health_guide_clicks", "supplemental_health_clicks", "sh_clicks", "coverage_exploration", "coverage_clicks"]),
 riskAwarenessGuideClicks: readNumeric(r, ["risk_awareness_guide_clicks", "risk_awareness_clicks"]),
@@ -2353,6 +2361,7 @@ eappVisits: readNumeric(r, ["eapp_visits", "eapp_clicks", "total_eapp_visits"]),
 const localTotal = localCounts.parentGuideClicks + localCounts.supplementalHealthGuideClicks + localCounts.riskAwarenessGuideClicks + localCounts.taxEducationGuideClicks + localCounts.enrollPortalClicks + localCounts.eappVisits;
 if (localTotal <= 0) continue;
 
+  fallbackCounts.websiteOpens += localCounts.websiteOpens;
 fallbackCounts.parentGuideClicks += localCounts.parentGuideClicks;
 fallbackCounts.supplementalHealthGuideClicks += localCounts.supplementalHealthGuideClicks;
 fallbackCounts.riskAwarenessGuideClicks += localCounts.riskAwarenessGuideClicks;
@@ -2360,6 +2369,7 @@ fallbackCounts.taxEducationGuideClicks += localCounts.taxEducationGuideClicks;
 fallbackCounts.enrollPortalClicks += localCounts.enrollPortalClicks;
 fallbackCounts.eappVisits += localCounts.eappVisits;
 for (let i = 0; i < 12; i++) {
+  monthlyFallback[i].websiteOpens += localMonthly[i].websiteOpens;
 monthlyFallback[i].parentGuideClicks += localMonthly[i].parentGuideClicks;
 monthlyFallback[i].supplementalHealthGuideClicks += localMonthly[i].supplementalHealthGuideClicks;
 monthlyFallback[i].riskAwarenessGuideClicks += localMonthly[i].riskAwarenessGuideClicks;
@@ -2378,6 +2388,7 @@ console.warn("sbMetricSummary aggregate fallback: no aggregate relation returned
 }
 
 const counts = {
+  websiteOpens: 0,
 parentGuideClicks: 0,
 supplementalHealthGuideClicks: 0,
 riskAwarenessGuideClicks: 0,
@@ -2388,6 +2399,7 @@ threadsCreated: 0,
 };
   for (const r of eventRows) {
     const evt = normalizeMetricEventType(r.event_type) || String(r.event_type || "");
+    if (evt === "website_open") counts.websiteOpens++;
     if (evt === "parent_guide_click") counts.parentGuideClicks++;
     if (evt === "supplemental_health_guide_click") counts.supplementalHealthGuideClicks++;
     if (evt === "risk_awareness_guide_click") counts.riskAwarenessGuideClicks++;
@@ -2404,6 +2416,7 @@ counts.taxEducationGuideClicks = Math.max(counts.taxEducationGuideClicks, fallba
 counts.enrollPortalClicks = Math.max(counts.enrollPortalClicks, fallbackCounts.enrollPortalClicks);
 counts.eappVisits = Math.max(counts.eappVisits, fallbackCounts.eappVisits);
 const categoryTotalClicks =
+  (counts.websiteOpens || 0) +
   (counts.parentGuideClicks || 0) +
   (counts.supplementalHealthGuideClicks || 0) +
   (counts.riskAwarenessGuideClicks || 0) +
@@ -2414,6 +2427,7 @@ counts.totalClicks = Math.max(categoryTotalClicks, rawClickEventCount);
 // Backward-compatible aliases for existing consumers.
 counts.programLinkOpens = counts.parentGuideClicks;
 counts.enrollClicks = counts.enrollPortalClicks;
+  counts.nilwsWebsiteOpens = counts.websiteOpens;
   
   // Fetch calls answered for all windows
   let callsAnswered = 0;
@@ -2438,6 +2452,7 @@ const order = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov"
 const monthIndex = (d) => new Date(d).getMonth(); // 0..11
 const monthly = Array.from({ length: 12 }, (_, i) => ({
 label: order[i],
+  websiteOpens: 0,
 parentGuideClicks: 0,
 supplementalHealthGuideClicks: 0,
 riskAwarenessGuideClicks: 0,
@@ -2453,6 +2468,7 @@ for (const r of eventRows) {
 const mi = monthIndex(r.created_at);
 if (mi < 0 || mi > 11) continue;
 const evt = normalizeMetricEventType(r.event_type) || String(r.event_type || "");
+  if (evt === "website_open") monthly[mi].websiteOpens++;
 if (evt === "parent_guide_click") monthly[mi].parentGuideClicks++;
 if (evt === "supplemental_health_guide_click") monthly[mi].supplementalHealthGuideClicks++;
 if (evt === "risk_awareness_guide_click") monthly[mi].riskAwarenessGuideClicks++;
@@ -2463,6 +2479,7 @@ if (evt === "thread_created")
 monthly[mi].threads++;
 }
 for (let i = 0; i < 12; i++) {
+  monthly[i].websiteOpens = Math.max(monthly[i].websiteOpens, monthlyFallback[i].websiteOpens || 0);
 monthly[i].parentGuideClicks = Math.max(monthly[i].parentGuideClicks, monthlyFallback[i].parentGuideClicks || 0);
 monthly[i].supplementalHealthGuideClicks = Math.max(monthly[i].supplementalHealthGuideClicks, monthlyFallback[i].supplementalHealthGuideClicks || 0);
 monthly[i].riskAwarenessGuideClicks = Math.max(monthly[i].riskAwarenessGuideClicks, monthlyFallback[i].riskAwarenessGuideClicks || 0);
@@ -2470,6 +2487,7 @@ monthly[i].taxEducationGuideClicks = Math.max(monthly[i].taxEducationGuideClicks
 monthly[i].enrollPortalClicks = Math.max(monthly[i].enrollPortalClicks, monthlyFallback[i].enrollPortalClicks || 0);
 monthly[i].eappVisits = Math.max(monthly[i].eappVisits, monthlyFallback[i].eappVisits || 0);
 monthly[i].totalClicks =
+  (monthly[i].websiteOpens || 0) +
   (monthly[i].parentGuideClicks || 0) +
   (monthly[i].supplementalHealthGuideClicks || 0) +
   (monthly[i].riskAwarenessGuideClicks || 0) +
@@ -2543,6 +2561,7 @@ bestMonth: { label: bestMonth.label, totalClicks: bestMonth.totalClicks },
 bestMonthEver: { label: bestMonthEver.label, totalClicks: bestMonthEver.totalClicks },
 trend: {
 totalClicks: trendOf("totalClicks"),
+  websiteOpens: trendOf("websiteOpens"),
 parentGuideClicks: trendOf("parentGuideClicks"),
 supplementalHealthGuideClicks: trendOf("supplementalHealthGuideClicks"),
 riskAwarenessGuideClicks: trendOf("riskAwarenessGuideClicks"),
@@ -8820,6 +8839,7 @@ app.post("/webhook/metric", async (req, res) => {
     if (dedupeKey && !isCoachSelfClick && !isCoachActor && resolvedGuideKey && !isBotTraffic && hasExplicitRecipientIdentity) {
       const registryRow = {
         dedupe_key: dedupeKey,
+        tracking_code: dedupeKey,
         coach_id: resolvedCoachId,
         guide_key: resolvedGuideKey,
         person_key: resolvedPersonKey,
