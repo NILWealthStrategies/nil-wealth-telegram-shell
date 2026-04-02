@@ -6071,6 +6071,9 @@ let body = `--
 Clicks: ${metrics.totalClicks || 0}
   (Avg ${avg(metrics.totalClicks)}${perLabel})
 
+NILWS Website Opens: ${metrics.websiteOpens || metrics.nilwsWebsiteOpens || 0}
+  (Avg ${avg(metrics.websiteOpens || metrics.nilwsWebsiteOpens)}${perLabel})
+
 Parent Guide Clicks: ${metrics.parentGuideClicks || 0}
   (Avg ${avg(metrics.parentGuideClicks)}${perLabel})
 
