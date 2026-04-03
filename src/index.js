@@ -3370,15 +3370,15 @@ function deriveWfHealthFromLive(wfDef, liveWorkflows, executions) {
     return { status: "unknown", detail: "no matching workflow found in n8n", noData: true };
   }
 
-  // If any matched workflow is inactive → degraded
-  const allActive = matched.every((w) => w.active === true);
-  if (!allActive) {
+  // Consider the WF healthy if at least one matched workflow is active.
+  const activeMatches = matched.filter((w) => w.active === true);
+  if (activeMatches.length === 0) {
     const inactive = matched.filter((w) => !w.active).map((w) => w.name).join(", ");
-    return { status: "degraded", detail: `inactive: ${inactive}`, noData: false };
+    return { status: "degraded", detail: `no active workflow (inactive: ${inactive})`, noData: false };
   }
 
-  // Check last execution status across all matched workflows
-  const matchedIds = new Set(matched.map((w) => w.id));
+  // Check last execution status across active matched workflows only.
+  const matchedIds = new Set(activeMatches.map((w) => w.id));
   const relevantExecs = executions.filter((e) => matchedIds.has(e.workflowId));
   const latestExec = relevantExecs[0] || null; // already ordered desc by n8n API
   if (latestExec) {
@@ -3394,16 +3394,18 @@ function deriveWfHealthFromLive(wfDef, liveWorkflows, executions) {
       };
     }
     const ageMin = finished ? Math.round((Date.now() - new Date(finished).getTime()) / 60000) : null;
+    const ignoredInactive = Math.max(0, matched.length - activeMatches.length);
     return {
       status: "ok",
-      detail: `active, last exec ${latestExec.status}${ageMin != null ? ` (${ageMin}m ago)` : ""}`,
+      detail: `active (${activeMatches.length}), last exec ${latestExec.status}${ageMin != null ? ` (${ageMin}m ago)` : ""}${ignoredInactive ? `, ignored ${ignoredInactive} inactive` : ""}`,
       noData: false,
       lastExecAt: finished,
       lastExecStatus: latestExec.status,
     };
   }
 
-  return { status: "ok", detail: `active, no recent executions`, noData: false };
+  const ignoredInactive = Math.max(0, matched.length - activeMatches.length);
+  return { status: "ok", detail: `active (${activeMatches.length}), no recent executions${ignoredInactive ? `, ignored ${ignoredInactive} inactive` : ""}`, noData: false };
 }
 
 async function sbWatchdogWorkflowChecks() {
