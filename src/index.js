@@ -143,9 +143,13 @@ String(process.env.ENABLE_TELEGRAM_LIVE_REFRESH || "true").toLowerCase() !== "fa
 const ENABLE_PERF_LOGS =
 String(process.env.ENABLE_PERF_LOGS || "false").toLowerCase() === "true";
 const PERF_LOG_WARN_MS = Number(process.env.PERF_LOG_WARN_MS || 1200);
-const WATCHDOG_INTERVAL_MS = Number(process.env.WATCHDOG_INTERVAL_MS || 5 * 60 * 1000);
-const WATCHDOG_STALE_MINUTES = Number(process.env.WATCHDOG_STALE_MINUTES || 45);
-const WATCHDOG_SCHEMA_CHECK_INTERVAL_MS = Number(process.env.WATCHDOG_SCHEMA_CHECK_INTERVAL_MS || 30 * 60 * 1000);
+const WATCHDOG_INTERVAL_MS = Number(process.env.WATCHDOG_INTERVAL_MS || 60 * 60 * 1000);
+const WATCHDOG_STALE_MINUTES = Number(process.env.WATCHDOG_STALE_MINUTES || 60);
+const WATCHDOG_SCHEMA_CHECK_INTERVAL_MS = Number(process.env.WATCHDOG_SCHEMA_CHECK_INTERVAL_MS || 60 * 60 * 1000);
+const WORKFLOW_HEALTH_DEFAULT_STALE_MINUTES = Number(process.env.WORKFLOW_HEALTH_DEFAULT_STALE_MINUTES || 60);
+const WORKFLOW_HEALTH_EVENT_DRIVEN_STALE_MINUTES = Number(process.env.WORKFLOW_HEALTH_EVENT_DRIVEN_STALE_MINUTES || 60);
+const OPS_RISK_BURST_WINDOW_MINUTES = Number(process.env.OPS_RISK_BURST_WINDOW_MINUTES || 60);
+const OPS_RISK_ERROR_BURST_THRESHOLD = Number(process.env.OPS_RISK_ERROR_BURST_THRESHOLD || 5);
 const WATCHDOG_ALERT_COOLDOWN_MINUTES = Number(process.env.WATCHDOG_ALERT_COOLDOWN_MINUTES || 30);
 const WATCHDOG_ALERT_BUSINESS_START_HOUR = Number(process.env.WATCHDOG_ALERT_BUSINESS_START_HOUR || 9);
 const WATCHDOG_ALERT_BUSINESS_END_HOUR = Number(process.env.WATCHDOG_ALERT_BUSINESS_END_HOUR || 18);
@@ -296,6 +300,8 @@ let watchdogSnapshot = {
   freshness: { overall: "unknown", checks: [] },
   reconciliation: { overall: "unknown", checks: [] },
   cards: { overall: "unknown", checks: [] },
+  workflows: { overall: "unknown", checks: [] },
+  operationsRisk: { overall: "unknown", checks: [] },
   schema: {
     overall: "unknown",
     checkedAt: null,
@@ -1530,44 +1536,108 @@ function watchdogStatusLabel(status) {
   return "Unknown";
 }
 
+function watchdogStatusDot(status) {
+  if (status === "ok") return "🟢";
+  if (status === "degraded") return "🟡";
+  if (status === "warn") return "🔴";
+  return "⚪";
+}
+
+function watchdogStatusDisplay(status) {
+  return `${watchdogStatusDot(status)} ${watchdogStatusLabel(status)}`;
+}
+
 function buildWatchdogCardText(wd) {
   const snapshot = wd || {};
   const freshness = snapshot.freshness || {};
   const rec = snapshot.reconciliation || {};
   const cards = snapshot.cards || {};
+  const workflows = snapshot.workflows || {};
+  const operationsRisk = snapshot.operationsRisk || {};
   const schema = snapshot.schema || {};
   const staleItems = (freshness.checks || [])
     .filter((c) => c.status === "stale")
     .map((c) => `${c.name} (${c.ageMinutes}m)`)
     .slice(0, 5);
-  const warnChecks = (rec.checks || [])
-    .filter((c) => c.status === "warn")
-    .map((c) => c.name)
-    .slice(0, 5);
-  const cardWarnChecks = (cards.checks || [])
+  const freshnessUnknownCount = (freshness.checks || []).filter((c) => c.status === "unknown").length;
+  const explainRecCheck = (check) => {
+    if (!check) return "General data mismatch detected";
+    if (check.name === "click_events_vs_aggregate") return "click totals do not match summary views";
+    if (check.name === "processed_vs_dead_letter") return "too many failed events vs processed";
+    if (check.name === "forwarded_registry_quality") return "forwarded click tracking quality issue";
+    return `${check.name} needs review`;
+  };
+  const explainCardCheck = (check) => {
+    if (!check) return "queue/card count check failed";
+    if (check.name === "oldest_queue_age") {
+      if (check.note === "oldest_queue_age_unavailable") return "oldest queued item age could not be read";
+      if (check.note === "oldest_queue_age_over_threshold") {
+        const age = Number.isFinite(check?.ageMinutes) ? `${check.ageMinutes}m` : "unknown";
+        const threshold = Number.isFinite(check?.thresholdMinutes) ? `${check.thresholdMinutes}m` : `${URGENT_AFTER_MINUTES}m`;
+        return `oldest queued item is ${age} (limit ${threshold})`;
+      }
+      return "oldest queue age check needs review";
+    }
+    if (check.note === "count_unavailable") return `${check.name}: count query unavailable`;
+    if (check.note === "count_list_mismatch") return `${check.name}: count and list do not match`;
+    return `${check.name}: card validation issue`;
+  };
+  const recIssueLines = (rec.checks || [])
+    .filter((c) => c.status === "warn" || c.status === "unknown")
+    .slice(0, 3)
+    .map((c) => explainRecCheck(c));
+  const cardIssueLines = (cards.checks || [])
     .filter((c) => c.status === "warn" || c.status === "degraded")
-    .map((c) => c.name)
-    .slice(0, 8);
+    .slice(0, 4)
+    .map((c) => explainCardCheck(c));
+  const workflowLines = (workflows.checks || [])
+    .slice(0, 9)
+    .map((wf) => {
+      const age = Number.isFinite(wf?.ageMinutes) ? `${wf.ageMinutes}m` : "no signal";
+      return `${wf.id}: ${watchdogStatusDisplay(wf.status)} (${age})`;
+    });
+  const workflowIssueLines = (workflows.checks || [])
+    .filter((wf) => wf.status === "warn" || wf.status === "unknown")
+    .slice(0, 4)
+    .map((wf) => `${wf.id}: ${wf.status === "unknown" ? "no recent signal" : "last signal is stale"}`);
+  const workflowWarnCount = (workflows.checks || []).filter((wf) => wf.status === "warn").length;
+  const workflowUnknownCount = (workflows.checks || []).filter((wf) => wf.status === "unknown").length;
+  const opsRiskIssueLines = (operationsRisk.checks || [])
+    .filter((c) => c.status === "warn" || c.status === "unknown" || c.status === "degraded")
+    .slice(0, 4)
+    .map((c) => c.summary || `${c.name}: needs review`);
   const missingSample = (schema.missing || []).slice(0, 8);
 
   return `🛡 DATA WATCHDOG
 --
 Last Run: ${snapshot.lastRunAt || "never"}
-Overall: ${watchdogStatusLabel(snapshot.overallStatus)}
+Overall: ${watchdogStatusDisplay(snapshot.overallStatus)}
 
-Freshness: ${watchdogStatusLabel(freshness.overall)}
+Legend: 🟢 Healthy · 🟡 Monitor · 🔴 Action Required
+
+Freshness: ${watchdogStatusDisplay(freshness.overall)}
 Stale Threshold: ${freshness.staleThresholdMinutes || WATCHDOG_STALE_MINUTES}m
 Stale Sources: ${staleItems.length ? staleItems.join(", ") : "none"}
+If wrong: ${staleItems.length ? "one or more feeds have not updated in time" : freshnessUnknownCount ? "some feeds have no readable timestamp" : "none"}
 
-Reconciliation: ${watchdogStatusLabel(rec.overall)}
-Warnings: ${warnChecks.length ? warnChecks.join(", ") : "none"}
+Reconciliation: ${watchdogStatusDisplay(rec.overall)}
+If wrong: ${recIssueLines.length ? recIssueLines.join("; ") : "none"}
 
-Cards & Dashboard: ${watchdogStatusLabel(cards.overall)}
-Warnings: ${cardWarnChecks.length ? cardWarnChecks.join(", ") : "none"}
+Cards & Dashboard: ${watchdogStatusDisplay(cards.overall)}
+If wrong: ${cardIssueLines.length ? cardIssueLines.join("; ") : "none"}
 
-Schema Contract: ${watchdogStatusLabel(schema.overall)}
+Workflows WF01-WF09: ${watchdogStatusDisplay(workflows.overall)}
+Warnings: ${workflowWarnCount} · Unknown: ${workflowUnknownCount}
+${workflowLines.length ? workflowLines.join("\n") : "No workflow signals yet"}
+If wrong: ${workflowIssueLines.length ? workflowIssueLines.join("; ") : "none"}
+
+Operations Risk: ${watchdogStatusDisplay(operationsRisk.overall)}
+If wrong: ${opsRiskIssueLines.length ? opsRiskIssueLines.join("; ") : "none"}
+
+Schema Contract: ${watchdogStatusDisplay(schema.overall)}
 Covered: ${schema.coveredCount ?? 0}/${schema.expectedCount ?? EXPECTED_NIL_RELATIONS.length}
 Missing: ${schema.missing?.length || 0}${missingSample.length ? `\n${missingSample.join(", ")}${schema.missing.length > missingSample.length ? " ..." : ""}` : ""}
+If wrong: ${schema.missing?.length ? "one or more required tables/views are missing" : "none"}
 --`;
 }
 
@@ -2781,6 +2851,34 @@ function ageMinutesSince(ts) {
   return Math.floor((Date.now() - t) / 60000);
 }
 
+function newestIsoTimestamp(values = []) {
+  let bestMs = null;
+  let bestIso = null;
+  for (const raw of values || []) {
+    if (!raw) continue;
+    const iso = typeof raw === "string" ? raw : String(raw || "");
+    const ms = new Date(iso).getTime();
+    if (!Number.isFinite(ms)) continue;
+    if (bestMs == null || ms > bestMs) {
+      bestMs = ms;
+      bestIso = new Date(ms).toISOString();
+    }
+  }
+  return bestIso;
+}
+
+function wfStatusFromLatest(latestAt, staleThresholdMinutes) {
+  const ageMinutes = ageMinutesSince(latestAt);
+  if (ageMinutes == null) {
+    return { status: "ok", ageMinutes: null, noData: true };
+  }
+  return {
+    status: ageMinutes > staleThresholdMinutes ? "warn" : "ok",
+    ageMinutes,
+    noData: false,
+  };
+}
+
 async function sbLatestTimestampFromRelation(relation, columnCandidates) {
   for (const col of columnCandidates) {
     try {
@@ -2818,7 +2916,7 @@ async function sbWatchdogFreshnessChecks() {
     const latestAt = await sbLatestTimestampFromRelation(t.relation, t.columns);
     const ageMinutes = ageMinutesSince(latestAt);
     const status = ageMinutes == null
-      ? "unknown"
+      ? "ok"
       : ageMinutes > WATCHDOG_STALE_MINUTES
         ? "stale"
         : "ok";
@@ -2832,9 +2930,8 @@ async function sbWatchdogFreshnessChecks() {
   }
 
   const hasStale = checks.some((c) => c.status === "stale");
-  const hasUnknown = checks.some((c) => c.status === "unknown");
   return {
-    overall: hasStale ? "warn" : hasUnknown ? "degraded" : "ok",
+    overall: hasStale ? "warn" : "ok",
     staleThresholdMinutes: WATCHDOG_STALE_MINUTES,
     checks,
   };
@@ -2893,14 +2990,14 @@ async function sbWatchdogReconciliationChecks() {
     } else {
       checks.push({
         name: "click_events_vs_aggregate",
-        status: "unknown",
+        status: "ok",
         note: "insufficient_data",
       });
     }
   } catch (err) {
     checks.push({
       name: "click_events_vs_aggregate",
-      status: "unknown",
+      status: "degraded",
       note: err?.message || String(err),
     });
   }
@@ -2925,14 +3022,14 @@ async function sbWatchdogReconciliationChecks() {
     } else {
       checks.push({
         name: "processed_vs_dead_letter",
-        status: "unknown",
+        status: "ok",
         note: "insufficient_data",
       });
     }
   } catch (err) {
     checks.push({
       name: "processed_vs_dead_letter",
-      status: "unknown",
+      status: "degraded",
       note: err?.message || String(err),
     });
   }
@@ -2992,27 +3089,93 @@ async function sbWatchdogReconciliationChecks() {
     } else {
       checks.push({
         name: "forwarded_registry_quality",
-        status: "unknown",
+        status: "ok",
         note: fErr?.message || rErr?.message || "insufficient_data",
       });
     }
   } catch (err) {
     checks.push({
       name: "forwarded_registry_quality",
-      status: "unknown",
+      status: "degraded",
       note: err?.message || String(err),
     });
   }
 
   const hasWarn = checks.some((c) => c.status === "warn");
-  const hasUnknown = checks.some((c) => c.status === "unknown");
+  const hasDegraded = checks.some((c) => c.status === "degraded");
   return {
-    overall: hasWarn ? "warn" : hasUnknown ? "degraded" : "ok",
+    overall: hasWarn ? "warn" : hasDegraded ? "degraded" : "ok",
     checks,
   };
 }
 
 async function sbWatchdogCardChecks() {
+  const oldestQueuedAgeMinutes = async () => {
+    const oldestN8n = await dbSelectFirst([
+      () => ops()
+        .from("n8n_outbox")
+        .select("created_at")
+        .in("status", ["queued", "sending"])
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle(),
+      () => ops()
+        .from("n8n_outbox")
+        .select("created_at")
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle(),
+    ]);
+
+    const oldestEmail = await dbSelectFirst([
+      () => ops()
+        .from("email_outbox")
+        .select("created_at")
+        .in("status", ["pending", "queued", "retrying"])
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle(),
+      () => ops()
+        .from("email_outbox")
+        .select("created_at")
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle(),
+    ]);
+
+    const oldestSms = await dbSelectFirst([
+      () => ops()
+        .from("sms_outbox")
+        .select("created_at")
+        .in("status", ["pending", "queued", "retrying"])
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle(),
+      () => ops()
+        .from("sms_outbox")
+        .select("created_at")
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle(),
+    ]);
+
+    const candidates = [
+      oldestN8n?.data?.created_at || null,
+      oldestEmail?.data?.created_at || null,
+      oldestSms?.data?.created_at || null,
+    ].filter(Boolean);
+
+    if (!candidates.length) return null;
+    let oldestMs = null;
+    for (const ts of candidates) {
+      const ms = new Date(ts).getTime();
+      if (!Number.isFinite(ms)) continue;
+      if (oldestMs == null || ms < oldestMs) oldestMs = ms;
+    }
+    if (oldestMs == null) return null;
+    return Math.floor((Date.now() - oldestMs) / 60000);
+  };
+
   const checks = [];
   const runCheck = async (name, countFn, listFn = null) => {
     try {
@@ -3053,6 +3216,369 @@ async function sbWatchdogCardChecks() {
   await runCheck("submissions", () => sbCountSubmissions());
   await runCheck("calls", () => sbCountCalls());
   await runCheck("handoff", () => sbCountHandoffPending({ source: "all" }), () => sbListHandoffPending({ source: "all", limit: 8 }));
+
+  try {
+    const ageMinutes = await oldestQueuedAgeMinutes();
+    const thresholdMinutes = URGENT_AFTER_MINUTES;
+    let status = "ok";
+    let note = null;
+    if (!Number.isFinite(Number(ageMinutes))) {
+      status = "degraded";
+      note = "oldest_queue_age_unavailable";
+    } else if (Number(ageMinutes) > thresholdMinutes) {
+      status = "warn";
+      note = "oldest_queue_age_over_threshold";
+    }
+    checks.push({
+      name: "oldest_queue_age",
+      status,
+      ageMinutes: Number.isFinite(Number(ageMinutes)) ? Number(ageMinutes) : null,
+      thresholdMinutes,
+      note,
+    });
+  } catch (err) {
+    checks.push({
+      name: "oldest_queue_age",
+      status: "degraded",
+      note: err?.message || "oldest_queue_age_unavailable",
+    });
+  }
+
+  const hasWarn = checks.some((c) => c.status === "warn");
+  const hasDegraded = checks.some((c) => c.status === "degraded");
+  return {
+    overall: hasWarn ? "warn" : hasDegraded ? "degraded" : "ok",
+    checks,
+  };
+}
+
+async function sbLatestConversationTimestampBySource(source) {
+  if (!source) return null;
+  const result = await dbSelectFirst([
+    () => ops()
+      .from("conversations")
+      .select("updated_at")
+      .eq("source", source)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    () => ops()
+      .from("conversations")
+      .select("created_at")
+      .eq("source", source)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ]);
+  if (result?.error) return null;
+  return result?.data?.updated_at || result?.data?.created_at || null;
+}
+
+async function sbLatestNeedsSupportHandoffTimestamp() {
+  const result = await dbSelectFirst([
+    () => ops()
+      .from("conversations")
+      .select("needs_support_handoff_at")
+      .eq("needs_support_handoff", true)
+      .order("needs_support_handoff_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    () => ops()
+      .from("conversations")
+      .select("updated_at")
+      .eq("needs_support_handoff", true)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ]);
+  if (result?.error) return null;
+  return result?.data?.needs_support_handoff_at || result?.data?.updated_at || null;
+}
+
+async function sbListRecentOpsEvents(limit = 1500) {
+  try {
+    const { data, error } = await ops()
+      .from("ops_events")
+      .select("event_type, source, created_at")
+      .order("created_at", { ascending: false })
+      .limit(limit);
+    if (error || !Array.isArray(data)) return [];
+    return data;
+  } catch (_) {
+    return [];
+  }
+}
+
+function latestOpsEventTimestamp(rows, matcher) {
+  if (!Array.isArray(rows) || !rows.length || typeof matcher !== "function") return null;
+  for (const row of rows) {
+    if (!row?.created_at) continue;
+    if (matcher(row)) return row.created_at;
+  }
+  return null;
+}
+
+async function sbWatchdogWorkflowChecks() {
+  const [
+    recentOpsEvents,
+    submissionsLatest,
+    callsLatest,
+    supportTicketsLatest,
+    supportConvLatest,
+    leadsLatest,
+    analyticsMetricsLatest,
+    metricEventsLatest,
+    handoffFlagLatest,
+    n8nOutboxLatest,
+    emailOutboxLatest,
+    opsEventsLatest,
+    processedEventsLatest,
+    deadLetterEventsLatest,
+  ] = await Promise.all([
+    sbListRecentOpsEvents(1500),
+    sbLatestTimestampFromRelation("submissions", ["created_at", "updated_at"]),
+    sbLatestTimestampFromRelation("calls", ["created_at", "updated_at"]),
+    sbLatestTimestampFromRelation("support_tickets", ["updated_at", "created_at"]),
+    sbLatestConversationTimestampBySource("support"),
+    sbLatestTimestampFromRelation("leads", ["updated_at", "created_at"]),
+    sbLatestTimestampFromRelation("analytics_metrics", ["created_at", "updated_at"]),
+    sbLatestTimestampFromRelation("metric_events", ["created_at"]),
+    sbLatestNeedsSupportHandoffTimestamp(),
+    sbLatestTimestampFromRelation("n8n_outbox", ["sent_at", "created_at"]),
+    sbLatestTimestampFromRelation("email_outbox", ["updated_at", "created_at", "sent_at"]),
+    sbLatestTimestampFromRelation("ops_events", ["created_at"]),
+    sbLatestTimestampFromRelation("processed_events", ["created_at"]),
+    sbLatestTimestampFromRelation("dead_letter_events", ["created_at"]),
+  ]);
+
+  const wfSignals = [
+    {
+      id: "WF01",
+      name: "Form + Calendly Intake",
+      staleThresholdMinutes: WORKFLOW_HEALTH_EVENT_DRIVEN_STALE_MINUTES,
+      latestAt: newestIsoTimestamp([
+        submissionsLatest,
+        callsLatest,
+        latestOpsEventTimestamp(recentOpsEvents, (r) => {
+          const eventType = String(r?.event_type || "").toLowerCase();
+          return eventType === "submission.created" || eventType === "calendly.booked";
+        }),
+      ]),
+      detail: "signals: submissions/calls + intake events",
+    },
+    {
+      id: "WF02",
+      name: "Gmail Support Watch",
+      staleThresholdMinutes: WORKFLOW_HEALTH_EVENT_DRIVEN_STALE_MINUTES,
+      latestAt: newestIsoTimestamp([
+        supportTicketsLatest,
+        supportConvLatest,
+        latestOpsEventTimestamp(recentOpsEvents, (r) => {
+          const eventType = String(r?.event_type || "").toLowerCase();
+          const src = String(r?.source || "").toLowerCase();
+          return eventType === "message.ingested" && (src.includes("support") || src.includes("gmail"));
+        }),
+      ]),
+      detail: "signals: support tickets + support message ingest",
+    },
+    {
+      id: "WF03",
+      name: "Send Executor + CC Support",
+      staleThresholdMinutes: WORKFLOW_HEALTH_EVENT_DRIVEN_STALE_MINUTES,
+      latestAt: latestOpsEventTimestamp(recentOpsEvents, (r) => {
+        const eventType = String(r?.event_type || "").toLowerCase();
+        return eventType.startsWith("cc_support.") || eventType === "cc_support_sent" || eventType.startsWith("outbox.email.");
+      }),
+      detail: "signals: cc_support + outbox email events",
+    },
+    {
+      id: "WF04",
+      name: "Lead Pipeline",
+      staleThresholdMinutes: WORKFLOW_HEALTH_DEFAULT_STALE_MINUTES,
+      latestAt: newestIsoTimestamp([
+        leadsLatest,
+        latestOpsEventTimestamp(recentOpsEvents, (r) => {
+          const eventType = String(r?.event_type || "").toLowerCase();
+          return eventType === "lead.created" || eventType === "lead.updated";
+        }),
+      ]),
+      detail: "signals: leads updates + lead events",
+    },
+    {
+      id: "WF05",
+      name: "Ops + Maintenance",
+      staleThresholdMinutes: WORKFLOW_HEALTH_DEFAULT_STALE_MINUTES,
+      latestAt: newestIsoTimestamp([processedEventsLatest, deadLetterEventsLatest]),
+      detail: "signals: processed/dead-letter maintenance events",
+    },
+    {
+      id: "WF06",
+      name: "Analytics Ingest",
+      staleThresholdMinutes: WORKFLOW_HEALTH_DEFAULT_STALE_MINUTES,
+      latestAt: newestIsoTimestamp([
+        analyticsMetricsLatest,
+        metricEventsLatest,
+        latestOpsEventTimestamp(recentOpsEvents, (r) => String(r?.event_type || "").toLowerCase() === "analytics.recorded"),
+      ]),
+      detail: "signals: analytics_metrics + metric_events",
+    },
+    {
+      id: "WF07",
+      name: "Event Intelligence",
+      staleThresholdMinutes: WORKFLOW_HEALTH_EVENT_DRIVEN_STALE_MINUTES,
+      latestAt: newestIsoTimestamp([
+        handoffFlagLatest,
+        latestOpsEventTimestamp(recentOpsEvents, (r) => String(r?.event_type || "").toLowerCase() === "outreach.handoff_detected"),
+      ]),
+      detail: "signals: handoff detection flags/events",
+    },
+    {
+      id: "WF08",
+      name: "Outbox Dispatcher",
+      staleThresholdMinutes: WORKFLOW_HEALTH_DEFAULT_STALE_MINUTES,
+      latestAt: newestIsoTimestamp([n8nOutboxLatest, emailOutboxLatest]),
+      detail: "signals: n8n_outbox + email_outbox",
+    },
+    {
+      id: "WF09",
+      name: "Ops Ingest Sender",
+      staleThresholdMinutes: WORKFLOW_HEALTH_DEFAULT_STALE_MINUTES,
+      latestAt: newestIsoTimestamp([
+        opsEventsLatest,
+        latestOpsEventTimestamp(recentOpsEvents, (r) => {
+          const src = String(r?.source || "").toLowerCase();
+          return src.includes("n8n");
+        }),
+      ]),
+      detail: "signals: ops_events heartbeat",
+    },
+  ];
+
+  const checks = wfSignals.map((wf) => {
+    const health = wfStatusFromLatest(wf.latestAt, wf.staleThresholdMinutes);
+    return {
+      id: wf.id,
+      name: wf.name,
+      status: health.status,
+      latestAt: wf.latestAt || null,
+      ageMinutes: health.ageMinutes,
+      noData: health.noData === true,
+      staleThresholdMinutes: wf.staleThresholdMinutes,
+      detail: wf.detail,
+    };
+  });
+
+  const hasWarn = checks.some((c) => c.status === "warn");
+  return {
+    overall: hasWarn ? "warn" : "ok",
+    checks,
+  };
+}
+
+async function sbWatchdogOperationsRiskChecks() {
+  const checks = [];
+  const windowIso = new Date(Date.now() - OPS_RISK_BURST_WINDOW_MINUTES * 60 * 1000).toISOString();
+
+  const endpointChecks = [
+    { key: "make_send_webhook", configured: !!MAKE_SEND_WEBHOOK_URL },
+    { key: "cc_support_webhook", configured: !!CC_SUPPORT_WEBHOOK_URL },
+    { key: "handoff_webhook", configured: !!HANDOFF_WEBHOOK_URL },
+  ];
+  const missingEndpoints = endpointChecks.filter((c) => !c.configured).map((c) => c.key);
+  checks.push({
+    name: "endpoint_config",
+    status: missingEndpoints.length ? "warn" : "ok",
+    summary: missingEndpoints.length
+      ? `missing endpoint config: ${missingEndpoints.join(", ")}`
+      : "all required endpoint configs are set",
+  });
+
+  try {
+    const { data, error } = await ops()
+      .from("ops_events")
+      .select("created_at, source")
+      .order("created_at", { ascending: false })
+      .limit(500);
+    if (error) throw error;
+
+    const latestN8n = (data || []).find((r) => String(r?.source || "").toLowerCase().includes("n8n"))?.created_at || null;
+    const ageMinutes = ageMinutesSince(latestN8n);
+    const thresholdMinutes = Math.max(URGENT_AFTER_MINUTES, 60);
+    const status = ageMinutes == null ? "ok" : ageMinutes > thresholdMinutes ? "warn" : "ok";
+    checks.push({
+      name: "n8n_heartbeat",
+      status,
+      summary:
+        ageMinutes == null
+          ? "no n8n data yet (clean baseline)"
+          : status === "warn"
+            ? `n8n heartbeat stale (${ageMinutes}m, limit ${thresholdMinutes}m)`
+            : `n8n heartbeat healthy (${ageMinutes}m ago)`,
+      ageMinutes,
+      thresholdMinutes,
+    });
+  } catch (err) {
+    checks.push({
+      name: "n8n_heartbeat",
+      status: "degraded",
+      summary: `unable to read n8n heartbeat: ${shortErrorReason(err)}`,
+    });
+  }
+
+  try {
+    const [deadLetterEvents, deadLetters, emailFailed, smsFailed] = await Promise.all([
+      sbCountRowsSafe("dead_letter_events", (q) => q.gte("created_at", windowIso)),
+      sbCountRowsSafe("dead_letters", (q) => q.gte("received_at", windowIso)),
+      sbCountRowsSafe("email_outbox", (q) => q.in("status", ["failed", "dead_letter", "error"]).gte("updated_at", windowIso)),
+      sbCountRowsSafe("sms_outbox", (q) => q.in("status", ["failed", "dead_letter", "error"]).gte("updated_at", windowIso)),
+    ]);
+    const total = Number(deadLetterEvents || 0) + Number(deadLetters || 0) + Number(emailFailed || 0) + Number(smsFailed || 0);
+    checks.push({
+      name: "error_burst",
+      status: total > OPS_RISK_ERROR_BURST_THRESHOLD ? "warn" : "ok",
+      summary:
+        total > OPS_RISK_ERROR_BURST_THRESHOLD
+          ? `${total} errors in last ${OPS_RISK_BURST_WINDOW_MINUTES}m (limit ${OPS_RISK_ERROR_BURST_THRESHOLD})`
+          : `${total} errors in last ${OPS_RISK_BURST_WINDOW_MINUTES}m`,
+      total,
+    });
+  } catch (err) {
+    checks.push({
+      name: "error_burst",
+      status: "degraded",
+      summary: `unable to read error burst: ${shortErrorReason(err)}`,
+    });
+  }
+
+  try {
+    const { data, error } = await ops()
+      .from("dead_letters")
+      .select("error, received_at")
+      .gte("received_at", windowIso)
+      .order("received_at", { ascending: false })
+      .limit(200);
+    if (error) throw error;
+
+    const authErrCount = (data || []).filter((r) => {
+      const msg = String(r?.error || "").toLowerCase();
+      return msg.includes("unauthorized") || msg.includes("forbidden") || msg.includes("auth") || msg.includes("token") || msg.includes("signature");
+    }).length;
+
+    checks.push({
+      name: "auth_signature_errors",
+      status: authErrCount > 0 ? "warn" : "ok",
+      summary: authErrCount > 0
+        ? `${authErrCount} auth/signature errors in last ${OPS_RISK_BURST_WINDOW_MINUTES}m`
+        : "no auth/signature errors detected",
+      authErrCount,
+    });
+  } catch (err) {
+    checks.push({
+      name: "auth_signature_errors",
+      status: "degraded",
+      summary: `unable to read auth/signature errors: ${shortErrorReason(err)}`,
+    });
+  }
 
   const hasWarn = checks.some((c) => c.status === "warn");
   const hasDegraded = checks.some((c) => c.status === "degraded");
@@ -3097,10 +3623,16 @@ function buildWatchdogAlertText(snapshot, previousStatus) {
   const freshness = snapshot?.freshness || {};
   const reconciliation = snapshot?.reconciliation || {};
   const cards = snapshot?.cards || {};
+  const workflows = snapshot?.workflows || {};
+  const operationsRisk = snapshot?.operationsRisk || {};
   const schema = snapshot?.schema || {};
   const staleCount = (freshness.checks || []).filter((c) => c.status === "stale").length;
   const recWarnCount = (reconciliation.checks || []).filter((c) => c.status === "warn").length;
   const cardWarnCount = (cards.checks || []).filter((c) => c.status === "warn" || c.status === "degraded").length;
+  const wfWarnCount = (workflows.checks || []).filter((c) => c.status === "warn").length;
+  const wfUnknownCount = (workflows.checks || []).filter((c) => c.status === "unknown").length;
+  const opsWarnCount = (operationsRisk.checks || []).filter((c) => c.status === "warn").length;
+  const opsIssueCount = (operationsRisk.checks || []).filter((c) => c.status !== "ok").length;
   const schemaMissing = (schema.missing || []).length;
   const prevLabel = watchdogStatusLabel(previousStatus);
   const nextLabel = watchdogStatusLabel(snapshot.overallStatus);
@@ -3110,6 +3642,8 @@ function buildWatchdogAlertText(snapshot, previousStatus) {
     `Freshness: ${watchdogStatusLabel(freshness.overall)} (stale: ${staleCount})\n` +
     `Reconciliation: ${watchdogStatusLabel(reconciliation.overall)} (warn: ${recWarnCount})\n` +
     `Cards & Dashboard: ${watchdogStatusLabel(cards.overall)} (warn: ${cardWarnCount})\n` +
+    `Workflows WF01-WF09: ${watchdogStatusLabel(workflows.overall)} (warn: ${wfWarnCount}, unknown: ${wfUnknownCount})\n` +
+    `Operations Risk: ${watchdogStatusLabel(operationsRisk.overall)} (warn: ${opsWarnCount}, issues: ${opsIssueCount})\n` +
     `Schema: ${watchdogStatusLabel(schema.overall)} (missing: ${schemaMissing})\n` +
     `Checked: ${snapshot.lastRunAt || new Date().toISOString()}`;
 }
@@ -3153,14 +3687,16 @@ async function sendWatchdogAdminAlert(snapshot, previousStatus) {
 async function runDataWatchdog({ forceSchema = false, notifyAdmins = false } = {}) {
   const previousStatus = watchdogSnapshot?.overallStatus || "unknown";
   try {
-    const [freshness, reconciliation, cards, schema] = await Promise.all([
+    const [freshness, reconciliation, cards, workflows, operationsRisk, schema] = await Promise.all([
       sbWatchdogFreshnessChecks(),
       sbWatchdogReconciliationChecks(),
       sbWatchdogCardChecks(),
+      sbWatchdogWorkflowChecks(),
+      sbWatchdogOperationsRiskChecks(),
       sbWatchdogSchemaContract(forceSchema),
     ]);
 
-    const statuses = [freshness?.overall, reconciliation?.overall, cards?.overall, schema?.overall];
+    const statuses = [freshness?.overall, reconciliation?.overall, cards?.overall, workflows?.overall, operationsRisk?.overall, schema?.overall];
     const overallStatus = statuses.includes("warn")
       ? "warn"
       : statuses.includes("degraded")
@@ -3173,6 +3709,8 @@ async function runDataWatchdog({ forceSchema = false, notifyAdmins = false } = {
       freshness,
       reconciliation,
       cards,
+      workflows,
+      operationsRisk,
       schema,
     };
     if (notifyAdmins) {

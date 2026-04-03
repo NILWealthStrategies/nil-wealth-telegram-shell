@@ -78,7 +78,7 @@ function deriveDeliveryHealth(delivery = {}) {
   const failureSignals = deadEvent + deadQueue + emailFailed + smsFailed;
 
   if (processed === 0 && failureSignals === 0) {
-    return { emoji: "🟡", label: "Monitor", note: "No recent processing activity yet" };
+    return { emoji: "🟢", label: "Healthy", note: "No data yet (clean baseline)" };
   }
 
   const deadRate = processed > 0 ? (deadEvent + deadQueue) / processed : 1;
