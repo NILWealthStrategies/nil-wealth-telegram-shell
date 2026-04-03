@@ -148,6 +148,8 @@ const WATCHDOG_STALE_MINUTES = Number(process.env.WATCHDOG_STALE_MINUTES || 60);
 const WATCHDOG_SCHEMA_CHECK_INTERVAL_MS = Number(process.env.WATCHDOG_SCHEMA_CHECK_INTERVAL_MS || 60 * 60 * 1000);
 const WORKFLOW_HEALTH_DEFAULT_STALE_MINUTES = Number(process.env.WORKFLOW_HEALTH_DEFAULT_STALE_MINUTES || 60);
 const WORKFLOW_HEALTH_EVENT_DRIVEN_STALE_MINUTES = Number(process.env.WORKFLOW_HEALTH_EVENT_DRIVEN_STALE_MINUTES || 60);
+const N8N_BASE_URL = String(process.env.N8N_BASE_URL || "https://nilwealthstrategies.app.n8n.cloud").replace(/\/+$/, "");
+const N8N_API_KEY = String(process.env.N8N_API_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI0NzViYzBjMi02MmI1LTQzYTctYTI5Yi03Y2ZkYTBmOGY2MTAiLCJpc3MiOiJuOG4iLCJhdWQiOiJwdWJsaWMtYXBpIiwianRpIjoiNmFiODAzNzMtNTNiYy00ZTY0LTlkNmMtOTIyYTk4NDU4OTM3IiwiaWF0IjoxNzc1MjQwNzQzLCJleHAiOjE3Nzc3ODA4MDB9.3ZTKYaymnFaLCwixP0LQpfJr8xkJHd2n6Yr8-s3zsPI").trim();
 const OPS_RISK_BURST_WINDOW_MINUTES = Number(process.env.OPS_RISK_BURST_WINDOW_MINUTES || 60);
 const OPS_RISK_ERROR_BURST_THRESHOLD = Number(process.env.OPS_RISK_ERROR_BURST_THRESHOLD || 5);
 const WATCHDOG_ALERT_COOLDOWN_MINUTES = Number(process.env.WATCHDOG_ALERT_COOLDOWN_MINUTES || 30);
@@ -163,6 +165,7 @@ const DASHBOARD_CACHE_TTL_MS = Number(process.env.DASHBOARD_CACHE_TTL_MS || 3000
 const DASHBOARD_SPEED_MODE = String(process.env.DASHBOARD_SPEED_MODE || "true").toLowerCase() !== "false";
 const DASHBOARD_METRICS_CACHE_TTL_MS = Number(process.env.DASHBOARD_METRICS_CACHE_TTL_MS || 10000);
 const DASHBOARD_OPS_CACHE_TTL_MS = Number(process.env.DASHBOARD_OPS_CACHE_TTL_MS || 20000);
+const APP_BOOT_TS_MS = Date.now();
 const CLICK_TRACKER_BASE_URL = String(process.env.CLICK_TRACKER_BASE_URL || "").trim().replace(/\/+$/g, "");
 const FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY =
 String(process.env.FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY || "false").toLowerCase() === "true";
@@ -1613,8 +1616,6 @@ function buildWatchdogCardText(wd) {
 Last Run: ${snapshot.lastRunAt || "never"}
 Overall: ${watchdogStatusDisplay(snapshot.overallStatus)}
 
-Legend: 🟢 Healthy · 🟡 Monitor · 🔴 Action Required
-
 Freshness: ${watchdogStatusDisplay(freshness.overall)}
 Stale Threshold: ${freshness.staleThresholdMinutes || WATCHDOG_STALE_MINUTES}m
 Stale Sources: ${staleItems.length ? staleItems.join(", ") : "none"}
@@ -2872,6 +2873,10 @@ function wfStatusFromLatest(latestAt, staleThresholdMinutes) {
   if (ageMinutes == null) {
     return { status: "ok", ageMinutes: null, noData: true };
   }
+  const latestMs = new Date(latestAt).getTime();
+  if (Number.isFinite(latestMs) && latestMs < APP_BOOT_TS_MS) {
+    return { status: "ok", ageMinutes: null, noData: true };
+  }
   return {
     status: ageMinutes > staleThresholdMinutes ? "warn" : "ok",
     ageMinutes,
@@ -3318,160 +3323,133 @@ function latestOpsEventTimestamp(rows, matcher) {
   return null;
 }
 
-async function sbWatchdogWorkflowChecks() {
-  const [
-    recentOpsEvents,
-    submissionsLatest,
-    callsLatest,
-    supportTicketsLatest,
-    supportConvLatest,
-    leadsLatest,
-    analyticsMetricsLatest,
-    metricEventsLatest,
-    handoffFlagLatest,
-    n8nOutboxLatest,
-    emailOutboxLatest,
-    opsEventsLatest,
-    processedEventsLatest,
-    deadLetterEventsLatest,
-  ] = await Promise.all([
-    sbListRecentOpsEvents(1500),
-    sbLatestTimestampFromRelation("submissions", ["created_at", "updated_at"]),
-    sbLatestTimestampFromRelation("calls", ["created_at", "updated_at"]),
-    sbLatestTimestampFromRelation("support_tickets", ["updated_at", "created_at"]),
-    sbLatestConversationTimestampBySource("support"),
-    sbLatestTimestampFromRelation("leads", ["updated_at", "created_at"]),
-    sbLatestTimestampFromRelation("analytics_metrics", ["created_at", "updated_at"]),
-    sbLatestTimestampFromRelation("metric_events", ["created_at"]),
-    sbLatestNeedsSupportHandoffTimestamp(),
-    sbLatestTimestampFromRelation("n8n_outbox", ["sent_at", "created_at"]),
-    sbLatestTimestampFromRelation("email_outbox", ["updated_at", "created_at", "sent_at"]),
-    sbLatestTimestampFromRelation("ops_events", ["created_at"]),
-    sbLatestTimestampFromRelation("processed_events", ["created_at"]),
-    sbLatestTimestampFromRelation("dead_letter_events", ["created_at"]),
-  ]);
+// --- Live n8n API helpers ---
+async function fetchN8nAPI(path, timeoutMs = 9000) {
+  const url = `${N8N_BASE_URL}/api/v1${path}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      headers: { "X-N8N-API-KEY": N8N_API_KEY, Accept: "application/json" },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (err) {
+    clearTimeout(timer);
+    throw err;
+  }
+}
 
-  const wfSignals = [
-    {
-      id: "WF01",
-      name: "Form + Calendly Intake",
-      staleThresholdMinutes: WORKFLOW_HEALTH_EVENT_DRIVEN_STALE_MINUTES,
-      latestAt: newestIsoTimestamp([
-        submissionsLatest,
-        callsLatest,
-        latestOpsEventTimestamp(recentOpsEvents, (r) => {
-          const eventType = String(r?.event_type || "").toLowerCase();
-          return eventType === "submission.created" || eventType === "calendly.booked";
-        }),
-      ]),
-      detail: "signals: submissions/calls + intake events",
-    },
-    {
-      id: "WF02",
-      name: "Gmail Support Watch",
-      staleThresholdMinutes: WORKFLOW_HEALTH_EVENT_DRIVEN_STALE_MINUTES,
-      latestAt: newestIsoTimestamp([
-        supportTicketsLatest,
-        supportConvLatest,
-        latestOpsEventTimestamp(recentOpsEvents, (r) => {
-          const eventType = String(r?.event_type || "").toLowerCase();
-          const src = String(r?.source || "").toLowerCase();
-          return eventType === "message.ingested" && (src.includes("support") || src.includes("gmail"));
-        }),
-      ]),
-      detail: "signals: support tickets + support message ingest",
-    },
-    {
-      id: "WF03",
-      name: "Send Executor + CC Support",
-      staleThresholdMinutes: WORKFLOW_HEALTH_EVENT_DRIVEN_STALE_MINUTES,
-      latestAt: latestOpsEventTimestamp(recentOpsEvents, (r) => {
-        const eventType = String(r?.event_type || "").toLowerCase();
-        return eventType.startsWith("cc_support.") || eventType === "cc_support_sent" || eventType.startsWith("outbox.email.");
-      }),
-      detail: "signals: cc_support + outbox email events",
-    },
-    {
-      id: "WF04",
-      name: "Lead Pipeline",
-      staleThresholdMinutes: WORKFLOW_HEALTH_DEFAULT_STALE_MINUTES,
-      latestAt: newestIsoTimestamp([
-        leadsLatest,
-        latestOpsEventTimestamp(recentOpsEvents, (r) => {
-          const eventType = String(r?.event_type || "").toLowerCase();
-          return eventType === "lead.created" || eventType === "lead.updated";
-        }),
-      ]),
-      detail: "signals: leads updates + lead events",
-    },
-    {
-      id: "WF05",
-      name: "Ops + Maintenance",
-      staleThresholdMinutes: WORKFLOW_HEALTH_DEFAULT_STALE_MINUTES,
-      latestAt: newestIsoTimestamp([processedEventsLatest, deadLetterEventsLatest]),
-      detail: "signals: processed/dead-letter maintenance events",
-    },
-    {
-      id: "WF06",
-      name: "Analytics Ingest",
-      staleThresholdMinutes: WORKFLOW_HEALTH_DEFAULT_STALE_MINUTES,
-      latestAt: newestIsoTimestamp([
-        analyticsMetricsLatest,
-        metricEventsLatest,
-        latestOpsEventTimestamp(recentOpsEvents, (r) => String(r?.event_type || "").toLowerCase() === "analytics.recorded"),
-      ]),
-      detail: "signals: analytics_metrics + metric_events",
-    },
-    {
-      id: "WF07",
-      name: "Event Intelligence",
-      staleThresholdMinutes: WORKFLOW_HEALTH_EVENT_DRIVEN_STALE_MINUTES,
-      latestAt: newestIsoTimestamp([
-        handoffFlagLatest,
-        latestOpsEventTimestamp(recentOpsEvents, (r) => String(r?.event_type || "").toLowerCase() === "outreach.handoff_detected"),
-      ]),
-      detail: "signals: handoff detection flags/events",
-    },
-    {
-      id: "WF08",
-      name: "Outbox Dispatcher",
-      staleThresholdMinutes: WORKFLOW_HEALTH_DEFAULT_STALE_MINUTES,
-      latestAt: newestIsoTimestamp([n8nOutboxLatest, emailOutboxLatest]),
-      detail: "signals: n8n_outbox + email_outbox",
-    },
-    {
-      id: "WF09",
-      name: "Ops Ingest Sender",
-      staleThresholdMinutes: WORKFLOW_HEALTH_DEFAULT_STALE_MINUTES,
-      latestAt: newestIsoTimestamp([
-        opsEventsLatest,
-        latestOpsEventTimestamp(recentOpsEvents, (r) => {
-          const src = String(r?.source || "").toLowerCase();
-          return src.includes("n8n");
-        }),
-      ]),
-      detail: "signals: ops_events heartbeat",
-    },
+// Fetch all workflows + recent executions from live n8n, with graceful degradation.
+async function fetchN8nLiveData() {
+  try {
+    const [wfResp, execResp] = await Promise.all([
+      fetchN8nAPI("/workflows?limit=250"),
+      fetchN8nAPI("/executions?limit=100&includeData=false"),
+    ]);
+    const workflows = wfResp?.data || wfResp?.workflows || [];
+    const executions = execResp?.data || execResp?.results || [];
+    return { workflows, executions, error: null };
+  } catch (err) {
+    return { workflows: [], executions: [], error: shortErrorReason(err) };
+  }
+}
+
+// Match a set of keyword patterns against an n8n workflow name (any match = hit).
+function n8nWorkflowMatch(wfName, keywords) {
+  const n = wfName.toLowerCase();
+  return keywords.some((k) => n.includes(k));
+}
+
+// For a WF definition, find all matching live workflows and derive health.
+function deriveWfHealthFromLive(wfDef, liveWorkflows, executions) {
+  const matched = liveWorkflows.filter((w) => n8nWorkflowMatch(String(w.name || ""), wfDef.keywords));
+  if (matched.length === 0) {
+    return { status: "unknown", detail: "no matching workflow found in n8n", noData: true };
+  }
+
+  // If any matched workflow is inactive → degraded
+  const allActive = matched.every((w) => w.active === true);
+  if (!allActive) {
+    const inactive = matched.filter((w) => !w.active).map((w) => w.name).join(", ");
+    return { status: "degraded", detail: `inactive: ${inactive}`, noData: false };
+  }
+
+  // Check last execution status across all matched workflows
+  const matchedIds = new Set(matched.map((w) => w.id));
+  const relevantExecs = executions.filter((e) => matchedIds.has(e.workflowId));
+  const latestExec = relevantExecs[0] || null; // already ordered desc by n8n API
+  if (latestExec) {
+    const finished = latestExec.stoppedAt || latestExec.finishedAt || latestExec.startedAt || null;
+    if (latestExec.status === "error" || latestExec.status === "crashed") {
+      const ageMin = finished ? Math.round((Date.now() - new Date(finished).getTime()) / 60000) : null;
+      return {
+        status: "warn",
+        detail: `last exec ${latestExec.status}${ageMin != null ? ` (${ageMin}m ago)` : ""}`,
+        noData: false,
+        lastExecAt: finished,
+        lastExecStatus: latestExec.status,
+      };
+    }
+    const ageMin = finished ? Math.round((Date.now() - new Date(finished).getTime()) / 60000) : null;
+    return {
+      status: "ok",
+      detail: `active, last exec ${latestExec.status}${ageMin != null ? ` (${ageMin}m ago)` : ""}`,
+      noData: false,
+      lastExecAt: finished,
+      lastExecStatus: latestExec.status,
+    };
+  }
+
+  return { status: "ok", detail: `active, no recent executions`, noData: false };
+}
+
+async function sbWatchdogWorkflowChecks() {
+  const { workflows: liveWorkflows, executions, error: apiError } = await fetchN8nLiveData();
+
+  // WF01–WF09 definitions with keyword sets matching real n8n workflow names
+  const wfDefs = [
+    { id: "WF01", name: "Form + Calendly Intake",    keywords: ["instant submission", "intake", "form", "calendly"] },
+    { id: "WF02", name: "Gmail Support Watch",        keywords: ["support handler", "gmail support", "support watch", "gmail"] },
+    { id: "WF03", name: "Send Executor + CC Support", keywords: ["cc support", "send executor"] },
+    { id: "WF04", name: "Lead Pipeline",              keywords: ["lead generation", "lead pipeline", "lead gen"] },
+    { id: "WF05", name: "Ops + Maintenance",          keywords: ["dead letter replayer", "mirror reconciler", "role conflict", "dead letter", "maintenance"] },
+    { id: "WF06", name: "Analytics Ingest",           keywords: ["analytics sync", "analytics ingest", "analytics"] },
+    { id: "WF07", name: "Event Intelligence",         keywords: ["conversation identity", "identity linker", "event intel"] },
+    { id: "WF08", name: "Outbox Dispatcher",          keywords: ["outbox", "send emails", "outbox dispatcher"] },
+    { id: "WF09", name: "Ops Ingest Sender",          keywords: ["sla escalator", "ops ingest", "instantly campaign"] },
   ];
 
-  const checks = wfSignals.map((wf) => {
-    const health = wfStatusFromLatest(wf.latestAt, wf.staleThresholdMinutes);
+  const checks = wfDefs.map((wfDef) => {
+    if (apiError) {
+      return {
+        id: wfDef.id,
+        name: wfDef.name,
+        status: "degraded",
+        detail: `n8n API unreachable: ${apiError}`,
+        noData: true,
+      };
+    }
+    const health = deriveWfHealthFromLive(wfDef, liveWorkflows, executions);
     return {
-      id: wf.id,
-      name: wf.name,
+      id: wfDef.id,
+      name: wfDef.name,
       status: health.status,
-      latestAt: wf.latestAt || null,
-      ageMinutes: health.ageMinutes,
+      detail: health.detail,
       noData: health.noData === true,
-      staleThresholdMinutes: wf.staleThresholdMinutes,
-      detail: wf.detail,
+      lastExecAt: health.lastExecAt || null,
+      lastExecStatus: health.lastExecStatus || null,
     };
   });
 
   const hasWarn = checks.some((c) => c.status === "warn");
+  const hasDegraded = checks.some((c) => c.status === "degraded");
   return {
-    overall: hasWarn ? "warn" : "ok",
+    overall: hasWarn ? "warn" : hasDegraded ? "degraded" : "ok",
     checks,
+    apiError: apiError || null,
   };
 }
 
@@ -3487,41 +3465,28 @@ async function sbWatchdogOperationsRiskChecks() {
   const missingEndpoints = endpointChecks.filter((c) => !c.configured).map((c) => c.key);
   checks.push({
     name: "endpoint_config",
-    status: missingEndpoints.length ? "warn" : "ok",
+    status: missingEndpoints.length ? "degraded" : "ok",
     summary: missingEndpoints.length
       ? `missing endpoint config: ${missingEndpoints.join(", ")}`
       : "all required endpoint configs are set",
   });
 
   try {
-    const { data, error } = await ops()
-      .from("ops_events")
-      .select("created_at, source")
-      .order("created_at", { ascending: false })
-      .limit(500);
-    if (error) throw error;
-
-    const latestN8n = (data || []).find((r) => String(r?.source || "").toLowerCase().includes("n8n"))?.created_at || null;
-    const ageMinutes = ageMinutesSince(latestN8n);
-    const thresholdMinutes = Math.max(URGENT_AFTER_MINUTES, 60);
-    const status = ageMinutes == null ? "ok" : ageMinutes > thresholdMinutes ? "warn" : "ok";
+    // Live n8n API connectivity check — actual round-trip to n8n cloud
+    const start = Date.now();
+    await fetchN8nAPI("/workflows?limit=1", 8000);
+    const latencyMs = Date.now() - start;
     checks.push({
       name: "n8n_heartbeat",
-      status,
-      summary:
-        ageMinutes == null
-          ? "no n8n data yet (clean baseline)"
-          : status === "warn"
-            ? `n8n heartbeat stale (${ageMinutes}m, limit ${thresholdMinutes}m)`
-            : `n8n heartbeat healthy (${ageMinutes}m ago)`,
-      ageMinutes,
-      thresholdMinutes,
+      status: "ok",
+      summary: `n8n API reachable (${latencyMs}ms)`,
+      latencyMs,
     });
   } catch (err) {
     checks.push({
       name: "n8n_heartbeat",
-      status: "degraded",
-      summary: `unable to read n8n heartbeat: ${shortErrorReason(err)}`,
+      status: "warn",
+      summary: `n8n API unreachable: ${shortErrorReason(err)}`,
     });
   }
 
