@@ -1600,9 +1600,9 @@ function buildWatchdogCardText(wd) {
       return `${wf.id}: ${watchdogStatusDisplay(wf.status)} (${age})`;
     });
   const workflowIssueLines = (workflows.checks || [])
-    .filter((wf) => wf.status === "warn" || wf.status === "unknown")
+    .filter((wf) => wf.status === "warn" || wf.status === "unknown" || wf.status === "degraded")
     .slice(0, 4)
-    .map((wf) => `${wf.id}: ${wf.status === "unknown" ? "no recent signal" : "last signal is stale"}`);
+    .map((wf) => `${wf.id}: ${wf.detail || (wf.status === "unknown" ? "no recent signal" : "needs review")}`);
   const workflowWarnCount = (workflows.checks || []).filter((wf) => wf.status === "warn").length;
   const workflowUnknownCount = (workflows.checks || []).filter((wf) => wf.status === "unknown").length;
   const opsRiskIssueLines = (operationsRisk.checks || [])
@@ -3375,6 +3375,15 @@ function deriveWfHealthFromLive(wfDef, liveWorkflows, executions) {
   if (activeMatches.length === 0) {
     const inactive = matched.filter((w) => !w.active).map((w) => w.name).join(", ");
     return { status: "degraded", detail: `no active workflow (inactive: ${inactive})`, noData: false };
+  }
+
+  if (activeMatches.length > 1) {
+    const activeNames = activeMatches.map((w) => w.name).join(", ");
+    return {
+      status: "degraded",
+      detail: `multiple active workflows (${activeMatches.length}): ${activeNames}`,
+      noData: false,
+    };
   }
 
   // Check last execution status across active matched workflows only.
