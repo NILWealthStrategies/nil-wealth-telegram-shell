@@ -1550,6 +1550,40 @@ function watchdogStatusDisplay(status) {
   return `${watchdogStatusDot(status)} ${watchdogStatusLabel(status)}`;
 }
 
+function watchdogTopReasons(snapshot, maxItems = 3) {
+  const reasons = [];
+  const freshness = snapshot?.freshness || {};
+  const reconciliation = snapshot?.reconciliation || {};
+  const cards = snapshot?.cards || {};
+  const workflows = snapshot?.workflows || {};
+  const operationsRisk = snapshot?.operationsRisk || {};
+  const schema = snapshot?.schema || {};
+
+  const staleFreshness = (freshness.checks || []).find((c) => c.status === "stale");
+  if (staleFreshness) {
+    const age = Number.isFinite(staleFreshness?.ageMinutes) ? `${staleFreshness.ageMinutes}m` : "unknown age";
+    reasons.push(`freshness stale: ${staleFreshness.name} (${age})`);
+  }
+
+  const recIssue = (reconciliation.checks || []).find((c) => c.status === "warn" || c.status === "unknown");
+  if (recIssue) reasons.push(`reconciliation: ${recIssue.name}`);
+
+  const cardIssue = (cards.checks || []).find((c) => c.status === "warn" || c.status === "degraded");
+  if (cardIssue) reasons.push(`cards: ${cardIssue.name}`);
+
+  const wfIssue = (workflows.checks || []).find((wf) => wf.status !== "ok");
+  if (wfIssue) reasons.push(`workflow ${wfIssue.id}: ${wfIssue.detail || wfIssue.status}`);
+
+  const opsIssue = (operationsRisk.checks || []).find((c) => c.status !== "ok");
+  if (opsIssue) reasons.push(`ops risk: ${opsIssue.summary || opsIssue.name}`);
+
+  if (Array.isArray(schema.missing) && schema.missing.length) {
+    reasons.push(`schema missing: ${schema.missing[0]}${schema.missing.length > 1 ? ` (+${schema.missing.length - 1})` : ""}`);
+  }
+
+  return reasons.slice(0, maxItems);
+}
+
 function buildWatchdogCardText(wd) {
   const snapshot = wd || {};
   const freshness = snapshot.freshness || {};
@@ -1596,8 +1630,10 @@ function buildWatchdogCardText(wd) {
   const workflowLines = (workflows.checks || [])
     .slice(0, 9)
     .map((wf) => {
-      const age = Number.isFinite(wf?.ageMinutes) ? `${wf.ageMinutes}m` : "no signal";
-      return `${wf.id}: ${watchdogStatusDisplay(wf.status)} (${age})`;
+      const detail = String(wf?.detail || "").trim();
+      const age = Number.isFinite(wf?.ageMinutes) ? `${wf.ageMinutes}m` : "";
+      const extra = detail || age || "no signal";
+      return `${wf.id}: ${watchdogStatusDisplay(wf.status)} (${extra})`;
     });
   const workflowIssueLines = (workflows.checks || [])
     .filter((wf) => wf.status === "warn" || wf.status === "unknown")
@@ -1615,6 +1651,7 @@ function buildWatchdogCardText(wd) {
 --
 Last Run: ${snapshot.lastRunAt || "never"}
 Overall: ${watchdogStatusDisplay(snapshot.overallStatus)}
+Why: ${snapshot.overallStatus === "ok" ? "none" : (watchdogTopReasons(snapshot, 3).join(" | ") || "check section details below")}
 
 Freshness: ${watchdogStatusDisplay(freshness.overall)}
 Stale Threshold: ${freshness.staleThresholdMinutes || WATCHDOG_STALE_MINUTES}m
@@ -3602,8 +3639,12 @@ function buildWatchdogAlertText(snapshot, previousStatus) {
   const prevLabel = watchdogStatusLabel(previousStatus);
   const nextLabel = watchdogStatusLabel(snapshot.overallStatus);
   const trend = previousStatus && previousStatus !== "unknown" ? `${prevLabel} -> ${nextLabel}` : nextLabel;
+  const topReasons = snapshot.overallStatus === "ok"
+    ? "none"
+    : (watchdogTopReasons(snapshot, 2).join(" | ") || "check card details");
   return `🛡 Watchdog Alert\n` +
     `Status: ${trend}\n` +
+    `Why: ${topReasons}\n` +
     `Freshness: ${watchdogStatusLabel(freshness.overall)} (stale: ${staleCount})\n` +
     `Reconciliation: ${watchdogStatusLabel(reconciliation.overall)} (warn: ${recWarnCount})\n` +
     `Cards & Dashboard: ${watchdogStatusLabel(cards.overall)} (warn: ${cardWarnCount})\n` +
