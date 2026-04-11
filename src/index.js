@@ -149,7 +149,7 @@ const WATCHDOG_SCHEMA_CHECK_INTERVAL_MS = Number(process.env.WATCHDOG_SCHEMA_CHE
 const WORKFLOW_HEALTH_DEFAULT_STALE_MINUTES = Number(process.env.WORKFLOW_HEALTH_DEFAULT_STALE_MINUTES || 60);
 const WORKFLOW_HEALTH_EVENT_DRIVEN_STALE_MINUTES = Number(process.env.WORKFLOW_HEALTH_EVENT_DRIVEN_STALE_MINUTES || 60);
 const N8N_BASE_URL = String(process.env.N8N_BASE_URL || "https://nilwealthstrategies.app.n8n.cloud").replace(/\/+$/, "");
-const N8N_API_KEY = String(process.env.N8N_API_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI0NzViYzBjMi02MmI1LTQzYTctYTI5Yi03Y2ZkYTBmOGY2MTAiLCJpc3MiOiJuOG4iLCJhdWQiOiJwdWJsaWMtYXBpIiwianRpIjoiNmFiODAzNzMtNTNiYy00ZTY0LTlkNmMtOTIyYTk4NDU4OTM3IiwiaWF0IjoxNzc1MjQwNzQzLCJleHAiOjE3Nzc3ODA4MDB9.3ZTKYaymnFaLCwixP0LQpfJr8xkJHd2n6Yr8-s3zsPI").trim();
+const N8N_API_KEY = String(process.env.N8N_API_KEY || "").trim();
 const OPS_RISK_BURST_WINDOW_MINUTES = Number(process.env.OPS_RISK_BURST_WINDOW_MINUTES || 60);
 const OPS_RISK_ERROR_BURST_THRESHOLD = Number(process.env.OPS_RISK_ERROR_BURST_THRESHOLD || 5);
 const WATCHDOG_ALERT_COOLDOWN_MINUTES = Number(process.env.WATCHDOG_ALERT_COOLDOWN_MINUTES || 30);
@@ -2201,11 +2201,11 @@ if (!t) return null;
   if (t.includes("website_open") || t.includes("website opens") || t.includes("nilws_website_open") || t.includes("nilws website open")) return "website_open";
 if (t.includes("thread_created") || t === "conversation.created") return "thread_created";
 if (t.includes("eapp")) return "eapp_visit";
-if (t.includes("parent_guide") || t.includes("parents_guide") || t.includes("program_link") || t.includes("guide_open") || t.includes("guide_click")) return "parent_guide_click";
 if (t.includes("sh_click") || t.includes("supplemental") || t.includes("supp_health")) return "supplemental_health_guide_click";
 if (t.includes("risk_awareness") || (t.includes("risk") && t.includes("click"))) return "risk_awareness_guide_click";
 if (t.includes("tax_education") || (t.includes("tax") && t.includes("click"))) return "tax_education_guide_click";
 if (t.includes("enroll") || t.includes("portal") || t.includes("signup")) return "enroll_click";
+if (t.includes("parent_guide") || t.includes("parents_guide") || t.includes("program_link") || t.includes("guide_open")) return "parent_guide_click";
 if (["program_link_open", "parent_guide_open", "parent_guide_click", "program_guide_open", "guide_open", "parent_guide_click"].includes(t)) return "parent_guide_click";
 if (["coverage_exploration", "coverage_explore", "coverage_click", "coverage_link_open"].includes(t)) return "supplemental_health_guide_click";
 if (["sh_click", "supplemental_health_click", "supplemental_health_guide_click"].includes(t)) return "supplemental_health_guide_click";
@@ -2214,6 +2214,27 @@ if (["tax_education_click", "tax_education_guide_click"].includes(t)) return "ta
 if (["enroll_click", "enroll_portal_click", "enroll_portal_visit", "enroll_visit", "portal_click"].includes(t)) return "enroll_click";
 if (["eapp_visit", "eapp_click", "eapp_open"].includes(t)) return "eapp_visit";
 if (t === "thread_created" || t === "conversation.created") return "thread_created";
+return null;
+};
+const metricEventTypeFromGuideKey = (rawGuideKey) => {
+const g = normalizeGuideKey(rawGuideKey);
+if (g === "parent-guide") return "parent_guide_click";
+if (g === "supplemental-health-guide") return "supplemental_health_guide_click";
+if (g === "risk-awareness-guide") return "risk_awareness_guide_click";
+if (g === "tax-education-guide") return "tax_education_guide_click";
+if (g === "enroll") return "enroll_click";
+if (g === "eapp") return "eapp_visit";
+return null;
+};
+const resolveMetricEventType = (row = {}) => {
+const byGuide = metricEventTypeFromGuideKey(row?.guide_key || row?.guideKey || row?.guide);
+if (byGuide) return byGuide;
+
+const candidates = [row?.kind, row?.click_type, row?.event_type, row?.type, row?.event, row?.click_source];
+for (const candidate of candidates) {
+const mapped = normalizeMetricEventType(candidate);
+if (mapped) return mapped;
+}
 return null;
 };
 const toNumber = (v) => {
@@ -2323,7 +2344,7 @@ if (source !== "all") q = q.eq("source", sourceSafe(source));
 const { data, error } = await q;
 if (!error && Array.isArray(data)) {
 for (const r of data) {
-const eventType = normalizeMetricEventType(r.event_type) || String(r.event_type || "");
+const eventType = resolveMetricEventType(r) || String(r.event_type || "");
 eventRows.push({ event_type: eventType, created_at: r.created_at });
 }
 }
@@ -2337,30 +2358,30 @@ const clickResult = await dbSelectFirst([
 () => {
 let cq = ops()
 .from("click_events")
-.select("kind, click_source, created_at");
+.select("kind, click_type, event_type, guide_key, click_source, created_at");
 if (since) cq = cq.gte("created_at", since);
 return cq;
 },
 () => {
 let cq = ops()
 .from("click_events")
-.select("kind, click_source, clicked_at");
+.select("kind, click_type, event_type, guide_key, click_source, clicked_at");
 if (since) cq = cq.gte("clicked_at", since);
 return cq;
 },
 () => {
 let cq = ops()
 .from("click_events")
-.select("kind, click_source, event_time");
+.select("kind, click_type, event_type, guide_key, click_source, event_time");
 if (since) cq = cq.gte("event_time", since);
 return cq;
 },
-() => ops().from("click_events").select("kind, click_source"),
+() => ops().from("click_events").select("kind, click_type, event_type, guide_key, click_source"),
 ]);
 if (!clickResult?.error && Array.isArray(clickResult?.data)) {
 for (const r of clickResult.data) {
 rawClickEventCount++;
-const mappedType = normalizeMetricEventType(r.kind || r.click_source);
+const mappedType = resolveMetricEventType(r);
 const clickCreatedAt = r.created_at || r.clicked_at || r.event_time || now.toISOString();
 if (mappedType) eventRows.push({ event_type: mappedType, created_at: clickCreatedAt });
 }
@@ -2404,7 +2425,7 @@ const localMonthly = emptyMonthlyBuckets();
 for (const r of rows) {
 if (!rowMatchesSource(r)) continue;
 const createdAt = rowCreatedAt(r, relation);
-const byKindType = normalizeMetricEventType(r.kind || r.event_type);
+const byKindType = resolveMetricEventType(r);
 if (byKindType && (r.count != null || r.total != null || r.clicks != null)) {
 const count = toNumber(r.count ?? r.total ?? r.clicks);
 const bucket = { parentGuideClicks: 0, supplementalHealthGuideClicks: 0, riskAwarenessGuideClicks: 0, taxEducationGuideClicks: 0, enrollPortalClicks: 0, eappVisits: 0 };
@@ -2420,7 +2441,7 @@ continue;
 }
 addFallbackBucket(localCounts, localMonthly, createdAt, {
   websiteOpens: readNumeric(r, ["website_opens", "nilws_website_opens", "total_website_opens"]),
-parentGuideClicks: readNumeric(r, ["parent_guide_clicks", "program_link_opens", "guide_opens", "parent_guide_opens", "opens", "total_opens", "opens_total"]),
+parentGuideClicks: readNumeric(r, ["parent_guide_clicks", "program_link_opens", "parent_guide_opens"]),
 supplementalHealthGuideClicks: readNumeric(r, ["supplemental_health_guide_clicks", "supplemental_health_clicks", "sh_clicks", "coverage_exploration", "coverage_clicks"]),
 riskAwarenessGuideClicks: readNumeric(r, ["risk_awareness_guide_clicks", "risk_awareness_clicks"]),
 taxEducationGuideClicks: readNumeric(r, ["tax_education_guide_clicks", "tax_education_clicks"]),
@@ -2480,10 +2501,17 @@ threadsCreated: 0,
     if (evt === "thread_created")
       counts.threadsCreated++;
   }
+const hasDirectGuideBreakdown =
+  (counts.parentGuideClicks || 0) +
+  (counts.supplementalHealthGuideClicks || 0) +
+  (counts.riskAwarenessGuideClicks || 0) +
+  (counts.taxEducationGuideClicks || 0) > 0;
+if (!hasDirectGuideBreakdown) {
 counts.parentGuideClicks = Math.max(counts.parentGuideClicks, fallbackCounts.parentGuideClicks);
 counts.supplementalHealthGuideClicks = Math.max(counts.supplementalHealthGuideClicks, fallbackCounts.supplementalHealthGuideClicks);
 counts.riskAwarenessGuideClicks = Math.max(counts.riskAwarenessGuideClicks, fallbackCounts.riskAwarenessGuideClicks);
 counts.taxEducationGuideClicks = Math.max(counts.taxEducationGuideClicks, fallbackCounts.taxEducationGuideClicks);
+}
 counts.enrollPortalClicks = Math.max(counts.enrollPortalClicks, fallbackCounts.enrollPortalClicks);
 counts.eappVisits = Math.max(counts.eappVisits, fallbackCounts.eappVisits);
 const categoryTotalClicks =
@@ -2551,10 +2579,17 @@ monthly[mi].threads++;
 }
 for (let i = 0; i < 12; i++) {
   monthly[i].websiteOpens = Math.max(monthly[i].websiteOpens, monthlyFallback[i].websiteOpens || 0);
+const hasDirectMonthlyGuideBreakdown =
+  (monthly[i].parentGuideClicks || 0) +
+  (monthly[i].supplementalHealthGuideClicks || 0) +
+  (monthly[i].riskAwarenessGuideClicks || 0) +
+  (monthly[i].taxEducationGuideClicks || 0) > 0;
+if (!hasDirectMonthlyGuideBreakdown) {
 monthly[i].parentGuideClicks = Math.max(monthly[i].parentGuideClicks, monthlyFallback[i].parentGuideClicks || 0);
 monthly[i].supplementalHealthGuideClicks = Math.max(monthly[i].supplementalHealthGuideClicks, monthlyFallback[i].supplementalHealthGuideClicks || 0);
 monthly[i].riskAwarenessGuideClicks = Math.max(monthly[i].riskAwarenessGuideClicks, monthlyFallback[i].riskAwarenessGuideClicks || 0);
 monthly[i].taxEducationGuideClicks = Math.max(monthly[i].taxEducationGuideClicks, monthlyFallback[i].taxEducationGuideClicks || 0);
+}
 monthly[i].enrollPortalClicks = Math.max(monthly[i].enrollPortalClicks, monthlyFallback[i].enrollPortalClicks || 0);
 monthly[i].eappVisits = Math.max(monthly[i].eappVisits, monthlyFallback[i].eappVisits || 0);
 monthly[i].totalClicks =
