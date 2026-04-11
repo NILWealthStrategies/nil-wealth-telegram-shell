@@ -10011,6 +10011,14 @@ app.get("/ready/firm", async (_req, res) => {
 const server = app.listen(PORT, "0.0.0.0", () => {
 console.log(`Webhook server listening on 0.0.0.0:${PORT}`);
 console.log(`${CODE_VERSION} · Build ${BUILD_VERSION}`);
+if (!N8N_BASE_URL) {
+  console.warn("[STARTUP] N8N_BASE_URL is missing. Watchdog n8n checks will fail.");
+}
+if (!N8N_API_KEY) {
+  console.warn("[STARTUP] N8N_API_KEY is missing/empty. Watchdog n8n checks will return HTTP 401.");
+} else {
+  console.log(`[STARTUP] N8N watchdog auth enabled (N8N_BASE_URL=${N8N_BASE_URL})`);
+}
 });
 if (TELEGRAM_BOT_ACTIVE) {
 // ==========================================================
