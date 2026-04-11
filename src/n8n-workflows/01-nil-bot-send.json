@@ -1,0 +1,91 @@
+{
+  "name": "nil-bot-send",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "nil-bot-send",
+        "responseMode": "onReceived",
+        "responseData": "successResponse"
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [100, 300],
+      "webhookId": ""
+    },
+    {
+      "parameters": {
+        "url": "=https://api.instantly.ai/api/campaigns/send-email",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.INSTANTLY_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "application/json",
+        "body": "{\n  \"to\": \"{{ $node.Webhook.json.to }}\",\n  \"subject\": \"{{ $node.Webhook.json.subject }}\",\n  \"text\": \"{{ $node.Webhook.json.body }}\",\n  \"from\": \"{{ $node.Webhook.json.from || $env.SUPPORT_FROM_EMAIL }}\",\n  \"campaign_id\": \"{{ $node.Webhook.json.campaign_id }}\"\n}"
+      },
+      "name": "Send via Instantly",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [300, 300],
+      "credentials": {
+        "httpHeaderAuth": "instantly_api_auth"
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return {\n  ok: true,\n  sent_at: new Date().toISOString(),\n  to: $node.Webhook.json.to,\n  campaign_id: $node.Webhook.json.campaign_id\n};"
+      },
+      "name": "Return Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Send via Instantly",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send via Instantly": {
+      "main": [
+        [
+          {
+            "node": "Return Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "0d9b8c5f-1234-5678-9abc-def012345678",
+  "meta": {
+    "instanceId": "00000000000000000000000",
+    "templateId": null
+  },
+  "pinData": {}
+}

@@ -16,7 +16,10 @@
       "name": "Every 20 Minutes",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.1,
-      "position": [220, 260]
+      "position": [
+        220,
+        260
+      ]
     },
     {
       "parameters": {
@@ -38,7 +41,10 @@
       "name": "Get Active Conversations",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [450, 260],
+      "position": [
+        450,
+        260
+      ],
       "credentials": {
         "supabaseApi": {
           "id": "supabase-nil",
@@ -54,7 +60,10 @@
       "name": "Compute Escalations",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [670, 260]
+      "position": [
+        670,
+        260
+      ]
     },
     {
       "parameters": {
@@ -65,7 +74,10 @@
       "name": "Loop Escalations",
       "type": "n8n-nodes-base.splitInBatches",
       "typeVersion": 3,
-      "position": [890, 260]
+      "position": [
+        890,
+        260
+      ]
     },
     {
       "parameters": {
@@ -92,7 +104,10 @@
       "name": "Set Pipeline Urgent",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [1110, 260],
+      "position": [
+        1110,
+        260
+      ],
       "credentials": {
         "supabaseApi": {
           "id": "supabase-nil",
@@ -103,41 +118,116 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.OPS_INGEST_URL }}",
+        "url": "={{ $env.OPS_INGEST_SENDER_URL }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
-              "name": "x-nil-secret",
-              "value": "={{ $env.BASE_WEBHOOK_SECRET }}"
+              "name": "Content-Type",
+              "value": "application/json"
             }
           ]
         },
         "sendBody": true,
-        "jsonBody": "={{ { schema_version:'5.3', event_type:'conversation.updated', source:'n8n_sla_escalator', direction:'inbound', trace_id:$execution.id, idempotency_key:'sla_escalation|' + $json.id, entity_type:'conversation', entity_id:$json.id, payload:{pipeline_from:$json.from, pipeline_to:'urgent', reason:$json.reason, age_mins:$json.age_mins} } }}"
+        "jsonBody": "={{ { payload: { schema_version:\"5.3\", event_type:\"conversation.updated\", source:\"n8n_sla_escalator\", direction:\"inbound\", trace_id:$execution.id, idempotency_key:\"sla_escalation|\" + $json.id + \"|\" + $now, entity_type:\"conversation\", entity_id:$json.id, payload:{ pipeline_from:$json.from, pipeline_to:\"urgent\", reason:$json.reason, age_mins:$json.age_mins } } } }}"
       },
       "id": "emit-update",
-      "name": "Emit Conversation Updated",
+      "name": "Emit Update via WF05",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1330, 260]
+      "position": [
+        1330,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.OPS_INGEST_SENDER_URL }}",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "jsonBody": "={{ { payload: { schema_version:\"5.3\", event_type:\"n8n.heartbeat\", source:\"n8n_sla_escalator\", direction:\"inbound\", trace_id:$execution.id, idempotency_key:\"heartbeat|sla_escalator|\" + $now, payload:{ workflow:\"NIL SLA Escalator\", ran_at:$now, status:\"ok\" } } } }}"
+      },
+      "id": "heartbeat",
+      "name": "Post Heartbeat via WF05",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1330,
+        480
+      ]
     }
   ],
   "connections": {
     "Every 20 Minutes": {
-      "main": [[{"node": "Get Active Conversations", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Get Active Conversations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Get Active Conversations": {
-      "main": [[{"node": "Compute Escalations", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Compute Escalations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Compute Escalations": {
-      "main": [[{"node": "Loop Escalations", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Loop Escalations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Loop Escalations": {
-      "main": [[{"node": "Set Pipeline Urgent", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Set Pipeline Urgent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Post Heartbeat via WF05",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Set Pipeline Urgent": {
-      "main": [[{"node": "Emit Conversation Updated", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Emit Update via WF05",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {

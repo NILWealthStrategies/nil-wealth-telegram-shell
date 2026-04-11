@@ -1288,9 +1288,14 @@ function buildTrackedGuideLink(rawUrl, conv) {
 
   if (!CLICK_TRACKER_BASE_URL || !recipientEmail) return rawUrl;
 
-  const tracker = new URL(CLICK_TRACKER_BASE_URL);
-  const coachSuffix = coachId ? `-${encodeURIComponent(coachId)}` : "";
-  tracker.pathname = `/go/${guideKey}${coachSuffix}`;
+  let tracker;
+  try {
+    tracker = new URL(CLICK_TRACKER_BASE_URL);
+  } catch (_) {
+    return rawUrl;
+  }
+
+  tracker.pathname = `/go/${guideKey}`;
   tracker.searchParams.set("person_email", recipientEmail);
   if (coachId) tracker.searchParams.set("coach_id", coachId);
   tracker.searchParams.set("actor_type", "parent");
@@ -9207,6 +9212,31 @@ if (event_type === EVENT_TYPES.HANDOFF_DETECTED) {
     refreshQueue.add("triage:all");
     refreshQueue.add("dashboard:all");
     refreshQueue.add("allq:all");
+  }
+}
+// CC SUPPORT ACTIVATION (programmatic — e.g., from n8n automation or external trigger)
+// Sets cc_support_suggested=true so the Telegram card reflects CC has been activated
+// without requiring the admin to manually tap the button.
+if (event_type === EVENT_TYPES.CC_SUPPORT_ACTIVATED) {
+  if (entity_id) {
+    const { error: ccActErr } = await ops()
+      .from("conversations")
+      .update({
+        cc_support_suggested: true,
+        needs_support_handoff: false,
+        needs_support_handoff_at: null,
+        updated_at: nowIso,
+      })
+      .eq("id", entity_id);
+    if (ccActErr && !isMissingColumnError(ccActErr)) {
+      console.warn("cc_support.activated update error:", ccActErr.message);
+    }
+    refreshQueue.add(makeCardKey("conversation", entity_id));
+    refreshQueue.add("triage:all");
+    refreshQueue.add("dashboard:all");
+    refreshQueue.add("allq:all");
+  } else {
+    console.warn("cc_support.activated missing entity_id — flag not set");
   }
 }
 // CALLS
