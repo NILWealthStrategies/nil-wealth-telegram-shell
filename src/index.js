@@ -5054,7 +5054,7 @@ return smartRender(ctx, text, Markup.inlineKeyboard(buttons));
 // - headerLine(...)
 // - laneLabel(...), sourceSafe(...)
 // - sbGetConversationById(convId)
-const THREAD_ORDER = "newest_first"; // "newest_first" | "oldest_first"
+const THREAD_ORDER = "oldest_first"; // "newest_first" | "oldest_first"
 // ---------- THREAD VIEW HELPERS ----------
 
 function computeLatestOffset(total, limit) {
@@ -5092,7 +5092,7 @@ const timeline = [
 .sort((a, b) => {
 const at = a?.created_at ? new Date(a.created_at).getTime() : 0;
 const bt = b?.created_at ? new Date(b.created_at).getTime() : 0;
-return bt - at;
+return THREAD_ORDER === "newest_first" ? bt - at : at - bt;
 });
 total = timeline.length;
 if (total > 0) {
@@ -5107,7 +5107,10 @@ if (total > 0) {
 total = await sbCountMessages(convId);
 if (total > 0) {
   pageIndex = Math.min(safeOffset, total - 1);
-  msgs = await sbListMessages(convId, { offset: pageIndex, limit }).catch(() => []);
+  const dbOffset = THREAD_ORDER === "newest_first"
+    ? pageIndex
+    : Math.max(0, total - 1 - pageIndex);
+  msgs = await sbListMessages(convId, { offset: dbOffset, limit }).catch(() => []);
   const msg = msgs?.[0] || null;
   body = msg ? formatMessageLineFull(msg, conv, {
     supportFromEmail: SUPPORT_FROM_EMAIL,
@@ -5123,21 +5126,16 @@ const prevOffset = Math.max(0, pageIndex - 1);
 const nextOffset = pageIndex + 1;
 const hasPrev = pageIndex > 0;
 const hasNext = nextOffset < total;
-// Latest jump
-const latestOffset = computeLatestOffset(total, limit);
+const firstOffset = 0;
+const lastOffset = total > 0 ? total - 1 : 0;
 const kbRows = [];
-// paging row
+// Simple nav row: First / Prev / Next / Last
 const paging = [];
+if (total > 0 && pageIndex !== firstOffset) paging.push(Markup.button.callback("⏮ First", `THREAD:${convId}:${firstOffset}`));
 if (hasPrev) paging.push(Markup.button.callback("◀ Prev", `THREAD:${convId}:${prevOffset}`));
 if (hasNext) paging.push(Markup.button.callback("Next ▶", `THREAD:${convId}:${nextOffset}`));
+if (total > 0 && pageIndex !== lastOffset) paging.push(Markup.button.callback("Last ⏭", `THREAD:${convId}:${lastOffset}`));
 if (paging.length) kbRows.push(paging);
-// latest row (only show if not already on latest)
-if (pageIndex !== latestOffset && total > 0) {
-kbRows.push([Markup.button.callback("⏩ Latest", `THREAD:${convId}:${latestOffset}`)]);
-}
-if (pageIndex !== total - 1 && total > 0) {
-kbRows.push([Markup.button.callback("⏮ First", `THREAD:${convId}:${Math.max(0, total - 1)}`)]);
-}
 // 🪞 mirror row (recommended)
 if (conv?.mirror_conversation_id) {
 kbRows.push([Markup.button.callback("🪞 Open Mirror", `OPENMIRROR:${conv.id}`)]);
@@ -5153,7 +5151,7 @@ total,
 msgs,
 text: `${header}\n\n${body}`,
 keyboard: Markup.inlineKeyboard(kbRows),
-latestOffset,
+latestOffset: computeLatestOffset(total, limit),
 };
 }
 // ---------- THREAD VIEW (paged) ----------
@@ -5357,6 +5355,7 @@ return smartRender(ctx, "❌ Loop in Support drafts not found. Click Regenerate.
 }
 let text = `📌 Loop in Support\nConversation: ${idShort(convId)}\n\n`;
 text += `This will:\n• Send bridge message from outreach to contact\n• Send forwardable support message from ${SUPPORT_FROM_EMAIL}\n• Create + link the Support mirror thread\n\n`;
+text += `Support draft includes explicit parent-group forwarding language so parents can reply directly to that CC thread.\n\n`;
 text += `Threading is preserved using Gmail thread headers and thread id when available.\n\n`;
 text += `Selected:\n• Bridge Draft: V${bridgeDraft}\n• Support Draft: V${supportDraft}\n\n`;
 text += `Click "View" buttons to see full message text before confirming.`;
@@ -7779,8 +7778,8 @@ guide_category_clicks_total_year: guideCategoryClicksYear,
 };
 const programsSystemPrompt = "You write concise professional outreach follow-up replies for coach conversations. Return JSON with v1,v2,v3 each containing subject and body.";
 const supportSystemPrompt = "You write concise professional support replies. Return JSON with v1,v2,v3 each containing subject and body.";
-const programsUserPrompt = `Create 3 follow-up reply drafts for this Programs conversation:\n${JSON.stringify(prompt)}\n\nRules:\n- This is a manual follow-up reply in the outreach lane (not autonomous AI send)\n- Use metric context naturally when helpful: Enroll Portal Clicks, Parent Guide Clicks, and Total Clicks\n- Keep under 130 words\n- Include one clear next step\n- Keep tone human, confident, and concise\n- Do not mention AI\nReturn: {\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}}`;
-const supportUserPrompt = `Create 3 reply drafts for this inbound conversation:\n${JSON.stringify(prompt)}\n\nRules:\n- V1 direct/helpful\n- V2 warm/relationship-focused\n- V3 concise/executive\n- Keep under 130 words\n- Include clear next step\n- Do not mention AI\nReturn: {\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}}`;
+const programsUserPrompt = `Create 3 follow-up reply drafts for this Programs conversation:\n${JSON.stringify(prompt)}\n\nRules:\n- This is a manual follow-up reply in the outreach lane (not autonomous AI send)\n- Use metric context naturally when helpful: Enroll Portal Clicks, Parent Guide Clicks, and Total Clicks\n- Keep under 130 words\n- Include one clear next step\n- Keep tone human, confident, and concise\n- Do not mention AI\n- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless the count is explicitly provided in the prompt\nReturn: {\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}}`;
+const supportUserPrompt = `Create 3 reply drafts for this inbound conversation:\n${JSON.stringify(prompt)}\n\nRules:\n- V1 direct/helpful\n- V2 warm/relationship-focused\n- V3 concise/executive\n- Keep under 130 words\n- Include clear next step\n- Do not mention AI\n- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless the count is explicitly provided in the prompt\nReturn: {\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}}`;
 const res = await fetch("https://api.openai.com/v1/chat/completions", {
 method: "POST",
 headers: {
@@ -7830,7 +7829,7 @@ temperature: 0.7,
 response_format: { type: "json_object" },
 messages: [
 { role: "system", content: "You write CC bridge and support messages. Return JSON with bridge (v1-v3) and support (v1-v3) drafts, each with subject and body." },
-{ role: "user", content: `Create CC drafts for this conversation:\n${JSON.stringify(prompt)}\n\nCreate 6 drafts total:\nBridge messages (to be sent from outreach to contact):\n- V1: Short/Direct ("Looping in support...")\n- V2: Warm/Personal (build relationship)\n- V3: Ultra-brief (executive style)\n\nSupport messages (forwardable from ${SUPPORT_FROM_EMAIL}):\n- V1: Professional/Detailed\n- V2: Warm/Helpful\n- V3: Quick/Action-focused\n\nKeep all under 130 words. Return: {\"bridge\":{\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}},\"support\":{\"v1\":{...},\"v2\":{...},\"v3\":{...}}}` }
+{ role: "user", content: `Create CC drafts for this conversation:\n${JSON.stringify(prompt)}\n\nCreate 6 drafts total:\nBridge messages (to be sent from outreach to contact):\n- V1: Short/Direct ("Looping in support...")\n- V2: Warm/Personal (build relationship)\n- V3: Ultra-brief (executive style)\n\nSupport messages (forwardable from ${SUPPORT_FROM_EMAIL}):\n- V1: Professional/Detailed\n- V2: Warm/Helpful\n- V3: Quick/Action-focused\n- Each support draft must include this exact idea clearly: "Please send or CC this specific message to your parents group; they can reply directly to this CC thread."\n\nGlobal rules:\n- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless the count is explicitly provided in the prompt\n- Keep all under 130 words\nReturn: {\"bridge\":{\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}},\"support\":{\"v1\":{...},\"v2\":{...},\"v3\":{...}}}` }
 ]
 })
 });
