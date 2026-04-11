@@ -174,6 +174,7 @@ const DASHBOARD_METRICS_CACHE_TTL_MS = Number(process.env.DASHBOARD_METRICS_CACH
 const DASHBOARD_OPS_CACHE_TTL_MS = Number(process.env.DASHBOARD_OPS_CACHE_TTL_MS || 20000);
 const APP_BOOT_TS_MS = Date.now();
 const CLICK_TRACKER_BASE_URL = normalizeAbsoluteHttpUrl(process.env.CLICK_TRACKER_BASE_URL || "");
+const DEFAULT_PARENT_GUIDE_URL = "https://parentsguide.mynilwealthstrategies.com/";
 const FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY =
 String(process.env.FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY || "false").toLowerCase() === "true";
 // NY time
@@ -1370,6 +1371,10 @@ function buildTrackedGuideLink(rawUrl, conv) {
   if (coachId) tracker.searchParams.set("coach_id", coachId);
   tracker.searchParams.set("actor_type", "parent");
   return tracker.toString();
+}
+
+function parentGuideLinkForConversation(conv) {
+  return buildTrackedGuideLink(DEFAULT_PARENT_GUIDE_URL, conv);
 }
 
 function rewriteOutboundTrackedLinks(rawBody, conv) {
@@ -7809,6 +7814,7 @@ if (!OPENAI_API_KEY) {
 throw new Error("Missing OPENAI_API_KEY");
 }
 const inbound = await sbLatestInboundMessage(conv.id);
+const parentGuideLink = parentGuideLinkForConversation(conv);
 const prompt = {
 contact_email: conv.contact_email || "",
 subject: conv.subject || "",
@@ -7816,6 +7822,7 @@ preview: conv.preview || "",
 latest_inbound: inbound?.body || inbound?.preview || "",
 coach_name: conv.coach_name || "",
 source: conv.source || "outreach",
+parent_guide_link: parentGuideLink,
 };
 const res = await fetch("https://api.openai.com/v1/chat/completions", {
 method: "POST",
@@ -7829,7 +7836,7 @@ temperature: 0.7,
 response_format: { type: "json_object" },
 messages: [
 { role: "system", content: "You write CC bridge and support messages. Bridge drafts should sound personal and human. Support drafts should sound structured, clear, and easy to forward. Return JSON with bridge (v1-v3) and support (v1-v3) drafts, each with subject and body." },
-{ role: "user", content: `Create CC drafts for this conversation:\n${JSON.stringify(prompt)}\n\nCreate 6 drafts total:\nBridge messages (to be sent from outreach to contact):\n- V1: Short/Direct (\"Looping in support...\")\n- V2: Warm/Personal (build relationship)\n- V3: Ultra-brief (executive style)\n- Bridge drafts should sound like a real person, not a support ticket\n\nSupport messages (forwardable from ${SUPPORT_FROM_EMAIL}):\n- V1: Professional/Detailed\n- V2: Warm/Helpful\n- V3: Quick/Action-focused\n- Support drafts must feel structured, organized, and easy to forward\n- Each support draft must include this exact idea clearly: \"Please send or CC this specific message to your parents group; they can reply directly to this CC thread.\"\n- Each support draft should read like a message the coach can comfortably forward right away\n\nGlobal rules:\n- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless the count is explicitly provided in the prompt\n- Keep all under 130 words\n- Avoid generic corporate filler\nReturn: {\"bridge\":{\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}},\"support\":{\"v1\":{...},\"v2\":{...},\"v3\":{...}}}` }
+{ role: "user", content: `Create CC drafts for this conversation:\n${JSON.stringify(prompt)}\n\nCreate 6 drafts total:\nBridge messages (to be sent from outreach to contact):\n- V1: Short/Direct (\"Looping in support...\")\n- V2: Warm/Personal (build relationship)\n- V3: Ultra-brief (executive style)\n- Bridge drafts should sound like a real person, not a support ticket\n\nSupport messages (forwardable from ${SUPPORT_FROM_EMAIL}):\n- V1: Professional/Detailed\n- V2: Warm/Helpful\n- V3: Quick/Action-focused\n- Support drafts must feel structured, organized, and easy to forward\n- Each support draft must include this exact idea clearly: \"Please send or CC this specific message to your parents group; they can reply directly to this CC thread.\"\n- Each support draft must include this exact parent guide link: ${parentGuideLink}\n- Each support draft should read like a message the coach can comfortably forward right away\n\nGlobal rules:\n- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless the count is explicitly provided in the prompt\n- Keep all under 130 words\n- Avoid generic corporate filler\nReturn: {\"bridge\":{\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}},\"support\":{\"v1\":{...},\"v2\":{...},\"v3\":{...}}}` }
 ]
 })
 });
@@ -7838,6 +7845,13 @@ const json = await res.json();
 const content = json?.choices?.[0]?.message?.content;
 if (!content) throw new Error("No CC draft content from OpenAI");
 const parsed = JSON.parse(content);
+for (const key of ["v1", "v2", "v3"]) {
+  const draft = parsed?.support?.[key];
+  if (!draft || typeof draft.body !== "string") continue;
+  if (!draft.body.includes(parentGuideLink)) {
+    draft.body = `${draft.body.trim()}\n\nParent Guide: ${parentGuideLink}`.trim();
+  }
+}
 return parsed;
 }
 
