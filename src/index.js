@@ -147,6 +147,13 @@ const WATCHDOG_INTERVAL_MS = Number(process.env.WATCHDOG_INTERVAL_MS || 60 * 60 
 const WATCHDOG_STALE_MINUTES = Number(process.env.WATCHDOG_STALE_MINUTES || 60);
 const WATCHDOG_SCHEMA_CHECK_INTERVAL_MS = Number(process.env.WATCHDOG_SCHEMA_CHECK_INTERVAL_MS || 60 * 60 * 1000);
 const WORKFLOW_HEALTH_DEFAULT_STALE_MINUTES = Number(process.env.WORKFLOW_HEALTH_DEFAULT_STALE_MINUTES || 60);
+function normalizeAbsoluteHttpUrl(raw) {
+  const value = String(raw || "").trim().replace(/\/+$/g, "");
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) return value;
+  return `https://${value}`;
+}
+
 const WORKFLOW_HEALTH_EVENT_DRIVEN_STALE_MINUTES = Number(process.env.WORKFLOW_HEALTH_EVENT_DRIVEN_STALE_MINUTES || 60);
 const N8N_BASE_URL = String(process.env.N8N_BASE_URL || "https://nilwealthstrategies.app.n8n.cloud").replace(/\/+$/, "");
 const N8N_API_KEY = String(process.env.N8N_API_KEY || "").trim();
@@ -166,7 +173,7 @@ const DASHBOARD_SPEED_MODE = String(process.env.DASHBOARD_SPEED_MODE || "true").
 const DASHBOARD_METRICS_CACHE_TTL_MS = Number(process.env.DASHBOARD_METRICS_CACHE_TTL_MS || 10000);
 const DASHBOARD_OPS_CACHE_TTL_MS = Number(process.env.DASHBOARD_OPS_CACHE_TTL_MS || 20000);
 const APP_BOOT_TS_MS = Date.now();
-const CLICK_TRACKER_BASE_URL = String(process.env.CLICK_TRACKER_BASE_URL || "").trim().replace(/\/+$/g, "");
+const CLICK_TRACKER_BASE_URL = normalizeAbsoluteHttpUrl(process.env.CLICK_TRACKER_BASE_URL || "");
 const FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY =
 String(process.env.FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY || "false").toLowerCase() === "true";
 // NY time
