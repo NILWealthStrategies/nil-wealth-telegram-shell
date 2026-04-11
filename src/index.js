@@ -624,6 +624,9 @@ return normalizeWorkflowAuditValue(node?.parameters?.url || "");
 
 function auditWorkflowDefinition(workflow) {
 const nodes = Array.isArray(workflow?.nodes) ? workflow.nodes : [];
+const workflowId = String(workflow?.id || "");
+const workflowName = String(workflow?.name || "").toLowerCase();
+const isOpsIngestSender = workflowId === "bedvcYsvsKV6H2uK" || workflowName.includes("ops ingest sender");
 const issues = [];
 for (const node of nodes) {
   if (String(node?.type || "") !== "n8n-nodes-base.httpRequest") continue;
@@ -632,7 +635,7 @@ for (const node of nodes) {
   const authHeader = workflowNodeHeaderValue(node, "Authorization");
   const nilSecretHeader = workflowNodeHeaderValue(node, "x-nil-secret");
 
-  if (url.includes("/ops/ingest") && !url.includes("OPS_INGEST_SENDER_URL")) {
+  if (!isOpsIngestSender && url.includes("/ops/ingest") && !url.includes("OPS_INGEST_SENDER_URL")) {
     issues.push({
       severity: "warn",
       type: "legacy_direct_ops_ingest",
