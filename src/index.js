@@ -595,8 +595,68 @@ for (const body of candidates) {
 return false;
 }
 function verifyOpsIngestAuth(req) {
-if (OPS_WEBHOOK_HMAC_SECRET) return verifyHmac(req);
+if (verifyHmac(req)) return true;
 return verifyWebhookSecret(req);
+}
+
+function normalizeWorkflowAuditValue(value) {
+return String(value || "").trim();
+}
+
+function workflowNodeHeaderValue(node, headerName) {
+const params = node?.parameters || {};
+const list = params?.headerParameters?.parameters;
+if (!Array.isArray(list)) return "";
+const found = list.find((entry) => String(entry?.name || "").toLowerCase() === String(headerName || "").toLowerCase());
+return normalizeWorkflowAuditValue(found?.value || "");
+}
+
+function workflowNodeUrl(node) {
+return normalizeWorkflowAuditValue(node?.parameters?.url || "");
+}
+
+function auditWorkflowDefinition(workflow) {
+const nodes = Array.isArray(workflow?.nodes) ? workflow.nodes : [];
+const issues = [];
+for (const node of nodes) {
+  if (String(node?.type || "") !== "n8n-nodes-base.httpRequest") continue;
+  const nodeName = String(node?.name || "unnamed_node");
+  const url = workflowNodeUrl(node);
+  const authHeader = workflowNodeHeaderValue(node, "Authorization");
+  const nilSecretHeader = workflowNodeHeaderValue(node, "x-nil-secret");
+
+  if (url.includes("/ops/ingest") && !url.includes("OPS_INGEST_SENDER_URL")) {
+    issues.push({
+      severity: "warn",
+      type: "legacy_direct_ops_ingest",
+      node: nodeName,
+      summary: `${nodeName} posts directly to /ops/ingest instead of WF09 HMAC sender`,
+    });
+  }
+
+  if (authHeader.includes("Bearer ") && !authHeader.includes("$env.")) {
+    issues.push({
+      severity: "warn",
+      type: "hardcoded_bearer",
+      node: nodeName,
+      summary: `${nodeName} uses a hard-coded Bearer token`,
+    });
+  }
+
+  if (nilSecretHeader && !nilSecretHeader.includes("$env.") && !nilSecretHeader.includes("={{")) {
+    issues.push({
+      severity: "degraded",
+      type: "literal_nil_secret",
+      node: nodeName,
+      summary: `${nodeName} uses a literal x-nil-secret header`,
+    });
+  }
+}
+return issues;
+}
+
+function summarizeWorkflowAuditIssues(issues = [], limit = 3) {
+return issues.slice(0, limit).map((issue) => issue.summary);
 }
 // ---------- UTIL ----------
 // ---------- ADMIN FILTER HELPER (v5.4) ----------
@@ -1520,6 +1580,7 @@ async function buildOpsHealthSummary() {
       openai_api_key_configured: !!OPENAI_API_KEY,
       support_from_email_configured: !!SUPPORT_FROM_EMAIL,
       outreach_from_email_configured: !!OUTREACH_FROM_EMAIL,
+      click_tracker_base_configured: !!CLICK_TRACKER_BASE_URL,
     },
     runtime: {
       last_outbox_tick_at: lastOutboxTickAt,
@@ -1607,7 +1668,12 @@ function buildWatchdogCardText(wd) {
   const workflowIssueLines = (workflows.checks || [])
     .filter((wf) => wf.status === "warn" || wf.status === "unknown" || wf.status === "degraded")
     .slice(0, 4)
-    .map((wf) => `${wf.id}: ${wf.detail || (wf.status === "unknown" ? "no recent signal" : "needs review")}`);
+    .map((wf) => {
+      const issueText = Array.isArray(wf.issues) && wf.issues.length
+        ? wf.issues.slice(0, 2).map((issue) => issue.summary).join(" | ")
+        : (wf.detail || (wf.status === "unknown" ? "no recent signal" : "needs review"));
+      return `${wf.id}: ${issueText}`;
+    });
   const workflowWarnCount = (workflows.checks || []).filter((wf) => wf.status === "warn").length;
   const workflowUnknownCount = (workflows.checks || []).filter((wf) => wf.status === "unknown").length;
   const opsRiskIssueLines = (operationsRisk.checks || [])
@@ -3391,9 +3457,20 @@ async function fetchN8nLiveData() {
     ]);
     const workflows = wfResp?.data || wfResp?.workflows || [];
     const executions = execResp?.data || execResp?.results || [];
-    return { workflows, executions, error: null };
+    const workflowDetailsEntries = await Promise.all(
+      workflows.map(async (wf) => {
+        try {
+          const detail = await fetchN8nAPI(`/workflows/${wf.id}`);
+          return [String(wf.id), detail];
+        } catch (_) {
+          return [String(wf.id), null];
+        }
+      })
+    );
+    const workflowDetails = Object.fromEntries(workflowDetailsEntries);
+    return { workflows, executions, workflowDetails, error: null };
   } catch (err) {
-    return { workflows: [], executions: [], error: shortErrorReason(err) };
+    return { workflows: [], executions: [], workflowDetails: {}, error: shortErrorReason(err) };
   }
 }
 
@@ -3404,17 +3481,17 @@ function n8nWorkflowMatch(wfName, keywords) {
 }
 
 // For a WF definition, find all matching live workflows and derive health.
-function deriveWfHealthFromLive(wfDef, liveWorkflows, executions) {
+function deriveWfHealthFromLive(wfDef, liveWorkflows, executions, workflowDetails = {}) {
   const matched = liveWorkflows.filter((w) => n8nWorkflowMatch(String(w.name || ""), wfDef.keywords));
   if (matched.length === 0) {
-    return { status: "unknown", detail: "no matching workflow found in n8n", noData: true };
+    return { status: "unknown", detail: "no matching workflow found in n8n", noData: true, issues: [] };
   }
 
   // Consider the WF healthy if at least one matched workflow is active.
   const activeMatches = matched.filter((w) => w.active === true);
   if (activeMatches.length === 0) {
     const inactive = matched.filter((w) => !w.active).map((w) => w.name).join(", ");
-    return { status: "degraded", detail: `no active workflow (inactive: ${inactive})`, noData: false };
+    return { status: "degraded", detail: `no active workflow (inactive: ${inactive})`, noData: false, issues: [] };
   }
 
   if (activeMatches.length > 1) {
@@ -3423,8 +3500,13 @@ function deriveWfHealthFromLive(wfDef, liveWorkflows, executions) {
       status: "degraded",
       detail: `multiple active workflows (${activeMatches.length}): ${activeNames}`,
       noData: false,
+      issues: [],
     };
   }
+
+  const activeWorkflow = activeMatches[0];
+  const staticIssues = auditWorkflowDefinition(workflowDetails[String(activeWorkflow.id)] || activeWorkflow);
+  const issueSummaries = summarizeWorkflowAuditIssues(staticIssues, 2);
 
   // Check last execution status across active matched workflows only.
   const matchedIds = new Set(activeMatches.map((w) => w.id));
@@ -3436,29 +3518,37 @@ function deriveWfHealthFromLive(wfDef, liveWorkflows, executions) {
       const ageMin = finished ? Math.round((Date.now() - new Date(finished).getTime()) / 60000) : null;
       return {
         status: "warn",
-        detail: `last exec ${latestExec.status}${ageMin != null ? ` (${ageMin}m ago)` : ""}`,
+        detail: `last exec ${latestExec.status}${ageMin != null ? ` (${ageMin}m ago)` : ""}${issueSummaries.length ? `; config: ${issueSummaries.join(" | ")}` : ""}`,
         noData: false,
         lastExecAt: finished,
         lastExecStatus: latestExec.status,
+        issues: staticIssues,
       };
     }
     const ageMin = finished ? Math.round((Date.now() - new Date(finished).getTime()) / 60000) : null;
     const ignoredInactive = Math.max(0, matched.length - activeMatches.length);
+    const status = staticIssues.length ? "degraded" : "ok";
     return {
-      status: "ok",
-      detail: `active (${activeMatches.length}), last exec ${latestExec.status}${ageMin != null ? ` (${ageMin}m ago)` : ""}${ignoredInactive ? `, ignored ${ignoredInactive} inactive` : ""}`,
+      status,
+      detail: `active (${activeMatches.length}), last exec ${latestExec.status}${ageMin != null ? ` (${ageMin}m ago)` : ""}${ignoredInactive ? `, ignored ${ignoredInactive} inactive` : ""}${issueSummaries.length ? `; config: ${issueSummaries.join(" | ")}` : ""}`,
       noData: false,
       lastExecAt: finished,
       lastExecStatus: latestExec.status,
+      issues: staticIssues,
     };
   }
 
   const ignoredInactive = Math.max(0, matched.length - activeMatches.length);
-  return { status: "ok", detail: `active (${activeMatches.length}), no recent executions${ignoredInactive ? `, ignored ${ignoredInactive} inactive` : ""}`, noData: false };
+  return {
+    status: staticIssues.length ? "degraded" : "ok",
+    detail: `active (${activeMatches.length}), no recent executions${ignoredInactive ? `, ignored ${ignoredInactive} inactive` : ""}${issueSummaries.length ? `; config: ${issueSummaries.join(" | ")}` : ""}`,
+    noData: false,
+    issues: staticIssues,
+  };
 }
 
 async function sbWatchdogWorkflowChecks() {
-  const { workflows: liveWorkflows, executions, error: apiError } = await fetchN8nLiveData();
+  const { workflows: liveWorkflows, executions, workflowDetails, error: apiError } = await fetchN8nLiveData();
 
   // WF01–WF09 definitions with keyword sets matching real n8n workflow names
   const wfDefs = [
@@ -3483,7 +3573,7 @@ async function sbWatchdogWorkflowChecks() {
         noData: true,
       };
     }
-    const health = deriveWfHealthFromLive(wfDef, liveWorkflows, executions);
+    const health = deriveWfHealthFromLive(wfDef, liveWorkflows, executions, workflowDetails);
     return {
       id: wfDef.id,
       name: wfDef.name,
@@ -3492,6 +3582,7 @@ async function sbWatchdogWorkflowChecks() {
       noData: health.noData === true,
       lastExecAt: health.lastExecAt || null,
       lastExecStatus: health.lastExecStatus || null,
+      issues: Array.isArray(health.issues) ? health.issues : [],
     };
   });
 
@@ -3593,6 +3684,51 @@ async function sbWatchdogOperationsRiskChecks() {
       name: "auth_signature_errors",
       status: "degraded",
       summary: `unable to read auth/signature errors: ${shortErrorReason(err)}`,
+    });
+  }
+
+  try {
+    if (!CLICK_TRACKER_BASE_URL) {
+      checks.push({
+        name: "cloudflare_click_tracker",
+        status: "degraded",
+        summary: "CLICK_TRACKER_BASE_URL missing",
+      });
+    } else {
+      const url = `${CLICK_TRACKER_BASE_URL.replace(/\/+$/g, "")}/parent-guide`;
+      const resp = await fetch(url, { method: "GET", redirect: "manual" });
+      const location = String(resp.headers.get("location") || "");
+      const ok = resp.status >= 300 && resp.status < 400 && !!location;
+      checks.push({
+        name: "cloudflare_click_tracker",
+        status: ok ? "ok" : "warn",
+        summary: ok ? `click tracker reachable (${resp.status})` : `click tracker unhealthy (${resp.status})`,
+        location: location || null,
+      });
+    }
+  } catch (err) {
+    checks.push({
+      name: "cloudflare_click_tracker",
+      status: "warn",
+      summary: `click tracker unreachable: ${shortErrorReason(err)}`,
+    });
+  }
+
+  try {
+    const workerSoftErrors = await sbCountRowsSafe("click_events", (q) => q.eq("kind", "cloudflare_worker_soft_error").gte("created_at", windowIso));
+    checks.push({
+      name: "cloudflare_worker_soft_errors",
+      status: Number(workerSoftErrors || 0) > 0 ? "warn" : "ok",
+      summary: Number(workerSoftErrors || 0) > 0
+        ? `${Number(workerSoftErrors || 0)} cloudflare worker soft errors in last ${OPS_RISK_BURST_WINDOW_MINUTES}m`
+        : "no cloudflare worker soft errors detected",
+      total: Number(workerSoftErrors || 0),
+    });
+  } catch (err) {
+    checks.push({
+      name: "cloudflare_worker_soft_errors",
+      status: "degraded",
+      summary: `unable to read cloudflare worker soft errors: ${shortErrorReason(err)}`,
     });
   }
 
@@ -9977,7 +10113,7 @@ async function buildFirmReadinessReport() {
   };
 }
 
-app.get("/health", (_req, res) => {
+app.get("/health", async (_req, res) => {
   const warnings = [];
   if (!MAKE_SEND_WEBHOOK_URL) warnings.push("MAKE_SEND_WEBHOOK_URL missing");
   if (!CC_SUPPORT_WEBHOOK_URL) warnings.push("CC_SUPPORT_WEBHOOK_URL missing");
@@ -9988,6 +10124,24 @@ app.get("/health", (_req, res) => {
   if (FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY && !CLICK_TRACKER_BASE_URL) {
     warnings.push("CLICK_TRACKER_BASE_URL missing");
   }
+  const wd = await runDataWatchdog();
+  const workflowIssues = (wd?.workflows?.checks || [])
+    .filter((wf) => wf.status === "warn" || wf.status === "degraded" || wf.status === "unknown" || (wf.issues || []).length)
+    .slice(0, 8)
+    .map((wf) => ({
+      id: wf.id,
+      status: wf.status,
+      detail: wf.detail,
+      issues: Array.isArray(wf.issues) ? wf.issues.slice(0, 3).map((issue) => issue.summary) : [],
+    }));
+  const operationsIssues = (wd?.operationsRisk?.checks || [])
+    .filter((check) => check.status === "warn" || check.status === "degraded" || check.status === "unknown")
+    .slice(0, 8)
+    .map((check) => ({
+      name: check.name,
+      status: check.status,
+      summary: check.summary,
+    }));
 
   res.json({
     ok: true,
@@ -10008,6 +10162,14 @@ app.get("/health", (_req, res) => {
       telegram_bot_enabled: ENABLE_TELEGRAM_BOT,
       telegram_bot_active: TELEGRAM_BOT_ACTIVE,
       live_refresh_enabled: ENABLE_TELEGRAM_LIVE_REFRESH,
+    },
+    watchdog: {
+      overall: wd?.overallStatus || "unknown",
+      workflows: wd?.workflows?.overall || "unknown",
+      operationsRisk: wd?.operationsRisk?.overall || "unknown",
+      schema: wd?.schema?.overall || "unknown",
+      workflowIssues,
+      operationsIssues,
     },
     timestamp: new Date().toISOString(),
   });

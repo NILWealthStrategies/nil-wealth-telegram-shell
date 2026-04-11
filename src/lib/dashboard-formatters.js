@@ -9,6 +9,20 @@ const {
 function buildOpsHealthText(summary) {
   const cfg = summary?.config || {};
   const rt = summary?.runtime || {};
+  const wd = summary?.watchdog || {};
+  const workflowIssues = (wd?.workflows?.checks || [])
+    .filter((wf) => wf.status === "warn" || wf.status === "degraded" || wf.status === "unknown" || (wf.issues || []).length)
+    .slice(0, 5)
+    .map((wf) => {
+      const issueText = Array.isArray(wf.issues) && wf.issues.length
+        ? wf.issues.slice(0, 2).map((issue) => issue.summary).join(" | ")
+        : (wf.detail || "needs review");
+      return `${wf.id}: ${issueText}`;
+    });
+  const opsIssues = (wd?.operationsRisk?.checks || [])
+    .filter((check) => check.status === "warn" || check.status === "degraded" || check.status === "unknown")
+    .slice(0, 5)
+    .map((check) => check.summary || `${check.name}: needs review`);
   const b = (v) => (v ? "yes" : "no");
   return `🩺 OPS HEALTH
 --
@@ -19,11 +33,19 @@ HANDOFF_WEBHOOK_URL: ${b(cfg.handoff_webhook_configured)}
 OPENAI_API_KEY: ${b(cfg.openai_api_key_configured)}
 SUPPORT_FROM_EMAIL: ${b(cfg.support_from_email_configured)}
 OUTREACH_FROM_EMAIL: ${b(cfg.outreach_from_email_configured)}
+CLICK_TRACKER_BASE_URL: ${b(cfg.click_tracker_base_configured)}
 
 Runtime
 Last Outbox Tick: ${rt.last_outbox_tick_at || "never"}
 Dead Letter Backlog: ${rt.dead_letter_backlog == null ? "n/a" : rt.dead_letter_backlog}
 Pending Handoffs: ${rt.pending_handoff_conversations == null ? "n/a" : rt.pending_handoff_conversations}
+
+Watchdog
+Overall: ${wd?.overallStatus || "unknown"}
+Workflow Health: ${wd?.workflows?.overall || "unknown"}
+Operations Risk: ${wd?.operationsRisk?.overall || "unknown"}
+Workflow Issues: ${workflowIssues.length ? workflowIssues.join("; ") : "none"}
+Ops Issues: ${opsIssues.length ? opsIssues.join("; ") : "none"}
 --`;
 }
 
