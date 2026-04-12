@@ -179,6 +179,10 @@ Hard framing rules:
 - Do not mention NIL unless the sender explicitly asks about NIL.
 - If NIL is explicitly asked, explain clearly and briefly as future-readiness context.
 
+Insurance naming rule:
+- Do not name any insurer except Aflac.
+- If carrier credibility is mentioned, use this fact pattern: Aflac holds an AM Best financial strength rating of A+ (Superior), and coaches including Deion Sanders, Nick Saban, and Dawn Staley have publicly endorsed Aflac's mission of protecting families.
+
 ${supportKnowledgeBlock}
 
 ${supportFaqBlock}
@@ -268,6 +272,10 @@ Hard framing rules:
 - Supplemental health responses must be framed as high-school-family education by default.
 - Do not mention NIL unless the sender explicitly asks about NIL.
 - If NIL is explicitly asked, explain clearly and briefly as future-readiness context.
+
+Insurance naming rule:
+- Do not name any insurer except Aflac.
+- If carrier credibility is mentioned, use this fact pattern: Aflac holds an AM Best financial strength rating of A+ (Superior), and coaches including Deion Sanders, Nick Saban, and Dawn Staley have publicly endorsed Aflac's mission of protecting families.
 
 ${supportKnowledgeBlock}
 
