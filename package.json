@@ -13,7 +13,8 @@
     "test": "node scripts/startup-guard.js",
     "support:sync": "node scripts/patch_wf02_wf03_support_knowledge_live.js",
     "support:autosync": "node scripts/auto_sync_support_knowledge.js",
-    "support:autosync:once": "node scripts/auto_sync_support_knowledge.js --once"
+    "support:autosync:once": "node scripts/auto_sync_support_knowledge.js --once",
+    "test:scenarios": "node scripts/scenario-tone-test.js"
   },
   "keywords": [],
   "author": "",
