@@ -4761,7 +4761,7 @@ async function runTestScenario(scType) {
       "Style lane E: low-pressure check-in with direct ask",
     ][Math.floor(Math.random() * 5)];
     const result = JSON.parse(await askAI(OUTREACH_SYS,
-      `Create 3 follow-up reply drafts for this outreach conversation:\n${payload}\n\nRules:\n- Tone: conversational and relationship-building, while still professional\n- Voice should feel credible and coach-to-coach without sounding overly cool\n- You may say \"I was a Division I student-athlete\" in one natural short line\n- Keep wording simple and clear, avoid big words and avoid slang\n- Keep punctuation light, no hype punctuation and no repeated exclamation points\n- No formal greetings no corporate polish\n- No meeting or call suggestions unless explicitly asked\n- Under 110 words each\n- Include one clear next step\n- Make V1 V2 and V3 clearly different in opening line structure and CTA wording\n- Do not reuse the same first sentence across versions\n- Do not mention AI\n- Do not name any insurer except Aflac\n- ${outreachStyle}\nReturn: {"v1":{"subject":"...","body":"..."},"v2":{"subject":"...","body":"..."},"v3":{"subject":"...","body":"..."}}`,
+      `Create 3 follow-up reply drafts for this outreach conversation:\n${payload}\n\nRules:\n- Tone: conversational and relationship-building, while still professional\n- Voice should feel credible and coach-to-coach without sounding overly cool\n- Keep phrasing fluent and natural; avoid forced wording\n- You may say \"I was a Division I student-athlete\" in one natural short line\n- Keep wording simple and clear, avoid big words and avoid slang\n- Keep punctuation light, no hype punctuation and no repeated exclamation points\n- No formal greetings no corporate polish\n- No meeting or call suggestions unless explicitly asked\n- Under 110 words each\n- Include one clear next step\n- Make V1 V2 and V3 clearly different in opening line structure and CTA wording\n- Do not reuse the same first sentence across versions\n- Do not mention AI\n- Do not name any insurer except Aflac\n- ${outreachStyle}\nReturn: {"v1":{"subject":"...","body":"..."},"v2":{"subject":"...","body":"..."},"v3":{"subject":"...","body":"..."}}`,
       true
     ));
     v1 = result?.v1?.body || ""; v1subj = result?.v1?.subject || sc.subject;
@@ -4793,7 +4793,7 @@ async function runTestScenario(scType) {
     try {
       const ccSys = "You generate CC Support messages for NIL Wealth Strategies. Bridge: very casual, short note from outreach person to coach looping in support. Support: formal message the coach forwards to parent group. Do not name any insurer except Aflac. If carrier credibility is mentioned, include that Aflac holds an AM Best financial strength rating of A+ (Superior), and coaches including Deion Sanders, Nick Saban, and Dawn Staley have publicly endorsed Aflac's mission of protecting families. Return JSON.";
       const ccResult = JSON.parse(await askAI(ccSys,
-        `Generate CC messages for this coach conversation:\nCoach: ${sc.name} — ${sc.school} ${sc.sport} (${sc.state})\nMessage: ${sc.message}\n\nBridge (concise, conversational, professional; under 50 words; outreach person says support team is looped in; do not repeat the coach name in the bridge body):\nSupport (formal, under 130 words, written to be forwarded to the parent group — give parents full context, mention supplemental health and risk education for athletes, include this exact line: "You can respond to this message with any questions — we're happy to help." and include: "Learn more in the Parent Guide:" on one line followed by this link on the next line: https://mynilwealthstrategies.com/access-parent-guide):\n\nReturn: {"bridge":{"body":"..."},"support":{"body":"..."}}`,
+        `Generate CC messages for this coach conversation:\nCoach: ${sc.name} — ${sc.school} ${sc.sport} (${sc.state})\nMessage: ${sc.message}\n\nBridge (concise, conversational, professional; under 50 words; outreach person says support team is looped in; do not repeat the coach name in the bridge body):\nSupport (formal, under 150 words, written to be forwarded to the parent group — give parents full context, mention supplemental health and risk education for athletes, include this exact line: "You can respond to this message with any questions — we're happy to help.", include role clarity that coaches do not sell/handle money/paperwork and families enroll directly with Aflac, include that NIL Wealth Strategies provides education and support only, include that coverage is optional and families can move at their own pace, and include: "Learn more in the Parent Guide:" on one line followed by this link on the next line: https://mynilwealthstrategies.com/access-parent-guide):\n\nReturn: {"bridge":{"body":"..."},"support":{"body":"..."}}`,
         true
       ));
       ccBridge = ccResult?.bridge?.body || "";
@@ -4803,7 +4803,7 @@ async function runTestScenario(scType) {
     try {
       const ccSys = "You generate CC Support responses for NIL Wealth Strategies. Formal, professional, addresses insurance gap concerns clearly. Do not name any insurer except Aflac. If carrier credibility is mentioned, include that Aflac holds an AM Best financial strength rating of A+ (Superior), and coaches including Deion Sanders, Nick Saban, and Dawn Staley have publicly endorsed Aflac's mission of protecting families. Return JSON.";
       const ccResult = JSON.parse(await askAI(ccSys,
-        `Generate a CC Support response for a parent who said they feel well-covered and question the gap:\nParent: ${sc.name}\nMessage: "${sc.message}"\n\nWrite a formal, warm CC support message (under 150 words) that:\n1) Acknowledges they have existing health coverage\n2) Explains supplemental coverage fills gaps existing plans typically do not cover (deductibles, copays, out-of-pocket costs, hospital stays)\n3) States this is optional and family-driven\n4) Includes this exact line: "You can respond to this message with any questions — we're happy to help."\n5) Includes: "Learn more in the Parent Guide:" on one line and this link on the next line: https://mynilwealthstrategies.com/access-parent-guide\n\nReturn: {"body":"..."}`,
+        `Generate a CC Support response for a parent who said they feel well-covered and question the gap:\nParent: ${sc.name}\nMessage: "${sc.message}"\n\nWrite a formal, warm CC support message (under 150 words) that:\n1) Acknowledges they have existing health coverage\n2) Explains supplemental coverage fills gaps existing plans typically do not cover (deductibles, copays, out-of-pocket costs, hospital stays)\n3) States this is optional and family-driven\n4) States coaches do not sell, explain in detail, or enroll insurance\n5) States coaches do not handle money or paperwork\n6) States families review options and enroll directly with Aflac\n7) States NIL Wealth Strategies provides education and support only\n8) Includes own-pace wording (families can move at their own pace)\n9) Includes this exact line: "You can respond to this message with any questions — we're happy to help."\n10) Includes: "Learn more in the Parent Guide:" on one line and this link on the next line: https://mynilwealthstrategies.com/access-parent-guide\n\nReturn: {"body":"..."}`,
         true
       ));
       ccSupport = ccResult?.body || "";
@@ -8258,6 +8258,7 @@ Rules:
 - This is a manual reply in an ongoing outreach thread after the coach already answered
 - Outreach tone should feel personal, human, and relationship-building while still professional
 - Sound like a credible former athlete speaking coach to coach
+- Keep phrasing fluent and natural; avoid forced wording
 - If relevant, include a brief Division I background mention in only one version
 - Keep vocabulary simple, comfortable, and clear
 - Keep punctuation light no hype and no repeated exclamation points
@@ -8329,7 +8330,7 @@ temperature: 0.7,
 response_format: { type: "json_object" },
 messages: [
 { role: "system", content: "You write CC bridge and support messages. HARD TONE RULES: Bridge drafts should be concise, conversational, and professional (not stiff, not slangy). Do not repeat the coach's name in the bridge body. Support drafts must be FORMAL — professional, complete sentences, structured, warm but polished, written to be forwarded to parents. Support drafts are fully self-contained so a parent who has never heard of this program gets complete context. Support drafts must explicitly tell parents they can respond to this message with questions, explain what this email is about, and include a compelling call-to-action to click the parent guide link. Insurance mention rule: do not name any insurer except Aflac. If carrier credibility is mentioned, include: Aflac holds an AM Best financial strength rating of A+ (Superior), and coaches including Deion Sanders, Nick Saban, and Dawn Staley have publicly endorsed Aflac's mission of protecting families. Return JSON with bridge (v1-v3) and support (v1-v3) drafts, each with subject and body." },
-{ role: "user", content: `Create CC drafts for this conversation:\n${JSON.stringify(prompt)}\n\nCreate 6 drafts total:\n\nBridge messages (sent from outreach to coach contact):\n- V1: Short/Direct (\"Looping in our support team...\")\n- V2: Warm/Personal (build relationship, mention parents will receive helpful info)\n- V3: Ultra-brief (executive style)\n- Bridge drafts should sound like a real person, not a support ticket\n- Do not repeat the coach's name in the bridge body\n\nSupport messages (forwarded from ${SUPPORT_FROM_EMAIL} — parents are the final reader):\n- These are written assuming the coach will forward this email to their parent group\n- Parents reading this have no prior context — give them enough to understand what this is about\n- REQUIRED in every support draft:\n  1. Context opener: 1-2 sentences explaining what this email is and why they're receiving it\n  2. What this program provides for high school athletes and their families (supplemental health, risk education, tax education)\n  3. A clear line telling parents: \"You can reply directly to this email with any questions — we're happy to help.\"\n  4. A compelling, specific reason to click the parent guide — not just a bare link. Frame it as: \"We put everything you need to know in one place\" or similar warm, specific language\n  5. The actual parent guide link on its own line: ${parentGuideLink}\n- V1: Professional/Detailed — full context, all 5 required elements, structured\n- V2: Warm/Encouraging — conversational, parent-first tone, all 5 required elements\n- V3: Quick/Action-focused — concise, lead with the guide CTA, all 5 required elements\n\nGlobal rules:\n- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless the count is explicitly provided in the prompt\n- Keep all under 160 words\n- Avoid generic corporate filler\n- Never mention NIL unless it was explicitly in the inbound message\nReturn: {\"bridge\":{\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}},\"support\":{\"v1\":{...},\"v2\":{...},\"v3\":{...}}}` }
+{ role: "user", content: `Create CC drafts for this conversation:\n${JSON.stringify(prompt)}\n\nCreate 6 drafts total:\n\nBridge messages (sent from outreach to coach contact):\n- V1: Short/Direct (\"Looping in our support team...\")\n- V2: Warm/Personal (build relationship, mention parents will receive helpful info)\n- V3: Ultra-brief (executive style)\n- Bridge drafts should sound like a real person, not a support ticket\n- Do not repeat the coach's name in the bridge body\n\nSupport messages (forwarded from ${SUPPORT_FROM_EMAIL} — parents are the final reader):\n- These are written assuming the coach will forward this email to their parent group\n- Parents reading this have no prior context — give them enough to understand what this is about\n- REQUIRED in every support draft:\n  1. Context opener: 1-2 sentences explaining what this email is and why they're receiving it\n  2. What this program provides for high school athletes and their families (supplemental health, risk education, tax education)\n  3. A clear line telling parents: \"You can respond to this message with any questions — we're happy to help.\"\n  4. A compelling, specific reason to click the parent guide — not just a bare link. Frame it as: \"We put everything you need to know in one place\" or similar warm, specific language\n  5. The actual parent guide link on its own line: ${parentGuideLink}\n  6. Include role clarity in fluent wording: coaches do not sell, explain in detail, or enroll insurance; coaches do not handle money or paperwork; families review options and enroll directly with Aflac; NIL Wealth Strategies provides education and support only\n  7. Include optional pace language in fluent wording: coverage is optional and families can move at their own pace\n- V1: Professional/Detailed — full context, all required elements, structured\n- V2: Warm/Encouraging — conversational, parent-first tone, all required elements\n- V3: Quick/Action-focused — concise, lead with the guide CTA, all required elements\n\nGlobal rules:\n- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless the count is explicitly provided in the prompt\n- Keep all under 160 words\n- Avoid generic corporate filler\n- Never mention NIL unless it was explicitly in the inbound message\nReturn: {\"bridge\":{\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}},\"support\":{\"v1\":{...},\"v2\":{...},\"v3\":{...}}}` }
 ]
 })
 });
@@ -8341,9 +8342,32 @@ const parsed = JSON.parse(content);
 for (const key of ["v1", "v2", "v3"]) {
   const draft = parsed?.support?.[key];
   if (!draft || typeof draft.body !== "string") continue;
-  if (!draft.body.includes(parentGuideLink)) {
-    draft.body = `${draft.body.trim()}\n\nLearn more in the Parent Guide:\n${parentGuideLink}\n\nYou can respond to this message with any questions — we're happy to help.`.trim();
+  const body = String(draft.body || "").trim();
+  const hasGuide = body.includes(parentGuideLink);
+  const hasRespondLine = /respond to this message/i.test(body);
+  const hasCoachBoundary = /coaches? do not sell|coaches? do not handle money|enroll directly with aflac|education and support only/i.test(body);
+  const hasOptionalPace = /optional|own pace|at their own pace|at your own pace/i.test(body);
+
+  const roleClarity = "Coaches do not sell, explain in detail, or enroll insurance. Coaches do not handle money or paperwork. Families review options and enroll directly with Aflac. NIL Wealth Strategies provides education and support only. Coverage is optional, and families can move at their own pace.";
+
+  let nextBody = body;
+  if (!hasCoachBoundary || !hasOptionalPace) {
+    nextBody = `${nextBody}
+
+${roleClarity}`.trim();
   }
+  if (!hasGuide) {
+    nextBody = `${nextBody}
+
+Learn more in the Parent Guide:
+${parentGuideLink}`.trim();
+  }
+  if (!hasRespondLine) {
+    nextBody = `${nextBody}
+
+You can respond to this message with any questions — we're happy to help.`.trim();
+  }
+  draft.body = nextBody;
 }
 return parsed;
 }

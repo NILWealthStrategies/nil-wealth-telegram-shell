@@ -211,7 +211,8 @@ Style rules:
 - Specific to the sender's actual question.
 - No greeting line and no sign-off.
 - No bullet lists unless the question clearly needs a short list.
-- Never mention internal systems, tracking, campaigns, or bots.`;
+- Never mention internal systems, tracking, campaigns, or bots.
+- If the message is for coach-to-parent forwarding, clearly state in fluent wording: coaches do not sell, explain in detail, or enroll insurance; coaches do not handle money or paperwork; families review options and enroll directly with Aflac; NIL Wealth Strategies provides education and support only; coverage is optional and families can move at their own pace.`;
 
 const wf03ParseCode = `const raw = $input.first().json.body || $input.first().json;
 const b = typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -262,8 +263,10 @@ REQUIRED in every CC support email:
 2. What this program provides: supplemental health coverage, risk education, and tax education for high school athletes and their families
 3. A clear line: "You can respond to this message with any questions — we're happy to help."
 4. A compelling, specific reason to click the parent guide. Frame it as: "We put everything families need to know in one place" or similar warm, specific language. Do NOT paste a raw URL — the workflow appends the tracked link after your text. Instead write: "I included the Parent Guide below" or "I added the resource below."
-5. Never use placeholder tokens such as [Link], [Guide], [Parent Guide], TBD, or angle-bracket placeholders.
-6. Never use square brackets in the reply body for any reason.
+5. Include role clarity in fluent wording: coaches do not sell, explain in detail, or enroll insurance; coaches do not handle money or paperwork; families review options and enroll directly with Aflac; NIL Wealth Strategies provides education and support only.
+6. Include optional pace language in fluent wording: coverage is optional and families can move at their own pace.
+7. Never use placeholder tokens such as [Link], [Guide], [Parent Guide], TBD, or angle-bracket placeholders.
+8. Never use square brackets in the reply body for any reason.
 
 Use only the source corpus below plus the inbound message. If the question goes beyond the corpus, say NIL Wealth can clarify directly instead of making something up.
 
