@@ -30,6 +30,7 @@ values
   ('tax-education-guide', 'How much should athletes set aside for taxes?', 'A practical educational baseline is roughly 25 to 30 percent until exact estimates are calculated.'),
   ('tax-education-guide', 'What estimated tax dates are commonly referenced?', 'April 15, June 15, September 15, and January 15.'),
   ('tax-education-guide', 'Does the standard deduction remove self-employment tax?', 'No. The standard deduction may reduce income tax but does not remove self-employment tax exposure.'),
+  ('main-site', 'Should support mention NIL if the parent or coach did not ask about NIL?', 'No. Keep default framing focused on high school athlete families and supplemental health, risk, and tax education unless NIL is explicitly asked about.'),
   ('main-site', 'Can NIL Wealth give individualized legal, tax, or medical advice in support replies?', 'Support replies are educational and should not provide individualized legal, tax, or medical advice.'),
   ('main-site', 'Can support guarantee coverage approval, claim payouts, or exact outcomes?', 'No. Support should never guarantee underwriting, claims outcomes, or specific coverage results.'),
   ('parent-guide', 'Can support claim school endorsement?', 'No. Support should not state or imply school endorsement unless formally and explicitly approved.'),
@@ -40,7 +41,8 @@ values
   ('main-site', 'How can people contact support directly?', 'Support contact is available through support@mynilwealthstrategies.com and the website contact channels.'),
   ('main-site', 'Is there a quick text path to enrollment access?', 'Yes. Quick enroll by text is available at (855) 515-9844.'),
   ('parent-guide', 'What should be said when asked about medical bill gaps after injuries?', 'Explain that families often face deductibles, copays, coinsurance, travel, and income disruption even with primary insurance.'),
-  ('supplemental-health-guide', 'How should support handle objections about replacing health insurance?', 'Clearly state supplemental coverage is designed to supplement, not replace, primary health insurance.')
+  ('supplemental-health-guide', 'How should support handle objections about replacing health insurance?', 'Clearly state supplemental coverage is designed to supplement, not replace, primary health insurance.'),
+  ('supplemental-health-guide', 'Who is supplemental health guidance for by default?', 'By default, frame supplemental health guidance for high school athletes and their families, regardless of NIL status.')
 on conflict (source_key, question) do update
 set
   answer = excluded.answer,

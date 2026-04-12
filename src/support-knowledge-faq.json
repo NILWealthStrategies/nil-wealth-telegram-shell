@@ -1,0 +1,166 @@
+{
+  "generated_at": "2026-04-11",
+  "owner": "NIL Wealth Strategies",
+  "faq": [
+    {
+      "question": "Is supplemental coverage required?",
+      "answer": "No. Coverage is optional and family-driven.",
+      "source_key": "parent-guide"
+    },
+    {
+      "question": "Does this replace major medical insurance?",
+      "answer": "No. Supplemental coverage works alongside major medical and does not replace primary health insurance.",
+      "source_key": "parent-guide"
+    },
+    {
+      "question": "What are the enrollment steps?",
+      "answer": "Review the education page, submit the short request form, receive secure enrollment access, review options and complete enrollment only if you choose.",
+      "source_key": "main-site"
+    },
+    {
+      "question": "How long does approval usually take?",
+      "answer": "Underwriting is typically completed in about 1 to 3 business days after submission, depending on carrier process.",
+      "source_key": "main-site"
+    },
+    {
+      "question": "Who handles enrollment and claims?",
+      "answer": "The insurance carrier handles enrollment, underwriting, policy administration, and claims. NIL Wealth provides educational support.",
+      "source_key": "supplemental-health-guide"
+    },
+    {
+      "question": "Who can enroll?",
+      "answer": "Adults can enroll directly. For minors, a parent or legal guardian completes enrollment.",
+      "source_key": "main-site"
+    },
+    {
+      "question": "What can cash benefits be used for?",
+      "answer": "Families can use benefits for deductibles, copays, bills, travel, recovery expenses, and income disruption during covered events.",
+      "source_key": "supplemental-health-guide"
+    },
+    {
+      "question": "Is this only for sports injuries?",
+      "answer": "No. Coverage may also apply to covered everyday accidents and covered hospital events, based on policy terms.",
+      "source_key": "supplemental-health-guide"
+    },
+    {
+      "question": "What if school insurance exists already?",
+      "answer": "School athletic coverage may be limited by scope, caps, and secondary status. Supplemental coverage is designed to help address gaps.",
+      "source_key": "parent-guide"
+    },
+    {
+      "question": "Is pricing fixed for everyone?",
+      "answer": "No. Pricing is carrier-determined and varies by state, age, selected benefits, and other carrier factors.",
+      "source_key": "main-site"
+    },
+    {
+      "question": "Can benefits stack if an accident leads to hospitalization?",
+      "answer": "Covered benefits may stack across selected coverages according to policy schedules and terms.",
+      "source_key": "supplemental-health-guide"
+    },
+    {
+      "question": "Can coverage continue through school or job changes?",
+      "answer": "Coverage is generally portable when policy terms are maintained.",
+      "source_key": "supplemental-health-guide"
+    },
+    {
+      "question": "Where should families start if they just want a forwardable overview?",
+      "answer": "Start with the Parent Guide for a clear, forwardable educational overview.",
+      "source_key": "parent-guide"
+    },
+    {
+      "question": "What are the four core risks in NIL risk awareness?",
+      "answer": "Income risk, tax/compliance risk, liability risk, and decision risk.",
+      "source_key": "risk-awareness-guide"
+    },
+    {
+      "question": "What does misinsured vs underinsured mean?",
+      "answer": "Many families are misinsured (wrong fit) rather than simply underinsured (too little limit).",
+      "source_key": "risk-awareness-guide"
+    },
+    {
+      "question": "Are taxes usually withheld from NIL income?",
+      "answer": "Usually no. NIL income is often reported on 1099 forms and taxes are not automatically withheld.",
+      "source_key": "tax-education-guide"
+    },
+    {
+      "question": "How much should athletes set aside for taxes?",
+      "answer": "A practical educational baseline is roughly 25 to 30 percent until exact estimates are calculated.",
+      "source_key": "tax-education-guide"
+    },
+    {
+      "question": "What estimated tax dates are commonly referenced?",
+      "answer": "April 15, June 15, September 15, and January 15.",
+      "source_key": "tax-education-guide"
+    },
+    {
+      "question": "Does the standard deduction remove self-employment tax?",
+      "answer": "No. The standard deduction may reduce income tax but does not remove self-employment tax exposure.",
+      "source_key": "tax-education-guide"
+    },
+    {
+      "question": "Should support mention NIL if the parent or coach did not ask about NIL?",
+      "answer": "No. Keep default framing focused on high school athlete families and supplemental health, risk, and tax education unless NIL is explicitly asked about.",
+      "source_key": "main-site"
+    },
+    {
+      "question": "Can NIL Wealth give individualized legal, tax, or medical advice in support replies?",
+      "answer": "Support replies are educational and should not provide individualized legal, tax, or medical advice.",
+      "source_key": "main-site"
+    },
+    {
+      "question": "Can support guarantee coverage approval, claim payouts, or exact outcomes?",
+      "answer": "No. Support should never guarantee underwriting, claims outcomes, or specific coverage results.",
+      "source_key": "main-site"
+    },
+    {
+      "question": "Can support claim school endorsement?",
+      "answer": "No. Support should not state or imply school endorsement unless formally and explicitly approved.",
+      "source_key": "parent-guide"
+    },
+    {
+      "question": "What if a family asks whether this is a sales requirement?",
+      "answer": "State clearly that this is educational, optional, and family-driven with no requirement to enroll.",
+      "source_key": "parent-guide"
+    },
+    {
+      "question": "What if someone asks for legal interpretation of a policy contract?",
+      "answer": "Provide educational context only and recommend consulting licensed legal professionals for legal interpretation.",
+      "source_key": "risk-awareness-guide"
+    },
+    {
+      "question": "What if someone asks for personalized tax filing decisions?",
+      "answer": "Provide educational guidance and recommend formal professional tax engagement for individual filing decisions.",
+      "source_key": "tax-education-guide"
+    },
+    {
+      "question": "How should support answer concerns about pressure or urgency?",
+      "answer": "Use a no-pressure tone and reinforce that families can review options at their own pace.",
+      "source_key": "risk-awareness-guide"
+    },
+    {
+      "question": "How can people contact support directly?",
+      "answer": "Support contact is available through support@mynilwealthstrategies.com and the website contact channels.",
+      "source_key": "main-site"
+    },
+    {
+      "question": "Is there a quick text path to enrollment access?",
+      "answer": "Yes. Quick enroll by text is available at (855) 515-9844.",
+      "source_key": "main-site"
+    },
+    {
+      "question": "What should be said when asked about medical bill gaps after injuries?",
+      "answer": "Explain that families often face deductibles, copays, coinsurance, travel, and income disruption even with primary insurance.",
+      "source_key": "parent-guide"
+    },
+    {
+      "question": "How should support handle objections about replacing health insurance?",
+      "answer": "Clearly state supplemental coverage is designed to supplement, not replace, primary health insurance.",
+      "source_key": "supplemental-health-guide"
+    },
+    {
+      "question": "Who is supplemental health guidance for by default?",
+      "answer": "By default, frame supplemental health guidance for high school athletes and their families, regardless of NIL status.",
+      "source_key": "supplemental-health-guide"
+    }
+  ]
+}
