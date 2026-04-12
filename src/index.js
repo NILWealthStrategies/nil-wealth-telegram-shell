@@ -4651,8 +4651,8 @@ if (!OPENAI_API_KEY) {
 // ── helpers ──────────────────────────────────────────────
 const notContains = (v, ...terms) => { const l = v.toLowerCase(); return !terms.some(t => l.includes(t.toLowerCase())); };
 const contains = (v, ...terms) => { const l = v.toLowerCase(); return terms.some(t => l.includes(t.toLowerCase())); };
-const wc = (s) => s.trim().split(/\s+/).filter(Boolean).length;
-const chk = (label, pass) => pass ? `✅ ${label}` : `❌ ${label}`;
+const wcount = (s) => s.trim().split(/\s+/).filter(Boolean).length;
+const esc = (s) => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const extractNoLink = (raw) => {
   const m = raw.match(/NO_LINK_VERSION:\s*([\s\S]*?)(?=\n{0,3}LINK_VERSION:|\n{0,3}RECOMMENDATION:|$)/i);
   return m ? m[1].trim() : raw.trim();
@@ -4661,7 +4661,6 @@ const extractRec = (raw) => {
   const m = raw.match(/RECOMMENDATION:\s*([\s\S]*?)$/i);
   return m ? m[1].trim() : "";
 };
-const esc = (s) => String(s || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 async function askAI(system, user, json = false) {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -4679,198 +4678,245 @@ async function askAI(system, user, json = false) {
 // ── step 1: fetch live n8n prompts ───────────────────────
 const WF02_ID = "U21Tv3PDwmHrVHpJ";
 const WF03_ID = "8VGrCBq2xsKQadfM";
-let liveSupport1Sys = null; // WF02 — inbound Gmail reply
-let liveSupport2Sys = null; // WF03 — CC forwardable email
-let n8nStatus = "⚠️ n8n prompts: using local fallback";
+let liveSupport1Sys = null;
+let n8nStatus = "⚠️ n8n: local fallback";
 
 try {
-  const [wf02Raw, wf03Raw] = await Promise.all([
+  const [wf02Raw] = await Promise.all([
     fetchN8nAPI(`/workflows/${WF02_ID}`, 14000),
-    fetchN8nAPI(`/workflows/${WF03_ID}`, 14000),
   ]);
   const wf02 = wf02Raw?.data || wf02Raw;
-  const wf03 = wf03Raw?.data || wf03Raw;
   const n02 = (wf02?.nodes || []).find(n => n.name === "[GMAIL] AI: Draft Support Reply");
-  const n03 = (wf03?.nodes || []).find(n => n.name === "[CC] AI: Compose Email Body");
   liveSupport1Sys = n02?.parameters?.options?.systemMessage || null;
-  liveSupport2Sys = n03?.parameters?.options?.systemMessage || null;
-  if (liveSupport1Sys && liveSupport2Sys) n8nStatus = "✅ n8n prompts: live (WF02 + WF03)";
-  else if (liveSupport1Sys || liveSupport2Sys) n8nStatus = "⚠️ n8n prompts: partial (one loaded)";
-} catch (fetchErr) {
-  n8nStatus = `⚠️ n8n prompts: fetch failed — ${String(fetchErr.message || "").slice(0, 60)}`;
-}
+  if (liveSupport1Sys) n8nStatus = "✅ n8n: live WF02 prompt loaded";
+} catch {}
 
-// Fallback: build local support system prompt from KB files
-if (!liveSupport1Sys || !liveSupport2Sys) {
-  const fs = require("fs");
-  const path = require("path");
-  let kbText = "";
-  let faqText = "";
+if (!liveSupport1Sys) {
+  const fs = require("fs"), path = require("path");
+  let kbText = "", faqText = "";
   try {
     const kb = JSON.parse(fs.readFileSync(path.join(__dirname, "support-knowledge-base.json"), "utf8"));
-    if (kb?.sources) {
-      const lines = ["Approved source corpus:"];
-      for (const s of kb.sources) {
-        lines.push(`- ${s.title || s.key || "Source"}${s.url ? ` (${s.url})` : ""}`);
-        for (const f of (s.facts || [])) { if (f) lines.push(`  - ${f}`); }
-      }
-      const lm = kb.link_map || {};
-      if (Object.keys(lm).length) { lines.push("Approved links:"); for (const [k,v] of Object.entries(lm)) lines.push(`- ${k}: ${v}`); }
-      kbText = lines.join("\n");
-    }
+    if (kb?.sources) { const lines = ["Approved source corpus:"]; for (const s of kb.sources) { lines.push(`- ${s.title || s.key}${s.url ? ` (${s.url})` : ""}`); for (const f of (s.facts || [])) { if (f) lines.push(`  - ${f}`); } } kbText = lines.join("\n"); }
   } catch {}
   try {
     const faq = JSON.parse(fs.readFileSync(path.join(__dirname, "support-knowledge-faq.json"), "utf8"));
-    if (faq?.faq) {
-      const lines = ["FAQ corpus:"];
-      for (const item of faq.faq) { if (item.question && item.answer) lines.push(`- Q: ${item.question}\n  A: ${item.answer}`); }
-      faqText = lines.join("\n");
-    }
+    if (faq?.faq) { const lines = ["FAQ:"]; for (const item of faq.faq) { if (item.question && item.answer) lines.push(`- Q: ${item.question}\n  A: ${item.answer}`); } faqText = lines.join("\n"); }
   } catch {}
-  const fallbackSys = `You are NIL Wealth Strategies' support specialist. You draft clear, source-backed replies for athletes, parents, and coaches.\n\nHARD TONE RULE: Support replies must be FORMAL — professional, complete sentences, organized, warm but polished. Never casual, never slang.\n\nUse only the source corpus. Do not invent statistics, pricing, or guarantees.\n\nHard framing rules:\n- Default framing = high school athletes and their families.\n- Do not mention NIL unless explicitly asked.\n\n${kbText}\n\n${faqText}\n\nOutput format:\nNO_LINK_VERSION:\n<reply body under 170 words>\n\nLINK_VERSION:\n<same with one link if helpful>\n\nRECOMMENDATION:\ninclude_link=yes|no\nrecommended_guide=parent-guide|supplemental-health-guide|risk-awareness-guide|tax-education-guide|none`;
-  if (!liveSupport1Sys) liveSupport1Sys = fallbackSys;
-  if (!liveSupport2Sys) liveSupport2Sys = fallbackSys;
+  liveSupport1Sys = `You are NIL Wealth Strategies' support specialist.\nHARD TONE RULE: FORMAL — professional, complete sentences, warm but polished. Never casual.\nDo not invent statistics, pricing, or guarantees. Default framing = high school athletes. Do not mention NIL unless asked.\n${kbText}\n${faqText}\nOutput:\nNO_LINK_VERSION:\n<body under 170 words>\n\nLINK_VERSION:\n<same + one link>\n\nRECOMMENDATION:\ninclude_link=yes|no\nrecommended_guide=parent-guide|supplemental-health-guide|risk-awareness-guide|tax-education-guide|none`;
 }
 
-// Outreach system prompt (WF01-style) — always local
-const OUTREACH_SYS = `You write concise, human outreach replies for coach conversations. Hard tone rule: outreach must be VERY CASUAL — conversational, plain English, like texting a colleague. No corporate polish, no formal greetings, no structured paragraphs. Return JSON with v1,v2,v3 each containing subject and body.`;
+const OUTREACH_SYS = `You write concise, human outreach replies for coach conversations. Hard tone rule: VERY CASUAL — like texting a colleague. No corporate polish, no formal greetings, no structured paragraphs. Return JSON with v1,v2,v3 each containing subject and body.`;
 
-// ── step 2: generate fresh random scenario inputs via GPT ─
+// ── step 2: generate fresh scenarios ──────────────────────
 await ctx.reply(`🎲 Generating fresh scenarios...\n${n8nStatus}`).catch(() => {});
 
 let freshScenarios;
 try {
   const genRaw = await askAI(
-    "You generate realistic test data for a supplemental health education company. Return only valid JSON with no markdown.",
-    `Generate 4 completely different inbound email scenarios for NIL Wealth Strategies — a supplemental health education company for high school athletes. Each scenario must use different, fully realistic names, schools, sports, and states. Make the messages feel like real parent/coach emails.
+    "You generate realistic test data for a supplemental health education company. Return only valid JSON, no markdown.",
+    `Generate 4 completely different inbound email scenarios for NIL Wealth Strategies. Each must use different realistic names, schools, sports, states. Make emails feel like real people wrote them.
 
 Return JSON exactly:
 {
-  "s1": { "type": "OUTREACH_COACH_INTEREST", "name": "<coach full name>", "email": "<email>", "school": "<high school name>", "sport": "<sport>", "state": "<US state>", "subject": "<subject line>", "message": "<60-80 word positive/curious reply from coach to outreach email, wants info for families>" },
-  "s2": { "type": "PARENT_BASIC_QUESTION", "name": "<parent full name>", "email": "<email>", "school": "<different school>", "sport": "<sport>", "state": "<state>", "subject": "<subject>", "message": "<60-80 word parent asking a specific question about supplemental coverage — optional? replaces insurance?>" },
-  "s3": { "type": "OBJECTION_INSURANCE", "name": "<different parent name>", "email": "<email>", "school": "<different school>", "sport": "<sport>", "state": "<state>", "subject": "<subject>", "message": "<60-80 word parent objecting — already has insurance (name a specific insurer), questions the need, asks what gap it fills>" },
-  "s4": { "type": "REMOVAL_DEMAND", "name": "<different name>", "email": "<email>", "school": "<different school>", "sport": "<sport>", "state": "<state>", "subject": "<angry subject like REMOVE ME or STOP CONTACTING US>", "message": "<50-70 word frustrated person demanding removal, calls it a sales pitch, wants off the list>" }
-}`,
-    true
+  "s1": { "type": "OUTREACH_COACH_INTEREST", "name": "<coach full name>", "email": "<email>", "school": "<high school>", "sport": "<sport>", "state": "<US state>", "subject": "<subject>", "message": "<60-80 word positive/curious coach reply to outreach, likes what they see, wants info for families>" },
+  "s2": { "type": "PARENT_BASIC_QUESTION", "name": "<parent full name>", "email": "<email>", "school": "<different school>", "sport": "<sport>", "state": "<state>", "subject": "<subject>", "message": "<60-80 word parent asking if coverage is optional and whether it replaces their current insurance>" },
+  "s3": { "type": "OBJECTION_INSURANCE", "name": "<different parent>", "email": "<email>", "school": "<different school>", "sport": "<sport>", "state": "<state>", "subject": "<subject>", "message": "<60-80 word parent objecting — already has specific named insurer, questions the need, asks what gap it fills>" },
+  "s4": { "type": "REMOVAL_DEMAND", "name": "<different name>", "email": "<email>", "school": "<different school>", "sport": "<sport>", "state": "<state>", "subject": "<angry subject>", "message": "<50-70 word frustrated person demanding removal and calling it a sales pitch>" }
+}`, true
   );
   freshScenarios = JSON.parse(genRaw);
 } catch (genErr) {
-  await ctx.reply(`❌ Failed to generate scenarios: ${String(genErr.message || "").slice(0, 120)}`).catch(() => {});
+  await ctx.reply(`❌ Scenario generation failed: ${esc(String(genErr.message || "").slice(0, 100))}`).catch(() => {});
   return;
 }
 
-// ── step 3: behavior checks per scenario type ─────────────
-const SCENARIO_CHECKS = {
-  OUTREACH_COACH_INTEREST: (body) => [
-    chk("No formal greeting (Dear/Hi/Hello)", notContains(body, "dear ", "hi ", "hello ")),
-    chk("No meeting/calendar push", notContains(body, "schedule a call", "book a time", "calendar", "let's hop on")),
-    chk("No NIL income/tax mention (not asked)", notContains(body, "nil income", "nil earnings", "nil tax")),
-    chk("Under 130 words", wc(body) <= 130),
-    chk("Has a clear next step", contains(body, "send", "forward", "reply", "let me know", "share", "happy to")),
-    chk("No AI/bot mention", notContains(body, " ai ", "chatgpt", "generated", "automated")),
-  ],
-  PARENT_BASIC_QUESTION: (body, rec) => [
-    chk("Formal tone (no slang)", notContains(body, "hey ", "yeah,", "nope", "totally,")),
-    chk("No greeting opener", !(/^(hi|hello|hey|dear)\b/i.test(body.trim()))),
-    chk("States coverage is optional", contains(body, "optional", "not required", "family-driven", "no requirement")),
-    chk("Does NOT replace major medical", contains(body, "does not replace", "supplement", "alongside", "not a replacement")),
-    chk("No NIL mention (not asked)", notContains(body, "nil income", "nil earnings", "nil tax")),
-    chk("Recommends a guide", contains(rec, "supplemental-health-guide", "parent-guide")),
-  ],
-  OBJECTION_INSURANCE: (body) => [
-    chk("Formal tone (no slang)", notContains(body, "hey ,", "nope,", "totally,", "yeah,")),
-    chk("Acknowledges existing coverage / concern", contains(body, "understand", "appreciate", "while those", "already have", "valid", "reasonable", "your existing", "your current", "primary", "current coverage", "existing policy", "current policy", "such as your", "alongside your")),
-    chk("Explains coverage gap / deductibles", contains(body, "deductible", "copay", "gap", "out-of-pocket", "supplement", "alongside")),
-    chk("Does not say it replaces existing insurance", contains(body, "not replace", "supplement", "alongside", "additional")),
-    chk("No high-pressure language", notContains(body, "you must", "don't miss", "act now", "limited time")),
-    chk("Leaves door open without pressure", contains(body, "optional", "family-driven", "no pressure", "without any pressure", "happy to help", "if you", "feel free")),
-    chk("No unsolicited NIL push", notContains(body, "nil income", "nil earnings")),
-  ],
-  REMOVAL_DEMAND: (body, rec) => [
-    chk("Formal — not defensive or casual", notContains(body, "hey ,", "yeah,", "super sorry", "my bad")),
-    chk("Acknowledges frustration / apologizes", contains(body, "understand", "apologize", "sorry", "frustration", "appreciate")),
-    chk("No re-selling attempt", notContains(body, "actually if you", "before you decide", "you might want to reconsider", "just one more")),
-    chk("Confirms removal / opt-out", contains(body, "remov", "opt out", "unsubscribe", "no further", "mailing list", "stop")),
-    chk("No high-pressure close", notContains(body, "don't miss out", "limited time", "before you go")),
-    chk("Recommends no guide (right call for angry person)", contains(rec, "recommended_guide=none") || contains(rec, "include_link=no")),
-  ],
+// ── behavior checks ───────────────────────────────────────
+const CHECKS = {
+  OUTREACH_COACH_INTEREST: (body) => ({
+    label: "Outreach reply checks",
+    failures: [
+      notContains(body, "dear ", "hi ", "hello ") ? null : "Has a formal greeting (Dear/Hi/Hello) — outreach must be casual",
+      notContains(body, "schedule a call", "book a time", "calendar", "let's hop on") ? null : "Pushed meeting/calendar without being asked",
+      notContains(body, "nil income", "nil earnings", "nil tax") ? null : "Mentioned NIL income/tax topics without being asked",
+      wcount(body) <= 130 ? null : `Over word limit — ${wcount(body)} words (max 130)`,
+      contains(body, "send", "forward", "reply", "let me know", "share", "happy to") ? null : "No clear next step included",
+      notContains(body, "chatgpt", "generated", "automated") ? null : "Mentioned AI/automated tools",
+    ].filter(Boolean),
+  }),
+  PARENT_BASIC_QUESTION: (body, rec) => ({
+    label: "Parent question checks",
+    failures: [
+      notContains(body, "hey ", "yeah,", "nope", "totally,") ? null : "Casual tone detected — support must be formal",
+      !(/^(hi|hello|hey|dear)\b/i.test(body.trim())) ? null : "Starts with a greeting opener — omit greeting per style rules",
+      contains(body, "optional", "not required", "family-driven", "no requirement") ? null : "Did not clearly state coverage is optional",
+      contains(body, "does not replace", "supplement", "alongside", "not a replacement") ? null : "Did not clarify it does not replace existing insurance",
+      notContains(body, "nil income", "nil earnings", "nil tax") ? null : "Mentioned NIL income/tax without being asked",
+      contains(rec, "supplemental-health-guide", "parent-guide") ? null : "Did not recommend a relevant guide (supplemental-health or parent)",
+    ].filter(Boolean),
+  }),
+  OBJECTION_INSURANCE: (body) => ({
+    label: "Objection handling checks",
+    failures: [
+      notContains(body, "hey ,", "nope,", "totally,", "yeah,") ? null : "Casual tone detected — support must be formal",
+      contains(body, "understand", "appreciate", "while those", "already have", "valid", "reasonable", "your existing", "your current", "primary", "current coverage", "existing policy", "current policy", "such as your", "alongside your") ? null : "Did not acknowledge existing coverage or concern",
+      contains(body, "deductible", "copay", "gap", "out-of-pocket", "supplement", "alongside") ? null : "Did not explain what gap the coverage fills",
+      contains(body, "not replace", "supplement", "alongside", "additional") ? null : "Did not clarify it doesn't replace existing insurance",
+      notContains(body, "you must", "don't miss", "act now", "limited time") ? null : "Used high-pressure language",
+      contains(body, "optional", "family-driven", "no pressure", "without any pressure", "happy to help", "if you", "feel free") ? null : "Did not leave the door open without pressure",
+    ].filter(Boolean),
+  }),
+  REMOVAL_DEMAND: (body, rec) => ({
+    label: "Removal request checks",
+    failures: [
+      notContains(body, "hey ,", "yeah,", "super sorry", "my bad") ? null : "Casual/defensive tone — support must be formal",
+      contains(body, "understand", "apologize", "sorry", "frustration", "appreciate") ? null : "Did not acknowledge frustration",
+      notContains(body, "actually if you", "before you decide", "you might want to reconsider", "just one more") ? null : "Attempted to re-sell to someone demanding removal",
+      contains(body, "remov", "opt out", "unsubscribe", "no further", "mailing list", "stop") ? null : "Did not confirm removal/opt-out",
+      notContains(body, "don't miss out", "limited time", "before you go") ? null : "Used high-pressure close on a removal request",
+      contains(rec, "recommended_guide=none") || contains(rec, "include_link=no") ? null : "Recommended a guide to someone demanding removal — bad judgment call",
+    ].filter(Boolean),
+  }),
 };
 
-// ── step 4: run each scenario and send a card ─────────────
+// ── run scenarios ──────────────────────────────────────────
 let totalPass = 0;
 let totalFail = 0;
 const runTs = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const simId = () => `SIM-${Date.now().toString(36).slice(-4).toUpperCase()}`;
 
-const scenarioEntries = [
-  { key: "s1", num: 1 },
-  { key: "s2", num: 2 },
-  { key: "s3", num: 3 },
-  { key: "s4", num: 4 },
-];
-
-for (const { key, num } of scenarioEntries) {
+for (const key of ["s1", "s2", "s3", "s4"]) {
   const sc = freshScenarios[key];
+  const num = { s1: 1, s2: 2, s3: 3, s4: 4 }[key];
   if (!sc) {
-    await ctx.reply(`❌ <b>SCENARIO ${num}</b>: missing from generated data`, { parse_mode: "HTML" }).catch(() => {});
+    await ctx.reply(`❌ Scenario ${num}: missing from generated data`, { parse_mode: "HTML" }).catch(() => {});
     totalFail++;
     continue;
   }
 
+  const convId = simId();
+  const laneIcon = sc.type === "OUTREACH_COACH_INTEREST" ? "🏈 Programs" : "📧 Support";
+  const roleLabel = sc.type === "OUTREACH_COACH_INTEREST" ? "Coach" : "Parent";
+
   try {
-    let aiResponse = "";
     let checkBody = "";
     let checkRec = "";
+    let draftV1 = "", draftV2 = "", draftV3 = "";
+    let aiRaw = "";
 
     if (sc.type === "OUTREACH_COACH_INTEREST") {
       const payload = JSON.stringify({ contact_email: sc.email, subject: sc.subject, latest_inbound: sc.message, coach_name: sc.name, school: sc.school, sport: sc.sport, source: "outreach" });
       const userMsg = `Create 3 follow-up reply drafts for this Programs conversation:\n${payload}\n\nRules:\n- Outreach tone must be VERY CASUAL — like texting a colleague\n- Briefly mention personal background: 3 surgeries, saw how out-of-pocket costs stack for families\n- No formal greetings, no corporate polish\n- Do not suggest calls/meetings unless explicitly asked\n- Keep under 110 words\n- Include one clear next step\n- Do not mention AI\nReturn: {"v1":{"subject":"...","body":"..."},"v2":{...},"v3":{...}}`;
-      aiResponse = await askAI(OUTREACH_SYS, userMsg, true);
-      checkBody = JSON.parse(aiResponse)?.v2?.body || JSON.parse(aiResponse)?.v1?.body || "";
+      aiRaw = await askAI(OUTREACH_SYS, userMsg, true);
+      const parsed = JSON.parse(aiRaw);
+      draftV1 = parsed?.v1?.body || "";
+      draftV2 = parsed?.v2?.body || "";
+      draftV3 = parsed?.v3?.body || "";
+      checkBody = draftV2 || draftV1;
     } else {
       const userMsg = `Draft a NIL Wealth support reply.\n\nInbound sender: ${sc.name} <${sc.email}>\nSubject: ${sc.subject}\nMessage:\n${sc.message}\n\nReturn two versions plus a recommendation block.`;
-      const sysToUse = sc.type === "OUTREACH_COACH_INTEREST" ? OUTREACH_SYS : liveSupport1Sys;
-      aiResponse = await askAI(sysToUse, userMsg);
-      checkBody = extractNoLink(aiResponse);
-      checkRec = extractRec(aiResponse);
+      aiRaw = await askAI(liveSupport1Sys, userMsg);
+      checkBody = extractNoLink(aiRaw);
+      checkRec = extractRec(aiRaw);
+      const linkM = aiRaw.match(/LINK_VERSION:\s*([\s\S]*?)(?=\n{0,3}RECOMMENDATION:|$)/i);
+      draftV1 = checkBody;
+      draftV2 = linkM ? linkM[1].trim() : checkBody;
     }
 
-    const checkFn = SCENARIO_CHECKS[sc.type];
-    const checks = checkFn ? checkFn(checkBody, checkRec) : [`⚠️ No checks defined for type: ${sc.type}`];
+    const checkFn = CHECKS[sc.type];
+    const { label: checkLabel, failures } = checkFn ? checkFn(checkBody, checkRec) : { label: "Checks", failures: [] };
+    const checkCount = Object.values(CHECKS[sc.type] ? CHECKS[sc.type](checkBody, checkRec).failures : []).length;
+    const totalChecks = sc.type === "OUTREACH_COACH_INTEREST" ? 6 : sc.type === "REMOVAL_DEMAND" ? 6 : 6;
+    const passed = totalChecks - failures.length;
+    totalPass += passed;
+    totalFail += failures.length;
 
-    const pass = checks.filter(c => c.startsWith("✅")).length;
-    const fail = checks.filter(c => c.startsWith("❌")).length;
-    totalPass += pass;
-    totalFail += fail;
-
-    const statusIcon = fail === 0 ? "✅" : "⚠️";
-    const previewText = checkBody.slice(0, 280) || aiResponse.slice(0, 280);
-    const card = [
-      `${statusIcon} <b>SCENARIO ${num} — ${sc.type}</b>`,
-      `<i>${sc.name} | ${sc.school} | ${sc.sport}</i>`,
-      `<i>📧 "${esc(sc.subject)}"</i>`,
-      "",
-      checks.join("\n"),
-      "",
-      `<b>AI reply preview:</b>`,
-      `<i>${esc(previewText)}</i>`,
+    // ── CARD 1: Inbound conversation ──────────────────────
+    const inboundCard = [
+      `💬 CONVERSATION`,
+      `──`,
+      `ID: ${convId} • ${laneIcon}`,
+      `Identity: ${esc(sc.name)}`,
+      ``,
+      `Role: ${roleLabel}`,
+      ``,
+      `Status: 📝 Needs Reply`,
+      `Name: ${esc(sc.name)}`,
+      `Contact: ${esc(sc.email)}`,
+      `School: ${esc(sc.school)} • ${esc(sc.sport)} • ${esc(sc.state)}`,
+      ``,
+      `📧 Subject: ${esc(sc.subject)}`,
+      ``,
+      `Preview: ${esc(sc.message.slice(0, 220))}`,
+      ``,
+      `──`,
+      `💬 1 msg inbound`,
+      `🧪 SIMULATED — not in DB`,
     ].join("\n");
-    await ctx.reply(card, { parse_mode: "HTML" }).catch(() => {});
+    await ctx.reply(inboundCard, { parse_mode: "HTML" }).catch(() => {});
+
+    // ── CARD 2: AI-generated drafts ────────────────────────
+    const draftCard = [
+      `📝 DRAFT REPLIES`,
+      `──`,
+      `${convId} • ${laneIcon}`,
+      `${esc(sc.name)} — ${esc(sc.subject)}`,
+      ``,
+      sc.type === "OUTREACH_COACH_INTEREST" ? [
+        `── V1 ──`,
+        esc(draftV1.slice(0, 400)),
+        ``,
+        `── V2 ──`,
+        esc(draftV2.slice(0, 400)),
+        ``,
+        `── V3 ──`,
+        esc(draftV3.slice(0, 400)),
+      ].join("\n") : [
+        `── NO LINK VERSION ──`,
+        esc(draftV1.slice(0, 500)),
+        ``,
+        `── LINK VERSION ──`,
+        esc(draftV2.slice(0, 500)),
+        draftV3 ? `\n── RAW REC ──\n${esc(draftV3.slice(0, 200))}` : "",
+      ].join("\n"),
+      ``,
+      `──`,
+      `🧪 SIMULATED DRAFT`,
+    ].join("\n");
+    await ctx.reply(draftCard, { parse_mode: "HTML" }).catch(() => {});
+
+    // ── CARD 3: Test results ───────────────────────────────
+    const resultsCard = failures.length === 0
+      ? [
+          `✅ TEST RESULTS — ${convId}`,
+          `──`,
+          `All ${totalChecks} ${checkLabel} passed`,
+          `Scenario: ${sc.type}`,
+        ].join("\n")
+      : [
+          `⚠️ TEST RESULTS — ${convId}`,
+          `──`,
+          `${passed}/${totalChecks} passed — ${failures.length} failure${failures.length > 1 ? "s" : ""}:`,
+          ``,
+          ...failures.map(f => `❌ ${esc(f)}`),
+          ``,
+          `Scenario: ${sc.type}`,
+        ].join("\n");
+    await ctx.reply(resultsCard, { parse_mode: "HTML" }).catch(() => {});
+
   } catch (err) {
-    await ctx.reply(`❌ <b>SCENARIO ${num} — ${sc.type}</b>\nError: ${esc(err.message)}`, { parse_mode: "HTML" }).catch(() => {});
-    totalFail++;
+    await ctx.reply(`❌ <b>SCENARIO ${num} — ${sc.type}</b>\nError: ${esc(String(err.message || "").slice(0, 150))}`, { parse_mode: "HTML" }).catch(() => {});
+    totalFail += 6;
   }
 
-  // small delay between OpenAI calls to avoid rate limit
-  await new Promise(r => setTimeout(r, 800));
+  await new Promise(r => setTimeout(r, 700));
 }
 
 const total = totalPass + totalFail;
-const summary = [
-  totalFail === 0 ? `✅ All ${totalPass}/${total} checks passed` : `⚠️ ${totalPass}/${total} checks passed`,
+await ctx.reply([
+  totalFail === 0 ? `✅ All ${total} checks passed across 4 scenarios` : `⚠️ ${totalPass}/${total} checks passed — ${totalFail} failed`,
   n8nStatus,
-  `🕐 Run at ${runTs}`,
-].join("\n");
-await ctx.reply(summary).catch(() => {});
+  `🕐 ${runTs}`,
+].join("\n")).catch(() => {});
 }));
 
 bot.command("diag", safeCommand(async (ctx) => {
