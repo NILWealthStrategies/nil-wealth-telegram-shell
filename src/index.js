@@ -1357,20 +1357,26 @@ function buildTrackedGuideLink(rawUrl, conv) {
     return parsed.toString();
   }
 
-  if (!CLICK_TRACKER_BASE_URL || !recipientEmail) return rawUrl;
+  if (!recipientEmail) return rawUrl;
 
-  let tracker;
+  const prettyTracked = new URL("https://mynilwealthstrategies.com");
+  const coachSuffix = coachId ? `-${encodeURIComponent(coachId)}` : "";
+  prettyTracked.pathname = `/${guideKey}${coachSuffix}`;
+  prettyTracked.searchParams.set("person_email", recipientEmail);
+  if (coachId) prettyTracked.searchParams.set("coach_id", coachId);
+  prettyTracked.searchParams.set("actor_type", "parent");
+
+  if (!CLICK_TRACKER_BASE_URL) {
+    return prettyTracked.toString();
+  }
+
   try {
-    tracker = new URL(CLICK_TRACKER_BASE_URL);
+    new URL(CLICK_TRACKER_BASE_URL);
   } catch (_) {
     return rawUrl;
   }
 
-  tracker.pathname = `/go/${guideKey}`;
-  tracker.searchParams.set("person_email", recipientEmail);
-  if (coachId) tracker.searchParams.set("coach_id", coachId);
-  tracker.searchParams.set("actor_type", "parent");
-  return tracker.toString();
+  return prettyTracked.toString();
 }
 
 function parentGuideLinkForConversation(conv) {
@@ -4450,7 +4456,7 @@ filterSource,
 return msg;
 }
 // ---------- CONVERSATION CARD (v5.3 CLEAN + OPS SAFE) ----------
-async function buildConversationCard(conv) {
+async function buildConversationCard(conv, options = {}) {
 const [msgCount, latest] = await Promise.all([
 sbCountMessages(conv.id).catch(() => 0),
 sbListMessages(conv.id, { offset: 0, limit: 1 }).catch(() => []),
@@ -4466,16 +4472,30 @@ const lastAgeText = lastAgeMinutes == null ? "—" : tFmtMin(lastAgeMinutes) || 
 const instantlyThreadSummary = isInstantlySource(conv)
 ? `Thread Summary: ${msgCount} msgs • Last: ${lastDirection} • ${lastAgeText} ago`
 : null;
+const hasInstantlyCard = isInstantlySource(conv) && latestMessage?.direction === "inbound";
 const { text, isInstantlyInbound } = buildConversationCardText(conv, {
 msgCount,
 latestMessage,
 instantlyThreadSummary,
 urgentAfterMinutes: URGENT_AFTER_MINUTES,
+displayMode: options?.displayMode,
+senderProfiles: {
+supportFromEmail: SUPPORT_FROM_EMAIL,
+outreachFromEmail: OUTREACH_FROM_EMAIL,
+},
 });
-return { text, msgCount, isInstantlyInbound };
+return {
+text,
+msgCount,
+isInstantlyInbound,
+hasInstantlyCard,
+currentView: isInstantlyInbound ? "instantly" : "conversation",
+};
 }
 function conversationCardKeyboard(conv, msgCount = null, options = {}) {
 const isInstantlyInbound = options?.isInstantlyInbound === true;
+const currentView = options?.currentView || (isInstantlyInbound ? "instantly" : "conversation");
+const hasInstantlyCard = options?.hasInstantlyCard === true || isInstantlyInbound;
 const id = conv.id;
 // Mirror button only if present
 const mirrorRow = conv.mirror_conversation_id
@@ -4492,13 +4512,22 @@ if (msgCount === 0) return "🧵 Thread (none)";
 if (msgCount === 1) return "🧵 Thread (1 msg)";
 return `🧵 Thread (${msgCount} msgs)`;
 })();
+const cardSwitchRow = hasInstantlyCard
+? [Markup.button.callback(
+    currentView === "instantly" ? "↔ Conversation Card" : "↔ Instantly Card",
+    `CARDVIEW:${id}:${currentView === "instantly" ? "conversation" : "instantly"}`
+  )]
+: [];
 if (isInstantlyInbound) {
 const rows = [
 [Markup.button.callback("🧵 View Thread", `THREAD:${id}:0`)],
+[...cardSwitchRow],
 [Markup.button.callback("✏️ Drafts V1/V2/V3", `DRAFTS:open:${id}`)],
 [Markup.button.callback("📌 Loop in Support", `CC:${id}`)],
 [Markup.button.callback("👥 People", `PEOPLE:${id}`)],
 ];
+const conflictAndMirror = [...roleConflictRow, ...mirrorRow];
+if (conflictAndMirror.length) rows.push(conflictAndMirror);
 rows.push([Markup.button.callback("⬅ Dashboard", "DASH:back")]);
 return Markup.inlineKeyboard(rows);
 }
@@ -4510,6 +4539,7 @@ if (isInstantlyManaged) {
   // Program/outreach card: simple and consistent ordering.
   const rows = [
     [Markup.button.callback(threadLabel, `THREAD:${id}:0`)],
+    ...(cardSwitchRow.length ? [[...cardSwitchRow]] : []),
     [Markup.button.callback("✏️ Drafts V1/V2/V3", `DRAFTS:open:${id}`)],
     [Markup.button.callback(loopBtnLabel, `CC:${id}`)],
     [Markup.button.callback("👥 People", `PEOPLE:${id}`)],
@@ -4834,9 +4864,32 @@ if (!conv) {
 await ctx.reply("❌ Conversation not found.");
 return;
 }
-const { text, msgCount, isInstantlyInbound } = await buildConversationCard(conv);
-const kb = conversationCardKeyboard(conv, msgCount, { isInstantlyInbound });
+const { text, msgCount, isInstantlyInbound, hasInstantlyCard, currentView } = await buildConversationCard(conv);
+const kb = conversationCardKeyboard(conv, msgCount, { isInstantlyInbound, hasInstantlyCard, currentView });
 // Edit dashboard in place (single card flow)
+const msg = await smartRender(ctx, text, kb);
+if (msg?.message_id) {
+registerLiveCard(msg, {
+type: "conversation",
+card_key: `conversation:${conv.id}`,
+ref_id: conv.id,
+});
+}
+}));
+
+bot.action(/^CARDVIEW:([^:]+):(instantly|conversation)$/, safeAction(async (ctx) => {
+if (!isAdmin(ctx)) return;
+const convId = ctx.match[1];
+const requestedView = ctx.match[2];
+const conv = await sbGetConversationById(convId);
+if (!conv) {
+await ctx.reply("❌ Conversation not found.");
+return;
+}
+const { text, msgCount, isInstantlyInbound, hasInstantlyCard, currentView } = await buildConversationCard(conv, {
+displayMode: requestedView,
+});
+const kb = conversationCardKeyboard(conv, msgCount, { isInstantlyInbound, hasInstantlyCard, currentView });
 const msg = await smartRender(ctx, text, kb);
 if (msg?.message_id) {
 registerLiveCard(msg, {
@@ -5008,8 +5061,8 @@ if (!mirror) {
 await ctx.answerCbQuery("Mirror conversation not found.");
 return;
 }
-const { text, msgCount, isInstantlyInbound } = await buildConversationCard(mirror);
-const kb = conversationCardKeyboard(mirror, msgCount, { isInstantlyInbound });
+const { text, msgCount, isInstantlyInbound, hasInstantlyCard, currentView } = await buildConversationCard(mirror);
+const kb = conversationCardKeyboard(mirror, msgCount, { isInstantlyInbound, hasInstantlyCard, currentView });
 // Edit dashboard in place (single card flow)
 await smartRender(ctx, text, kb);
 } catch (err) {
@@ -7783,7 +7836,7 @@ guide_category_clicks_total_year: guideCategoryClicksYear,
 };
 const programsSystemPrompt = "You write concise, human outreach replies for coach conversations. The sender is personal, mission-driven, and sounds like a real person, not a sales rep. Return JSON with v1,v2,v3 each containing subject and body.";
 const supportSystemPrompt = "You write concise, structured support replies. The sender is organized, clear, and helpful. Return JSON with v1,v2,v3 each containing subject and body.";
-const programsUserPrompt = `Create 3 follow-up reply drafts for this Programs conversation:\n${JSON.stringify(prompt)}\n\nRules:\n- This is a manual reply in an ongoing outreach thread after the coach already answered\n- Outreach tone must feel personal, natural, and human, not corporate, polished, or salesy\n- Sound like a real person talking to a coach in plain English\n- Briefly explain what I do, why I do it, my experience with injuries, and why I want to give back to athlete families\n- Keep that explanation short and conversational, not a speech\n- If the inbound message is a smooth/open reply, answer the question directly and keep momentum\n- If the inbound message is an objection, acknowledge it first, reduce pressure, and give an easy next step\n- Do not push too hard for a call if the coach is hesitant; offering a simple message they can review is acceptable\n- Use metric context naturally only when it genuinely fits: Enroll Portal Clicks, Parent Guide Clicks, and Total Clicks\n- Keep under 110 words\n- Include one clear next step\n- Do not mention AI\n- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless the count is explicitly provided in the prompt\n- Avoid generic phrases like "valuable insights," "numerous teams," "unforeseen circumstances," or "navigate this complex topic"\nReturn: {\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}}`;
+const programsUserPrompt = `Create 3 follow-up reply drafts for this Programs conversation:\n${JSON.stringify(prompt)}\n\nRules:\n- This is a manual reply in an ongoing outreach thread after the coach already answered\n- Outreach tone must feel personal, natural, and human, not corporate, polished, or salesy\n- Sound like a real person talking to a coach in plain English\n- Briefly explain what I do, why I do it, and my personal background: I went through 3 surgeries, had financial help, and saw how out-of-pocket costs can stack for families\n- Keep that explanation short and conversational, not a speech\n- If the inbound message is a smooth/open reply, answer the question directly and keep momentum\n- If the inbound message is an objection, acknowledge it first, reduce pressure, and give an easy next step\n- Do not suggest calls, meetings, or calendar invites unless the inbound message explicitly asks for a phone call or meeting\n- If no explicit meeting request exists, the next step should be a simple reply, clarification, or short forwardable resource\n- Use metric context naturally only when it genuinely fits: Enroll Portal Clicks, Parent Guide Clicks, and Total Clicks\n- Keep under 110 words\n- Include one clear next step\n- Do not mention AI\n- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless the count is explicitly provided in the prompt\n- Avoid generic phrases like "valuable insights," "numerous teams," "unforeseen circumstances," or "navigate this complex topic"\nReturn: {\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}}`;
 const supportUserPrompt = `Create 3 reply drafts for this inbound conversation:\n${JSON.stringify(prompt)}\n\nRules:\n- Support tone should be more structured and clear than outreach tone\n- V1 direct/helpful\n- V2 warm/relationship-focused\n- V3 concise/executive\n- Keep under 120 words\n- Include one clear next step\n- Do not mention AI\n- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless the count is explicitly provided in the prompt\n- Avoid generic filler or vague corporate language\nReturn: {\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}}`;
 const res = await fetch("https://api.openai.com/v1/chat/completions", {
 method: "POST",
@@ -8910,6 +8963,14 @@ if (event_type === "instantly_reply_sent") {
   const lead_name = payload?.lead_name || payload?.leadName || b.lead_name || b.leadName || null;
   const coach_reply_body = safeStr(payload?.coach_reply_body || payload?.coachReplyBody || b.coach_reply_body || b.coachReplyBody || "");
   const ai_reply_body = safeStr(payload?.ai_reply_body || payload?.aiReplyBody || b.ai_reply_body || b.aiReplyBody || "");
+  const outreach_from_email = normalizeEmail(
+    payload?.outreach_from_email ||
+    payload?.from_email ||
+    b.outreach_from_email ||
+    b.from_email ||
+    OUTREACH_FROM_EMAIL ||
+    ""
+  ) || null;
   const campaign_id = payload?.campaign_id || payload?.campaignId || b.campaign_id || b.campaignId || null;
   const lead_id = payload?.lead_id || payload?.leadId || b.lead_id || b.leadId || null;
   const reply_ts_raw = payload?.timestamp || payload?.created_at || b.timestamp || nowIso;
@@ -9046,6 +9107,8 @@ if (event_type === "instantly_reply_sent") {
           const coachMsg = {
             conversation_id: conversationId,
             direction: "inbound",
+            from_email: lead_email,
+            to_email: outreach_from_email,
             body: coach_reply_body,
             preview: shorten(coach_reply_body, 200),
             source_ref: lead_id || null,
@@ -9070,6 +9133,8 @@ if (event_type === "instantly_reply_sent") {
           const aiMsg = {
             conversation_id: conversationId,
             direction: "outbound",
+            from_email: outreach_from_email,
+            to_email: lead_email,
             body: ai_reply_body,
             preview: shorten(ai_reply_body, 200),
             sender: "instantly_ai",
@@ -9169,6 +9234,15 @@ if (event_type === "instantly_email_sent") {
   const campaign_id = payload?.campaign_id || payload?.campaignId || b.campaign_id || b.campaignId || null;
   const lead_id = payload?.lead_id || payload?.leadId || b.lead_id || b.leadId || null;
   const email_subject = payload?.email_subject || payload?.emailSubject || b.email_subject || b.emailSubject || "Instantly Outreach";
+  const email_body = safeStr(payload?.email_body || payload?.emailBody || b.email_body || b.emailBody || "");
+  const outreach_from_email = normalizeEmail(
+    payload?.outreach_from_email ||
+    payload?.from_email ||
+    b.outreach_from_email ||
+    b.from_email ||
+    OUTREACH_FROM_EMAIL ||
+    ""
+  ) || null;
   const sent_ts_raw = payload?.timestamp || payload?.created_at || b.timestamp || nowIso;
   const sentTsIso = (() => {
     const d = new Date(sent_ts_raw);
@@ -9298,6 +9372,33 @@ if (event_type === "instantly_email_sent") {
     }
 
     if (conversationId) {
+      try {
+        const outboundMsg = {
+          conversation_id: conversationId,
+          direction: "outbound",
+          from_email: outreach_from_email,
+          to_email: lead_email,
+          subject: safeStr(email_subject) || "Instantly Outreach",
+          body: email_body || `Outreach sent from ${outreach_from_email || "configured outreach sender"}.`,
+          preview: shorten(email_body || safeStr(email_subject) || "Outreach sent", 200),
+          sender: "instantly_ai",
+          source_ref: lead_id || null,
+          created_at: sentTsIso,
+        };
+        const { error: outMsgErr } = await ops().from("messages").insert(outboundMsg);
+        if (outMsgErr && isMissingColumnError(outMsgErr)) {
+          const fallbackOutboundMsg = { ...outboundMsg };
+          delete fallbackOutboundMsg.sender;
+          delete fallbackOutboundMsg.source_ref;
+          const { error: fallbackOutErr } = await ops().from("messages").insert(fallbackOutboundMsg);
+          if (fallbackOutErr) throw fallbackOutErr;
+        } else if (outMsgErr) {
+          throw outMsgErr;
+        }
+      } catch (outMsgErr) {
+        logError("instantly_email_sent.insert_outbound_message", outMsgErr);
+      }
+
       await sbInsertOpsEventSafe({
         schema_version: "5.3",
         event_type: "outreach_sent",

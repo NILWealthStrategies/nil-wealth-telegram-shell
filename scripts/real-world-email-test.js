@@ -153,7 +153,7 @@ async function testFirstReply(coach) {
       lead_name: coach.name,
       campaign_id: CAMPAIGN_ID,
       coach_reply_body: `Hi, thanks for reaching out! ${coach.name.split(" ")[1]} here. We definitely are interested in learning more about NIL wealth protection for our athletes. Can you send over more details about what coverage looks like?`,
-      ai_reply_body: `Thanks for responding, Coach ${coach.name.split(" ")[1]}! I'd love to walk you through our NIL Wealth Protection program. I'll send over a full overview shortly. Would a quick 15-minute call work this week?`,
+      ai_reply_body: `Thanks for responding, Coach ${coach.name.split(" ")[1]} — absolutely. I help athletes and families understand where out-of-pocket costs can stack and how supplemental protection can close gaps. I went through 3 surgeries myself and saw how fast expenses can pile up, so this is personal for me. I can send a short overview your staff can review first.`,
       timestamp: ts(-5 * 60 * 1000), // 5 minutes ago
     },
   };
@@ -193,8 +193,8 @@ async function testSecondReply(coach) {
       lead_email: coach.email,
       lead_name: coach.name,
       campaign_id: CAMPAIGN_ID,
-      coach_reply_body: `Yes, Wednesday at 2pm works great. Also, I wanted to ask — does this cover student athletes who are already earning NIL income, or only those just starting out?`,
-      ai_reply_body: `Great, I'll send a calendar invite for Wednesday at 2pm! To answer your question — yes, our program covers both existing NIL earners and athletes just starting their NIL journey. We have tiered coverage designed for each stage.`,
+      coach_reply_body: `That helps. I also wanted to ask — does this cover student athletes who are already earning NIL income, or only those just starting out?`,
+      ai_reply_body: `Great question. It supports both athletes already earning NIL income and those just getting started. The goal is to help families understand risk early and make cleaner decisions before costs stack up. If helpful, I can share a short parent-forwardable summary you can pass along.`,
       timestamp: ts(-2 * 60 * 1000), // 2 minutes ago
     },
   };
@@ -228,8 +228,8 @@ async function testThirdReply(coach) {
       lead_email: coach.email,
       lead_name: coach.name,
       campaign_id: CAMPAIGN_ID,
-      coach_reply_body: `Perfect! I've forwarded this to my AD. We have 22 athletes currently earning NIL. Looking forward to the call.`,
-      ai_reply_body: `Excellent — 22 athletes is exactly the kind of program we can build a comprehensive plan around. I'll include a group rate breakdown in the materials I send before our call. See you Wednesday!`,
+      coach_reply_body: `Perfect. I've forwarded this to my AD. We have 22 athletes currently earning NIL.`,
+      ai_reply_body: `Appreciate that. With 22 athletes, having a clear and simple protection framework can really reduce confusion for families. I’ll send a concise summary your AD and parents can review, and we can answer questions directly in-thread.`,
       timestamp: ts(),
     },
   };

@@ -76,7 +76,7 @@ function threadDebugBlock(conv) {
     : "";
 }
 
-function buildConversationCardText(conv, { msgCount, latestMessage, instantlyThreadSummary, urgentAfterMinutes }) {
+function buildConversationCardText(conv, { msgCount, latestMessage, instantlyThreadSummary, urgentAfterMinutes, displayMode, senderProfiles }) {
   const lane = laneLabel(sourceSafe(conv.source));
   const sla = slaBadge(conv.updated_at, urgentAfterMinutes);
   const until = urgentCountdown(conv.updated_at, urgentAfterMinutes);
@@ -101,6 +101,11 @@ function buildConversationCardText(conv, { msgCount, latestMessage, instantlyThr
   })();
   const coach = conv.coach_name || "—";
   const contact = conv.contact_email || "—";
+  const outreachSender = conv.outreach_from_email || senderProfiles?.outreachFromEmail || "—";
+  const supportSender = conv.support_from_email || senderProfiles?.supportFromEmail || "—";
+  const senderLine = isInstantlySource(conv)
+    ? `From (Outreach): ${outreachSender}`
+    : `From (Support): ${supportSender}`;
   const subj = conv.subject || "—";
   const prev = shorten(conv.preview || "", 400);
   const identity = conversationIdentityText(conv);
@@ -116,10 +121,12 @@ function buildConversationCardText(conv, { msgCount, latestMessage, instantlyThr
   const handoffBadge = (conv.needs_support_handoff === true && !conv.cc_support_suggested)
     ? `🚨 HANDOFF DETECTED${conv.handoff_detected_reason ? ` — ${conv.handoff_detected_reason}` : ""}\nTap "📌 Loop in Support" to take over from Instantly.\n--\n`
     : "";
-  const isInstantlyInbound = isInstantlySource(conv) && latestMessage?.direction === "inbound";
+  const hasInstantlyCard = isInstantlySource(conv) && latestMessage?.direction === "inbound";
+  const isInstantlyInbound = hasInstantlyCard && displayMode !== "conversation";
 
   if (isInstantlyInbound) {
     const ownerLine = conv.coach_name || conv.contact_email || "—";
+    const outreachSender = conv.outreach_from_email || senderProfiles?.outreachFromEmail || "—";
     const rawReply = safeStr(latestMessage?.body || latestMessage?.preview || conv.preview || "");
     const isLong = rawReply.length > 300;
     const replyPreview = isLong ? `${rawReply.slice(0, 300).trimEnd()}…` : rawReply || "—";
@@ -127,6 +134,7 @@ function buildConversationCardText(conv, { msgCount, latestMessage, instantlyThr
     const text = `💬 INSTANTLY REPLY
 --
 ${ownerLine}
+From (Outreach): ${outreachSender}
 ${instantlyThreadSummary ? `${instantlyThreadSummary}\n` : ""}
 
 Reply
@@ -152,6 +160,7 @@ ${roleInfo}
 Status: ${pipelineLabel}
 Coach: ${coach}
 Contact: ${contact}
+${senderLine}
 
 📧 Subject: ${subj}
 
