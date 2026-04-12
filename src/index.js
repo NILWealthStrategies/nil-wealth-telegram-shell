@@ -4753,8 +4753,15 @@ async function runTestScenario(scType) {
 
   if (scType === "OUTREACH_COACH_INTEREST") {
     const payload = JSON.stringify({ contact_email: sc.email, subject: sc.subject, latest_inbound: sc.message, coach_name: sc.name, school: sc.school, sport: sc.sport });
+    const outreachStyle = [
+      "Style lane A: short punchy lines with calm confidence",
+      "Style lane B: story-first one quick personal line then direct next step",
+      "Style lane C: coach-to-coach straight talk with no fluff",
+      "Style lane D: practical and grounded with simple words",
+      "Style lane E: low-pressure check-in with direct ask",
+    ][Math.floor(Math.random() * 5)];
     const result = JSON.parse(await askAI(OUTREACH_SYS,
-      `Create 3 follow-up reply drafts for this outreach conversation:\n${payload}\n\nRules:\n- VERY CASUAL tone — like texting a colleague\n- Briefly mention personal background: 3 surgeries, saw how out-of-pocket costs stack for families\n- No formal greetings, no corporate polish\n- No meeting or call suggestions unless explicitly asked\n- Under 110 words each\n- Include one next step\n- Do not mention AI\n- Do not name any insurer except Aflac\nReturn: {"v1":{"subject":"...","body":"..."},"v2":{"subject":"...","body":"..."},"v3":{"subject":"...","body":"..."}}`,
+      `Create 3 follow-up reply drafts for this outreach conversation:\n${payload}\n\nRules:\n- VERY CASUAL tone — like texting another former athlete\n- Voice should feel like a former Division I student-athlete talking coach to coach\n- You may say \"I was a Division I student-athlete\" in one natural short line\n- Keep wording simple and comfortable no big words no corporate phrases\n- Keep punctuation light no multiple exclamation points and no hype style\n- No formal greetings no corporate polish\n- No meeting or call suggestions unless explicitly asked\n- Under 110 words each\n- Include one clear next step\n- Make V1 V2 and V3 clearly different in opening line structure and CTA wording\n- Do not reuse the same first sentence across versions\n- Do not mention AI\n- Do not name any insurer except Aflac\n- ${outreachStyle}\nReturn: {"v1":{"subject":"...","body":"..."},"v2":{"subject":"...","body":"..."},"v3":{"subject":"...","body":"..."}}`,
       true
     ));
     v1 = result?.v1?.body || ""; v1subj = result?.v1?.subject || sc.subject;
@@ -4858,7 +4865,7 @@ async function runTestScenario(scType) {
     ``,
     `📧 Subject: ${escT(sc.subject)}`,
     ``,
-    `Preview: ${testTrunc(escT(sc.message), 380)}`,
+    `Preview: Open Thread for full inbound body`,
     ``,
     `--`,
     `Updated: ${dateStr}, ${ts}`,
@@ -8237,7 +8244,39 @@ guide_category_clicks_total_year: guideCategoryClicksYear,
 };
 const programsSystemPrompt = "You write concise, human outreach replies for coach conversations. The sender is personal, mission-driven, and sounds like a real person, not a sales rep. Hard tone rule: outreach must be VERY CASUAL — conversational, plain English, like texting a colleague. No corporate polish, no formal greetings, no structured paragraphs. Insurance mention rule: do not name any insurer except Aflac. If carrier credibility is mentioned, use this fact pattern: Aflac holds an AM Best financial strength rating of A+ (Superior), and coaches including Deion Sanders, Nick Saban, and Dawn Staley have publicly endorsed Aflac's mission of protecting families. Return JSON with v1,v2,v3 each containing subject and body."; 
 const supportSystemPrompt = "You write concise, structured support replies. Hard tone rule: support must be FORMAL — professional, organized, clear, and complete sentences. Not casual slang, not text-message style. Warm but polished. Insurance mention rule: do not name any insurer except Aflac. If carrier credibility is mentioned, use this fact pattern: Aflac holds an AM Best financial strength rating of A+ (Superior), and coaches including Deion Sanders, Nick Saban, and Dawn Staley have publicly endorsed Aflac's mission of protecting families. Return JSON with v1,v2,v3 each containing subject and body.";
-const programsUserPrompt = `Create 3 follow-up reply drafts for this Programs conversation:\n${JSON.stringify(prompt)}\n\nRules:\n- This is a manual reply in an ongoing outreach thread after the coach already answered\n- Outreach tone must feel personal, natural, and human, not corporate, polished, or salesy\n- Sound like a real person talking to a coach in plain English\n- Briefly explain what I do, why I do it, and my personal background: I went through 3 surgeries, had financial help, and saw how out-of-pocket costs can stack for families\n- Keep that explanation short and conversational, not a speech\n- If the inbound message is a smooth/open reply, answer the question directly and keep momentum\n- If the inbound message is an objection, acknowledge it first, reduce pressure, and give an easy next step\n- Do not suggest calls, meetings, or calendar invites unless the inbound message explicitly asks for a phone call or meeting\n- If no explicit meeting request exists, the next step should be a simple reply, clarification, or short forwardable resource\n- Use metric context naturally only when it genuinely fits: Enroll Portal Clicks, Parent Guide Clicks, and Total Clicks\n- Keep under 110 words\n- Include one clear next step\n- Do not mention AI\n- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless the count is explicitly provided in the prompt\n- Avoid generic phrases like "valuable insights," "numerous teams," "unforeseen circumstances," or "navigate this complex topic"\nReturn: {\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}}`;
+const programsStyleVariant = [
+  "A: short punchy sentences low punctuation",
+  "B: one quick story line then practical next step",
+  "C: direct coach-to-coach tone with no fluff",
+  "D: calm and firm using very simple vocabulary",
+  "E: low-pressure check-in with clear ask",
+][Math.floor(Math.random() * 5)];
+const programsUserPrompt = `Create 3 follow-up reply drafts for this Programs conversation:
+${JSON.stringify(prompt)}
+
+Rules:
+- This is a manual reply in an ongoing outreach thread after the coach already answered
+- Outreach tone must feel personal natural human and casual
+- Sound like a former Division I student-athlete talking coach to coach
+- You may naturally include one short line that says you were a Division I student-athlete
+- Keep vocabulary simple comfortable and clear no big words
+- Keep punctuation light no hype and no repeated exclamation points
+- If the inbound message is a smooth/open reply answer directly and keep momentum
+- If the inbound message is an objection acknowledge first reduce pressure then offer an easy next step
+- Do not suggest calls meetings or calendar invites unless the inbound explicitly asks for that
+- If no explicit meeting request exists the next step should be a simple reply or short forwardable resource
+- Use metric context only when it truly fits
+- Keep under 110 words
+- Include one clear next step
+- Make V1 V2 and V3 substantially different in opening sentence structure and CTA wording
+- Never reuse the same opener across V1 V2 V3
+- Do not mention AI
+- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless explicitly provided
+- Do not name any insurer except Aflac
+- If carrier credibility is mentioned include: Aflac holds an AM Best financial strength rating of A+ (Superior), and coaches including Deion Sanders, Nick Saban, and Dawn Staley have publicly endorsed Aflac's mission of protecting families
+- Style variant for this generation: ${programsStyleVariant}
+- Avoid generic phrases like "valuable insights," "numerous teams," "unforeseen circumstances," or "navigate this complex topic"
+Return: {"v1":{"subject":"...","body":"..."},"v2":{...},"v3":{...}}`;
 const supportUserPrompt = `Create 3 reply drafts for this inbound conversation:\n${JSON.stringify(prompt)}\n\nRules:\n- HARD TONE RULE: support tone must be formal — professional, structured, complete sentences, warm but polished. No casual slang or conversational shorthand.\n- V1 direct/helpful\n- V2 warm/relationship-focused\n- V3 concise/executive\n- Keep under 120 words\n- Include one clear next step\n- Do not mention AI\n- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless the count is explicitly provided in the prompt\n- Avoid generic filler or vague corporate language\nReturn: {\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}}`;
 const res = await fetch("https://api.openai.com/v1/chat/completions", {
 method: "POST",
@@ -8247,7 +8286,7 @@ Authorization: `Bearer ${OPENAI_API_KEY}`,
 },
 body: JSON.stringify({
 model: "gpt-4o-mini",
-temperature: 0.7,
+temperature: isPrograms ? 0.95 : 0.7,
 response_format: { type: "json_object" },
 messages: [
 { role: "system", content: isPrograms ? programsSystemPrompt : supportSystemPrompt },

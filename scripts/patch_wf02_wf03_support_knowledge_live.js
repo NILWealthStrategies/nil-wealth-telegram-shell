@@ -287,6 +287,9 @@ Reply rules:
 - Under 170 words.
 - No subject line, no greeting line, no signature.
 - Do not start the email body with Hi, Hello, Hey, Dear, or any salutation.
+- Use simple comfortable wording; avoid big words and corporate jargon.
+- Keep punctuation light and natural; avoid hype punctuation and repeated exclamation points.
+- Keep the message clearly different from prior variants in opening and phrasing.
 - Never invent counts, social proof, pricing, underwriting approvals, or school partnerships.
 - If a link would help, refer to it naturally but do not paste a raw URL in the body. The workflow appends the tracked link after your text.
 - Never use placeholder tokens such as [Link], [Guide], [Parent Guide], TBD, or angle-bracket placeholders.
