@@ -4644,6 +4644,7 @@ if (!msg) {
 
 // In-memory page cache for test results — keyed by convId, cleared on restart
 const testScenarioCache = new Map();
+let objectionScenarioCursor = 0;
 
 // Word/sentence-safe truncation — never cuts mid-word
 function testTrunc(str, maxLen) {
@@ -4815,7 +4816,12 @@ async function runTestScenario(scType) {
       "recipient threatens complaint if messages continue",
     ],
   };
-  const selectedScenarioAngle = (scenarioAngleByType[scType] || ["general realistic support/outreach scenario"])[Math.floor(Math.random() * (scenarioAngleByType[scType] || ["general realistic support/outreach scenario"]).length)];
+  const defaultAngles = scenarioAngleByType[scType] || ["general realistic support/outreach scenario"];
+  let selectedScenarioAngle = defaultAngles[Math.floor(Math.random() * defaultAngles.length)];
+  if (scType === "OBJECTION_INSURANCE") {
+    selectedScenarioAngle = defaultAngles[objectionScenarioCursor % defaultAngles.length];
+    objectionScenarioCursor += 1;
+  }
 
   const raw = await askAI(
     "Generate realistic test data for NIL Wealth Strategies email scenarios. Return only valid JSON with no markdown code blocks.",
