@@ -4739,7 +4739,7 @@ async function runTestScenario(scType) {
       "Style lane E: low-pressure check-in with direct ask",
     ][Math.floor(Math.random() * 5)];
     const result = JSON.parse(await askAI(OUTREACH_SYS,
-      `Create 3 follow-up reply drafts for this outreach conversation:\n${payload}\n\nRules:\n- Tone: conversational and relationship-building, while still professional\n- Voice should feel credible and coach-to-coach without sounding overly cool\n- Keep phrasing fluent and natural; avoid forced wording\n- Fully answer the coach's actual questions before mentioning any next step\n- If the coach asked multiple questions, cover each one clearly and efficiently\n- Do not mention any personal playing background\n- V2 is the quality bar for tone: warm, natural, relationship-focused, and easy to read\n- Make V1 sound very close to that same warm V2 tone, but slightly more direct\n- Make V3 sound close to that same warm V2 tone too, while staying concise and controlled\n- If parent-group help is relevant, mention CC support only after the direct answer and frame it as an easy follow-up\n- Keep wording simple and clear, avoid big words and avoid slang\n- Keep punctuation light, no hype punctuation and no repeated exclamation points\n- No formal greetings no corporate polish\n- No meeting or call suggestions unless explicitly asked\n- Under 140 words each\n- Include one clear next step\n- Make V1 V2 and V3 clearly different in opening line structure and CTA wording\n- Do not reuse the same first sentence across versions\n- Do not mention AI\n- Do not name any insurer except Aflac\n- ${outreachStyle}\nReturn: {"v1":{"subject":"...","body":"..."},"v2":{"subject":"...","body":"..."},"v3":{"subject":"...","body":"..."}}`,
+      `Create 3 follow-up reply drafts for this outreach conversation:\n${payload}\n\nRules:\n- Tone: conversational and relationship-building, while still professional\n- Voice should feel credible and coach-to-coach without sounding overly cool\n- Keep phrasing fluent and natural; avoid forced wording\n- Fully answer the coach's actual questions before mentioning any next step\n- If the coach asked multiple questions, cover each one clearly and efficiently\n- Do not mention any personal playing background\n- V2 is the quality bar for tone: warm, natural, relationship-focused, and easy to read\n- Make V1 sound very close to that same warm V2 tone, but slightly more direct\n- Make V3 sound close to that same warm V2 tone too, while staying concise and controlled\n- If parent-group help is relevant, mention CC support only after the direct answer and frame it as an easy follow-up\n- Keep wording simple and clear, avoid big words and avoid slang\n- Use simple vocabulary that is easy to understand on a quick read\n- Keep punctuation light, no hype punctuation and no repeated exclamation points\n- No formal greetings no corporate polish\n- No meeting or call suggestions unless explicitly asked\n- Under 140 words each\n- Include one clear next step\n- HARD UNIQUENESS RULE: V1, V2, and V3 must each be completely unique in opener, sentence flow, phrasing, and CTA wording\n- Do not reuse the same first sentence across versions\n- Do not mention AI\n- Do not name any insurer except Aflac\n- ${outreachStyle}\nReturn: {"v1":{"subject":"...","body":"..."},"v2":{"subject":"...","body":"..."},"v3":{"subject":"...","body":"..."}}`,
       true
     ));
     v1 = result?.v1?.body || ""; v1subj = result?.v1?.subject || sc.subject;
@@ -8261,7 +8261,7 @@ Rules:
 - Style variant for this generation: ${programsStyleVariant}
 - Avoid generic phrases like "valuable insights," "numerous teams," "unforeseen circumstances," or "navigate this complex topic"
 Return: {"v1":{"subject":"...","body":"..."},"v2":{...},"v3":{...}}`;
-const supportUserPrompt = `Create 3 reply drafts for this inbound conversation:\n${JSON.stringify(prompt)}\n\nRules:\n- HARD TONE RULE: support tone must be formal — professional, structured, complete sentences, warm but polished. No casual slang or conversational shorthand.\n- Fully answer the sender's actual question or concern before offering a next step\n- V1 direct/helpful\n- V2 warm/relationship-focused\n- V3 concise/executive\n- Keep under 140 words\n- Include one clear next step\n- Do not mention AI\n- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless the count is explicitly provided in the prompt\n- Avoid generic filler or vague corporate language\nReturn: {\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}}`;
+const supportUserPrompt = `Create 3 reply drafts for this inbound conversation:\n${JSON.stringify(prompt)}\n\nRules:\n- HARD TONE RULE: support tone must be formal — professional, structured, complete sentences, warm but polished. No casual slang or conversational shorthand.\n- Fully answer the sender's actual question or concern before offering a next step\n- V1 direct/helpful\n- V2 warm/relationship-focused\n- V3 concise/executive\n- Keep under 140 words\n- Use simple vocabulary that is easy to understand\n- HARD UNIQUENESS RULE: V1, V2, and V3 must each be completely unique in opener, sentence flow, phrasing, and CTA wording\n- Include one clear next step\n- Do not mention AI\n- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless the count is explicitly provided in the prompt\n- Avoid generic filler or vague corporate language\nReturn: {\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}}`;
 const res = await fetch("https://api.openai.com/v1/chat/completions", {
 method: "POST",
 headers: {
@@ -8326,30 +8326,32 @@ for (const key of ["v1", "v2", "v3"]) {
   const draft = parsed?.support?.[key];
   if (!draft || typeof draft.body !== "string") continue;
   const body = String(draft.body || "").trim();
-  const hasGuide = body.includes(parentGuideLink);
-  const hasRespondLine = /respond to this message/i.test(body);
-  const hasCoachBoundary = /coaches? do not sell|coaches? do not handle money|enroll directly with aflac|education and support only/i.test(body);
-  const hasOptionalPace = /optional|own pace|at their own pace|at your own pace/i.test(body);
+  const escapedGuideLink = parentGuideLink.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const withoutGuideBlock = body
+    .replace(new RegExp(`\\n*Learn more in the Parent Guide:\\n${escapedGuideLink}\\n*`, "g"), "\n")
+    .replace(new RegExp(escapedGuideLink, "g"), "")
+    .trim();
+  const hasRespondLine = /respond to this message/i.test(withoutGuideBlock);
+  const hasCoachBoundary = /coaches? do not sell|coaches? do not handle money|enroll directly with aflac|education and support only/i.test(withoutGuideBlock);
+  const hasOptionalPace = /optional|own pace|at their own pace|at your own pace/i.test(withoutGuideBlock);
 
   const roleClarity = "To keep roles clear, coaches do not sell, explain in detail, or enroll insurance, and they do not handle money or paperwork. Families review the information, decide whether it fits, and enroll directly with Aflac if they choose to move forward. NIL Wealth Strategies provides education and support only, and families can review everything at their own pace.";
 
-  let nextBody = body;
+  let nextBody = withoutGuideBlock;
   if (!hasCoachBoundary || !hasOptionalPace) {
     nextBody = `${nextBody}
 
 ${roleClarity}`.trim();
-  }
-  if (!hasGuide) {
-    nextBody = `${nextBody}
-
-Learn more in the Parent Guide:
-${parentGuideLink}`.trim();
   }
   if (!hasRespondLine) {
     nextBody = `${nextBody}
 
 You can respond to this message with any questions — we're happy to help.`.trim();
   }
+  nextBody = `${nextBody}
+
+Learn more in the Parent Guide:
+${parentGuideLink}`.trim();
   draft.body = nextBody;
 }
 return parsed;
