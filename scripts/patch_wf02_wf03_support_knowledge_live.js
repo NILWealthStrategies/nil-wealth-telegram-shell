@@ -260,7 +260,7 @@ HARD TONE RULE: Support emails must be FORMAL — professional, complete sentenc
 REQUIRED in every CC support email:
 1. Context opener: 1-2 sentences explaining what this email is and why parents are receiving it (e.g., their coach forwarded it)
 2. What this program provides: supplemental health coverage, risk education, and tax education for high school athletes and their families
-3. A clear line: "You can reply directly to this email with any questions — we are happy to help."
+3. A clear line: "You can respond to this message with any questions — we're happy to help."
 4. A compelling, specific reason to click the parent guide. Frame it as: "We put everything families need to know in one place" or similar warm, specific language. Do NOT paste a raw URL — the workflow appends the tracked link after your text. Instead write: "I included the Parent Guide below" or "I added the resource below."
 5. Never use placeholder tokens such as [Link], [Guide], [Parent Guide], TBD, or angle-bracket placeholders.
 6. Never use square brackets in the reply body for any reason.
@@ -295,7 +295,7 @@ Reply rules:
 - Never use placeholder tokens such as [Link], [Guide], [Parent Guide], TBD, or angle-bracket placeholders.
 - Never use square brackets in the reply body for any reason.
 - If a guide is relevant, say things like "I included the Parent Guide below" or "I added the supplemental health guide below".
-- If the coach is forwarding to a parent, acknowledge that the note is easy to pass along.
+- If the coach is forwarding to a parent, acknowledge that the note is easy to pass along.\n- Include the exact line: "You can respond to this message with any questions — we're happy to help."
 - If the concern is an objection, respond empathetically and leave the door open without pressure.
 - Do not suggest a call, meeting, or calendar step unless the sender explicitly asks for a call/meeting.
 
