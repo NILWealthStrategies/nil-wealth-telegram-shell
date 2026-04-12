@@ -4779,7 +4779,7 @@ const SCENARIO_CHECKS = {
   ],
   OBJECTION_INSURANCE: (body) => [
     chk("Formal tone (no slang)", notContains(body, "hey ,", "nope,", "totally,", "yeah,")),
-    chk("Acknowledges existing coverage / concern", contains(body, "understand", "appreciate", "while those", "already have", "valid", "reasonable")),
+    chk("Acknowledges existing coverage / concern", contains(body, "understand", "appreciate", "while those", "already have", "valid", "reasonable", "your existing", "your current", "primary", "current coverage", "existing policy", "current policy", "such as your", "alongside your")),
     chk("Explains coverage gap / deductibles", contains(body, "deductible", "copay", "gap", "out-of-pocket", "supplement", "alongside")),
     chk("Does not say it replaces existing insurance", contains(body, "not replace", "supplement", "alongside", "additional")),
     chk("No high-pressure language", notContains(body, "you must", "don't miss", "act now", "limited time")),

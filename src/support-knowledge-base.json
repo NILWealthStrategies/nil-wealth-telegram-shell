@@ -19,6 +19,9 @@
         "Eligibility FAQ: adults can enroll directly, and a parent or legal guardian enrolls for minors.",
         "Cost FAQ: pricing is carrier-determined and varies by state, age, plan design, and risk factors; support should avoid quoting fixed pricing.",
         "Carrier FAQ: NIL Wealth provides education and guidance, while the insurance carrier handles enrollment, underwriting, and claims.",
+        "The supplemental health coverage offered through NIL Wealth is underwritten by Aflac, one of the most recognized supplemental insurance carriers in the United States.",
+        "Aflac holds an AM Best financial strength rating of A+ (Superior) — a distinction given to carriers with exceptional financial stability and claims-paying ability.",
+        "Trust and credibility FAQ: Aflac's supplemental coverage has been publicly endorsed by respected coaches including Deion Sanders, Nick Saban, and Dawn Staley — leaders who have publicly aligned with Aflac's mission of protecting families when the unexpected happens.",
         "Quick enroll by text is available at (855) 515-9844.",
         "Support contact includes support@mynilwealthstrategies.com and the website contact pages."
       ],
@@ -42,7 +45,9 @@
         "Typical family use cases for cash benefits include deductibles, bills, transportation, and daily needs during recovery.",
         "How to enroll FAQ: review the supplemental health page, submit the request form, receive secure enrollment access, and complete enrollment only if desired.",
         "Claims/admin FAQ: enrollment, policy administration, and claims are handled directly by Aflac, not by schools or NIL Wealth.",
-        "Enrollment and claims are administered by Aflac; NIL Wealth provides educational guidance and process clarity."
+        "Enrollment and claims are administered by Aflac; NIL Wealth provides educational guidance and process clarity.",
+        "Carrier credibility FAQ: Aflac is rated A+ (Superior) by AM Best for financial strength — one of the highest ratings an insurance carrier can receive.",
+        "Coach endorsements FAQ: Aflac's supplemental coverage has earned the public support of coaches like Deion Sanders, Nick Saban, and Dawn Staley, who have each publicly aligned with Aflac's mission to protect families from unexpected out-of-pocket costs."
       ],
       "guardrails": [
         "Avoid personalized insurance advice.",
@@ -66,7 +71,9 @@
         "Portability FAQ: coverage is generally portable across school, job, and location changes when policy terms are maintained.",
         "Coverage is typically portable across job, school, and location changes when premiums are maintained.",
         "Tax treatment is generally favorable for individually owned after-tax policies, but depends on policy ownership and premium source.",
-        "Enrollment, underwriting, and claims are handled by the carrier; NIL Wealth remains educational and support-focused."
+        "Enrollment, underwriting, and claims are handled by the carrier; NIL Wealth remains educational and support-focused.",
+        "Carrier trust FAQ: the supplemental coverage is backed by Aflac, rated A+ (Superior) by AM Best — a leading independent insurance rating agency that evaluates financial strength and claims-paying ability.",
+        "Endorsement FAQ: well-known coaches including Deion Sanders, Nick Saban, and Dawn Staley have publicly endorsed Aflac's mission of protecting families from unexpected expenses — the same mission behind NIL Wealth's education."
       ],
       "guardrails": [
         "Do not represent benefits as universal or guaranteed.",
