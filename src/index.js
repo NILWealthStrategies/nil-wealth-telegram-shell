@@ -4644,7 +4644,18 @@ if (!msg) {
 
 // In-memory page cache for test results — keyed by convId, cleared on restart
 const testScenarioCache = new Map();
-let objectionScenarioCursor = 0;
+const testScenarioCursors = {
+  OUTREACH_COACH_INTEREST: 0,
+  PARENT_BASIC_QUESTION: 0,
+  OBJECTION_INSURANCE: 0,
+  REMOVAL_DEMAND: 0,
+};
+const testReplyStyleCursors = {
+  OUTREACH_COACH_INTEREST: 0,
+  PARENT_BASIC_QUESTION: 0,
+  OBJECTION_INSURANCE: 0,
+  REMOVAL_DEMAND: 0,
+};
 
 // Word/sentence-safe truncation — never cuts mid-word
 function testTrunc(str, maxLen) {
@@ -4817,11 +4828,9 @@ async function runTestScenario(scType) {
     ],
   };
   const defaultAngles = scenarioAngleByType[scType] || ["general realistic support/outreach scenario"];
-  let selectedScenarioAngle = defaultAngles[Math.floor(Math.random() * defaultAngles.length)];
-  if (scType === "OBJECTION_INSURANCE") {
-    selectedScenarioAngle = defaultAngles[objectionScenarioCursor % defaultAngles.length];
-    objectionScenarioCursor += 1;
-  }
+  const angleCursor = Number(testScenarioCursors[scType] || 0);
+  const selectedScenarioAngle = defaultAngles[angleCursor % defaultAngles.length];
+  testScenarioCursors[scType] = angleCursor + 1;
 
   const raw = await askAI(
     "Generate realistic test data for NIL Wealth Strategies email scenarios. Return only valid JSON with no markdown code blocks.",
@@ -4837,21 +4846,49 @@ async function runTestScenario(scType) {
   const ts = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true });
   const dateStr = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
+  const replyStyleByType = {
+    OUTREACH_COACH_INTEREST: [
+      "Style lane A: short punchy lines with calm confidence",
+      "Style lane B: story-first one quick personal line then direct next step",
+      "Style lane C: coach-to-coach straight talk with no fluff",
+      "Style lane D: practical and grounded with simple words",
+      "Style lane E: low-pressure check-in with direct ask",
+    ],
+    PARENT_BASIC_QUESTION: [
+      "Style lane A: answer-first with clear plain-language examples",
+      "Style lane B: warm reassurance first, then detailed explanation",
+      "Style lane C: step-by-step structure with very simple wording",
+      "Style lane D: practical FAQ style with short direct sections",
+      "Style lane E: concern-first response with options to continue",
+    ],
+    OBJECTION_INSURANCE: [
+      "Style lane A: acknowledge concern first, then practical gap examples",
+      "Style lane B: calm no-pressure response with plain-language comparisons",
+      "Style lane C: skeptical-parent style with direct facts and options",
+      "Style lane D: cost-and-risk framing in simple terms",
+      "Style lane E: cautious-family framing with review-first next steps",
+    ],
+    REMOVAL_DEMAND: [
+      "Style lane A: concise apology and direct removal confirmation",
+      "Style lane B: formal compliance-first acknowledgment",
+      "Style lane C: calm minimal wording with written confirmation focus",
+      "Style lane D: direct opt-out confirmation with no extra language",
+      "Style lane E: respectful closure with no re-engagement language",
+    ],
+  };
+  const stylePool = replyStyleByType[scType] || ["Style lane: clear and practical"];
+  const styleCursor = Number(testReplyStyleCursors[scType] || 0);
+  const selectedReplyStyle = stylePool[styleCursor % stylePool.length];
+  testReplyStyleCursors[scType] = styleCursor + 1;
+
   // Step 2: Generate V1/V2/V3 drafts for all scenario types
   let v1 = "", v2 = "", v3 = "", v1subj = "", v2subj = "", v3subj = "";
   let checkBody = "", checkRec = "";
 
   if (scType === "OUTREACH_COACH_INTEREST") {
     const payload = JSON.stringify({ contact_email: sc.email, subject: sc.subject, latest_inbound: sc.message, coach_name: sc.name, school: sc.school, sport: sc.sport });
-    const outreachStyle = [
-      "Style lane A: short punchy lines with calm confidence",
-      "Style lane B: story-first one quick personal line then direct next step",
-      "Style lane C: coach-to-coach straight talk with no fluff",
-      "Style lane D: practical and grounded with simple words",
-      "Style lane E: low-pressure check-in with direct ask",
-    ][Math.floor(Math.random() * 5)];
     const result = JSON.parse(await askAI(OUTREACH_SYS,
-      `Create 3 follow-up reply drafts for this outreach conversation:\n${payload}\n\nRules:\n- Tone: conversational and relationship-building, while still professional\n- Voice should feel credible and coach-to-coach without sounding overly cool\n- Keep phrasing fluent and natural; avoid forced wording\n- Fully answer the coach's actual questions before mentioning any next step\n- If the coach asked multiple questions, cover each one clearly and efficiently\n- Do not mention any personal playing background\n- V2 is the quality bar for tone: warm, natural, relationship-focused, and easy to read\n- Make V1 sound very close to that same warm V2 tone, but slightly more direct\n- Make V3 sound close to that same warm V2 tone too, while being complete and professional\n- If parent-group help is relevant, mention CC support only after the direct answer and frame it as an easy follow-up\n- Keep wording simple and clear, avoid big words and avoid slang\n- Use simple vocabulary that is easy to understand on a quick read\n- Keep punctuation light, no hype punctuation and no repeated exclamation points\n- No formal greetings no corporate polish\n- No meeting or call suggestions unless explicitly asked\n- Fully answer every point in the message — no word limit, write as much as needed\n- Include one clear next step\n- After answering, include practical next steps by offering 2-3 simple options or inviting a direct reply to continue the conversation\n- HARD UNIQUENESS RULE: V1, V2, and V3 must each be completely unique in opener, sentence flow, phrasing, and CTA wording\n- Do not reuse the same first sentence across versions\n- Do not mention AI\n- Do not name any insurer except Aflac\n- ${outreachStyle}\nReturn: {"v1":{"subject":"...","body":"..."},"v2":{"subject":"...","body":"..."},"v3":{"subject":"...","body":"..."}}`,
+      `Create 3 follow-up reply drafts for this outreach conversation:\n${payload}\n\nRules:\n- Tone: conversational and relationship-building, while still professional\n- Voice should feel credible and coach-to-coach without sounding overly cool\n- Keep phrasing fluent and natural; avoid forced wording\n- Fully answer the coach's actual questions before mentioning any next step\n- If the coach asked multiple questions, cover each one clearly and efficiently\n- Do not mention any personal playing background\n- V2 is the quality bar for tone: warm, natural, relationship-focused, and easy to read\n- Make V1 sound very close to that same warm V2 tone, but slightly more direct\n- Make V3 sound close to that same warm V2 tone too, while being complete and professional\n- If parent-group help is relevant, mention CC support only after the direct answer and frame it as an easy follow-up\n- Keep wording simple and clear, avoid big words and avoid slang\n- Use simple vocabulary that is easy to understand on a quick read\n- Keep punctuation light, no hype punctuation and no repeated exclamation points\n- No formal greetings no corporate polish\n- No meeting or call suggestions unless explicitly asked\n- Fully answer every point in the message — no word limit, write as much as needed\n- Include one clear next step\n- After answering, include practical next steps by offering 2-3 simple options or inviting a direct reply to continue the conversation\n- HARD UNIQUENESS RULE: V1, V2, and V3 must each be completely unique in opener, sentence flow, phrasing, and CTA wording\n- Do not reuse the same first sentence across versions\n- Do not mention AI\n- Do not name any insurer except Aflac\n- ${selectedReplyStyle}\nReturn: {"v1":{"subject":"...","body":"..."},"v2":{"subject":"...","body":"..."},"v3":{"subject":"...","body":"..."}}`,
       true
     ));
     const reordered = promoteV3ToV1(result || {});
@@ -4866,7 +4903,7 @@ async function runTestScenario(scType) {
       REMOVAL_DEMAND: "- V1 must acknowledge frustration and apologize for the disruption\n- V1 must confirm removal and not attempt to retain or re-sell\n- Do not recommend any guide or include any link in V1",
     }[scType] || "";
     const result = JSON.parse(await askAI(TEST_SUPPORT_SYS,
-      `Create 3 support reply drafts for this inbound conversation:\n${JSON.stringify({ contact_email: sc.email, subject: sc.subject, message: sc.message, school: sc.school, sport: sc.sport })}\n\nRules:\n- FORMAL tone — professional, complete sentences, warm but polished\n- Fully answer every sender question or concern before offering a next step\n- Keep the focus on supplemental health coverage first, then risk awareness education and tax guidance from an enrolled agent and multi-licensed insurance specialist\n- Never use the words NIL or Name, Image, and Likeness unless the sender explicitly asks about them\n- If tax is asked, include a clear explanation of 1099 reporting, taxable income basics, and practical next steps like tracking expenses and planning estimated taxes\n- If asked what supplemental health is, clearly explain accident insurance and hospital indemnity: accident insurance pays cash benefits for covered accidental injuries and related care, and hospital indemnity pays cash benefits for covered hospital admissions or stays to help with out-of-pocket costs and related bills\n- V1: answer-first and thorough — open directly with the full answer, cover every part of the question in depth, professional tone\n- V2: warm and thorough — open with empathy or acknowledgment first, then give the same complete answer with a relationship-focused tone\n- V3: organized and thorough — open from a completely different angle than V1 and V2, give the full answer in a different structural order, every question still fully covered\n- HARD UNIQUENESS RULE: not one sentence should repeat across V1, V2, V3. Different openers, different sentence flow, different phrasing throughout, different closing CTA\n- Each version must go deep on every question asked — do not skip or skim anything\n- HARD VOCABULARY RULE: use plain everyday words that any parent can read easily. No big words, no jargon, no corporate language. If a term must be used, explain what it means right away\n- Fully answer every point in the message — no word limit, write as much as needed\n- After answering, include practical next steps by offering 2-3 simple options or inviting a direct reply to continue the conversation\n- No greeting line at the start\n- Do not mention AI\n- Do not name any insurer except Aflac\n- If carrier credibility is explicitly asked, include: Aflac holds an AM Best financial strength rating of A+ (Superior), and coaches including Deion Sanders, Nick Saban, and Dawn Staley have publicly endorsed Aflac's mission of protecting families\n${typeRules}\nAlso include a recommendation.\nReturn: {"v1":{"subject":"...","body":"..."},"v2":{"subject":"...","body":"..."},"v3":{"subject":"...","body":"..."},"rec":{"include_link":"yes|no","guide":"parent-guide|supplemental-health-guide|none"}}`,
+      `Create 3 support reply drafts for this inbound conversation:\n${JSON.stringify({ contact_email: sc.email, subject: sc.subject, message: sc.message, school: sc.school, sport: sc.sport })}\n\nRules:\n- FORMAL tone — professional, complete sentences, warm but polished\n- Fully answer every sender question or concern before offering a next step\n- Keep the focus on supplemental health coverage first, then risk awareness education and tax guidance from an enrolled agent and multi-licensed insurance specialist\n- Never use the words NIL or Name, Image, and Likeness unless the sender explicitly asks about them\n- If tax is asked, include a clear explanation of 1099 reporting, taxable income basics, and practical next steps like tracking expenses and planning estimated taxes\n- If asked what supplemental health is, clearly explain accident insurance and hospital indemnity: accident insurance pays cash benefits for covered accidental injuries and related care, and hospital indemnity pays cash benefits for covered hospital admissions or stays to help with out-of-pocket costs and related bills\n- V1: answer-first and thorough — open directly with the full answer, cover every part of the question in depth, professional tone\n- V2: warm and thorough — open with empathy or acknowledgment first, then give the same complete answer with a relationship-focused tone\n- V3: organized and thorough — open from a completely different angle than V1 and V2, give the full answer in a different structural order, every question still fully covered\n- HARD UNIQUENESS RULE: not one sentence should repeat across V1, V2, V3. Different openers, different sentence flow, different phrasing throughout, different closing CTA\n- Each version must go deep on every question asked — do not skip or skim anything\n- HARD VOCABULARY RULE: use plain everyday words that any parent can read easily. No big words, no jargon, no corporate language. If a term must be used, explain what it means right away\n- Fully answer every point in the message — no word limit, write as much as needed\n- After answering, include practical next steps by offering 2-3 simple options or inviting a direct reply to continue the conversation\n- Reply style lane for this run: ${selectedReplyStyle}\n- No greeting line at the start\n- Do not mention AI\n- Do not name any insurer except Aflac\n- If carrier credibility is explicitly asked, include: Aflac holds an AM Best financial strength rating of A+ (Superior), and coaches including Deion Sanders, Nick Saban, and Dawn Staley have publicly endorsed Aflac's mission of protecting families\n${typeRules}\nAlso include a recommendation.\nReturn: {"v1":{"subject":"...","body":"..."},"v2":{"subject":"...","body":"..."},"v3":{"subject":"...","body":"..."},"rec":{"include_link":"yes|no","guide":"parent-guide|supplemental-health-guide|none"}}`,
       true
     ));
     const reordered = promoteV3ToV1(result || {});
