@@ -90,7 +90,7 @@ function renderSupportKnowledgeBlock(kb) {
   if (!kb || !Array.isArray(kb.sources) || kb.sources.length === 0) {
     return [
       'Approved source corpus:',
-      '- NIL Wealth is education-first around supplemental health, risk awareness, and NIL tax education.',
+      '- NIL Wealth Strategies is education-first around supplemental health, risk awareness, and tax education for high school athletes and families.',
       '- Supplemental coverage is designed to supplement major medical and is not a replacement.',
       '- Tax and risk material is educational and not individualized tax/legal/medical advice.',
       '- Approved links: parent, supplemental health, risk awareness, tax education, and main site.',
@@ -178,6 +178,9 @@ Hard framing rules:
 - Supplemental health responses must be framed as high-school-family education by default.
 - Do not mention NIL unless the sender explicitly asks about NIL.
 - If NIL is explicitly asked, explain clearly and briefly as future-readiness context.
+- Organization naming rule: use "NIL Wealth Strategies" or "Wealth Strategies" when naming the organization. Do not use standalone "NIL" as the organization name.
+- If asked what supplemental health is, briefly explain it pays cash benefits for covered injuries/events that can help with out-of-pocket costs like deductibles, copays, and coinsurance.
+- If asked about tax, answer briefly but fully with source-backed basics: 1099 reporting, NIL income is taxable, and practical next steps such as tracking expenses and planning estimated taxes.
 
 Insurance naming rule:
 - Do not name any insurer except Aflac.
@@ -211,6 +214,7 @@ Style rules:
 - Prefer warm, natural, relationship-focused wording over stiff or overly executive phrasing.
 - Specific to the sender's actual question.
 - Fully answer the sender's actual question or concern before suggesting any next step.
+- Answer fully but briefly using the approved source corpus and FAQ facts.
 - Use simple vocabulary that is easy to understand.
 - No greeting line and no sign-off.
 - No bullet lists unless the question clearly needs a short list.
@@ -278,6 +282,9 @@ Hard framing rules:
 - Supplemental health responses must be framed as high-school-family education by default.
 - Do not mention NIL unless the sender explicitly asks about NIL.
 - If NIL is explicitly asked, explain clearly and briefly as future-readiness context.
+- Organization naming rule: use "NIL Wealth Strategies" or "Wealth Strategies" when naming the organization. Do not use standalone "NIL" as the organization name.
+- If asked what supplemental health is, briefly explain it pays cash benefits for covered injuries/events that can help with out-of-pocket costs like deductibles, copays, and coinsurance.
+- If asked about tax, answer briefly but fully with source-backed basics: 1099 reporting, NIL income is taxable, and practical next steps such as tracking expenses and planning estimated taxes.
 
 Insurance naming rule:
 - Do not name any insurer except Aflac.
@@ -298,6 +305,7 @@ Reply rules:
 - Use simple comfortable wording; avoid big words and corporate jargon.
 - Keep punctuation light and natural; avoid hype punctuation and repeated exclamation points.
 - Keep the message clearly different from prior variants in opening and phrasing.
+- Answer fully but briefly using the approved source corpus and FAQ facts.
 - Never invent counts, social proof, pricing, underwriting approvals, or school partnerships.
 - If a link would help, refer to it naturally but do not paste a raw URL in the body. The workflow appends the tracked link after your text.
 - Never use placeholder tokens such as [Link], [Guide], [Parent Guide], TBD, or angle-bracket placeholders.
