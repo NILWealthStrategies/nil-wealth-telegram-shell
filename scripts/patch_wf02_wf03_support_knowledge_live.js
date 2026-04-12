@@ -208,6 +208,7 @@ recommended_guide=parent-guide|supplemental-health-guide|risk-awareness-guide|ta
 
 Style rules:
 - Warm, direct, and human.
+- Prefer warm, natural, relationship-focused wording over stiff or overly executive phrasing.
 - Specific to the sender's actual question.
 - Fully answer the sender's actual question or concern before suggesting any next step.
 - No greeting line and no sign-off.
@@ -288,6 +289,7 @@ ${supportFaqBlock}
 Reply rules:
 - Write in first person as NIL Wealth Strategies support.
 - Keep it concise, warm, and forwardable.
+- Prefer warm, natural, relationship-focused wording over stiff or overly executive phrasing.
 - Under 170 words.
 - No subject line, no greeting line, no signature.
 - Do not start the email body with Hi, Hello, Hey, Dear, or any salutation.

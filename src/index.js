@@ -4739,7 +4739,7 @@ async function runTestScenario(scType) {
       "Style lane E: low-pressure check-in with direct ask",
     ][Math.floor(Math.random() * 5)];
     const result = JSON.parse(await askAI(OUTREACH_SYS,
-      `Create 3 follow-up reply drafts for this outreach conversation:\n${payload}\n\nRules:\n- Tone: conversational and relationship-building, while still professional\n- Voice should feel credible and coach-to-coach without sounding overly cool\n- Keep phrasing fluent and natural; avoid forced wording\n- Fully answer the coach's actual questions before mentioning any next step\n- If the coach asked multiple questions, cover each one clearly and efficiently\n- V1 should include one short natural Division I background line using a phrasing like \"When I played Division I sports...\" or equivalent\n- V2 should also include one short natural Division I background line, but worded differently from V1\n- V3 should avoid a Division I reference unless it is truly necessary\n- If parent-group help is relevant, mention CC support only after the direct answer and frame it as an easy follow-up\n- Keep wording simple and clear, avoid big words and avoid slang\n- Keep punctuation light, no hype punctuation and no repeated exclamation points\n- No formal greetings no corporate polish\n- No meeting or call suggestions unless explicitly asked\n- Under 140 words each\n- Include one clear next step\n- Make V1 V2 and V3 clearly different in opening line structure and CTA wording\n- Do not reuse the same first sentence across versions\n- Do not mention AI\n- Do not name any insurer except Aflac\n- ${outreachStyle}\nReturn: {"v1":{"subject":"...","body":"..."},"v2":{"subject":"...","body":"..."},"v3":{"subject":"...","body":"..."}}`,
+      `Create 3 follow-up reply drafts for this outreach conversation:\n${payload}\n\nRules:\n- Tone: conversational and relationship-building, while still professional\n- Voice should feel credible and coach-to-coach without sounding overly cool\n- Keep phrasing fluent and natural; avoid forced wording\n- Fully answer the coach's actual questions before mentioning any next step\n- If the coach asked multiple questions, cover each one clearly and efficiently\n- Do not mention any personal playing background\n- V2 is the quality bar for tone: warm, natural, relationship-focused, and easy to read\n- Make V1 sound very close to that same warm V2 tone, but slightly more direct\n- Make V3 sound close to that same warm V2 tone too, while staying concise and controlled\n- If parent-group help is relevant, mention CC support only after the direct answer and frame it as an easy follow-up\n- Keep wording simple and clear, avoid big words and avoid slang\n- Keep punctuation light, no hype punctuation and no repeated exclamation points\n- No formal greetings no corporate polish\n- No meeting or call suggestions unless explicitly asked\n- Under 140 words each\n- Include one clear next step\n- Make V1 V2 and V3 clearly different in opening line structure and CTA wording\n- Do not reuse the same first sentence across versions\n- Do not mention AI\n- Do not name any insurer except Aflac\n- ${outreachStyle}\nReturn: {"v1":{"subject":"...","body":"..."},"v2":{"subject":"...","body":"..."},"v3":{"subject":"...","body":"..."}}`,
       true
     ));
     v1 = result?.v1?.body || ""; v1subj = result?.v1?.subject || sc.subject;
@@ -8234,14 +8234,15 @@ ${JSON.stringify(prompt)}
 Rules:
 - This is a manual reply in an ongoing outreach thread after the coach already answered
 - Outreach tone should feel personal, human, and relationship-building while still professional
-- Sound like a credible former athlete speaking coach to coach
+- Sound credible, experienced, and coach-to-coach
 - Keep phrasing fluent and natural; avoid forced wording
 - Fully answer the coach's actual question before suggesting any next step
 - If the inbound asks multiple questions, answer each one clearly and efficiently
 - If parent-group help is relevant, mention it only after the direct answer is clear and frame it as an easy follow-up resource
-- V1 should include one short natural Division I background line such as "When I played Division I sports..." or equivalent
-- V2 should also include one short natural Division I background line, but worded differently from V1
-- V3 should avoid a Division I reference unless it is truly necessary
+- Do not mention any personal playing background
+- V2 is the quality bar for tone: warm, natural, relationship-focused, and easy to read
+- Make V1 sound very close to that same warm V2 tone, but slightly more direct
+- Make V3 sound close to that same warm V2 tone too, while staying concise and controlled
 - Keep vocabulary simple, comfortable, and clear
 - Keep punctuation light no hype and no repeated exclamation points
 - If the inbound message is a smooth/open reply answer directly and keep momentum
