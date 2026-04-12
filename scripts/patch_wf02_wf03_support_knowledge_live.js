@@ -198,7 +198,7 @@ function renderFaqBlock(faqDoc) {
 const supportFaq = loadSupportFaq();
 const supportFaqBlock = renderFaqBlock(supportFaq);
 
-const wf02Prompt = String.raw`={{ "Draft a NIL Wealth support reply using the source-backed support framework below.\n\nInbound sender: " + $("[GMAIL] Parse Support Email").first().json.from_name + " <" + $("[GMAIL] Parse Support Email").first().json.from_email + ">\nSubject: " + $("[GMAIL] Parse Support Email").first().json.subject + "\nMessage:\n" + $("[GMAIL] Parse Support Email").first().json.body_text + "\n\nLIVE WEBSITE SNAPSHOT (fetched this run):\n" + ($("[GMAIL] Build Live Support Snapshot").first().json.live_support_snapshot || "Live snapshot unavailable; use approved corpus below.") + "\n\nReturn two versions plus a recommendation block." }}`;
+const wf02Prompt = String.raw`={{ "Draft a NIL Wealth Strategies support reply using the source-backed support framework below.\n\nInbound sender: " + $("[GMAIL] Parse Support Email").first().json.from_name + " <" + $("[GMAIL] Parse Support Email").first().json.from_email + ">\nSubject: " + $("[GMAIL] Parse Support Email").first().json.subject + "\nMessage:\n" + $("[GMAIL] Parse Support Email").first().json.body_text + "\n\nLIVE WEBSITE SNAPSHOT (fetched this run):\n" + ($("[GMAIL] Build Live Support Snapshot").first().json.live_support_snapshot || "Live snapshot unavailable; use approved corpus below.") + "\n\nReturn two versions plus a recommendation block." }}`;
 
 const liveSnapshotCode = `const inputItems = $input.all();
 const SOURCES = [
@@ -279,16 +279,16 @@ const wf02System = `You are NIL Wealth Strategies' support specialist. You draft
 
 HARD TONE RULE: Support replies must be FORMAL — professional, complete sentences, organized, warm but polished. Never casual, never slang, never text-message style.
 
-Use only the source corpus below and the inbound email. If the message asks for something not covered here, say NIL Wealth can clarify directly. Do not invent statistics, client counts, pricing, underwriting approvals, guarantees, or school endorsements.
+Use only the source corpus below and the inbound email. If the message asks for something not covered here, say NIL Wealth Strategies can clarify directly. Do not invent statistics, client counts, pricing, underwriting approvals, guarantees, or school endorsements.
 
 Hard framing rules:
 - Default framing must be high school athletes and their families.
 - Supplemental health responses must be framed as high-school-family education by default.
-- Do not mention NIL unless the sender explicitly asks about NIL.
-- If NIL is explicitly asked, explain clearly and briefly as future-readiness context.
+- Do not mention Name, Image, and Likeness (NIL) unless the sender explicitly asks about Name, Image, and Likeness.
+- If Name, Image, and Likeness (NIL) is explicitly asked, explain clearly and briefly as future-readiness context.
 - Organization naming rule: use "NIL Wealth Strategies" or "Wealth Strategies" when naming the organization. Do not use standalone "NIL" as the organization name.
 - If asked what supplemental health is, briefly explain it pays cash benefits for covered injuries/events that can help with out-of-pocket costs like deductibles, copays, and coinsurance.
-- If asked about tax, answer briefly but fully with source-backed basics: 1099 reporting, NIL income is taxable, and practical next steps such as tracking expenses and planning estimated taxes.
+- If asked about tax, answer briefly but fully with source-backed basics: 1099 reporting, Name, Image, and Likeness income is taxable, and practical next steps such as tracking expenses and planning estimated taxes.
 
 Insurance naming rule:
 - Do not name any insurer except Aflac.
@@ -308,7 +308,7 @@ Guide recommendation rules:
 Output format:
 Your entire response must match this exact structure and use these exact uppercase headers:
 NO_LINK_VERSION:
-<reply body only, under 170 words>
+<reply body only, under 205 words>
 
 LINK_VERSION:
 <same answer, but naturally references the guide and includes exactly one plain public link from the approved list if a guide is genuinely helpful>
@@ -367,7 +367,7 @@ return [{ json: {
   guide_type:            b.guide_type     || 'supplemental-health-guide'
 }}];`;
 
-const wf03Prompt = String.raw`={{ "Compose a forwardable NIL Wealth support email.\nSituation type: " + ($("[CC] Parse CC Payload").first().json.situation_type || "answer_question") + "\nCoach/contact name: " + ($("[CC] Parse CC Payload").first().json.contact_name || $("[CC] Parse CC Payload").first().json.coach_name || "Coach") + "\nContact email: " + ($("[CC] Parse CC Payload").first().json.contact_email || "") + "\nGuide type: " + ($("[CC] Parse CC Payload").first().json.guide_type || "supplemental-health-guide") + "\nCoach message: " + ($("[CC] Parse CC Payload").first().json.coach_message || $("[CC] Parse CC Payload").first().json.support_body || "(no message provided)") + "\nConversation history: " + ($("[CC] Parse CC Payload").first().json.conversation_history || "No prior history") + "\n\nLIVE WEBSITE SNAPSHOT (fetched this run):\n" + ($("[CC] Build Live Support Snapshot").first().json.live_support_snapshot || "Live snapshot unavailable; use approved corpus below.") }}`;
+const wf03Prompt = String.raw`={{ "Compose a forwardable NIL Wealth Strategies support email.\nSituation type: " + ($("[CC] Parse CC Payload").first().json.situation_type || "answer_question") + "\nCoach/contact name: " + ($("[CC] Parse CC Payload").first().json.contact_name || $("[CC] Parse CC Payload").first().json.coach_name || "Coach") + "\nContact email: " + ($("[CC] Parse CC Payload").first().json.contact_email || "") + "\nGuide type: " + ($("[CC] Parse CC Payload").first().json.guide_type || "supplemental-health-guide") + "\nCoach message: " + ($("[CC] Parse CC Payload").first().json.coach_message || $("[CC] Parse CC Payload").first().json.support_body || "(no message provided)") + "\nConversation history: " + ($("[CC] Parse CC Payload").first().json.conversation_history || "No prior history") + "\n\nLIVE WEBSITE SNAPSHOT (fetched this run):\n" + ($("[CC] Build Live Support Snapshot").first().json.live_support_snapshot || "Live snapshot unavailable; use approved corpus below.") }}`;
 
 const wf03System = `You are NIL Wealth Strategies' support specialist writing a real support email that may be forwarded from a coach to a parent or athlete.
 
@@ -383,16 +383,16 @@ REQUIRED in every CC support email:
 7. Never use placeholder tokens such as [Link], [Guide], [Parent Guide], TBD, or angle-bracket placeholders.
 8. Never use square brackets in the reply body for any reason.
 
-Use only the source corpus below plus the inbound message. If the question goes beyond the corpus, say NIL Wealth can clarify directly instead of making something up.
+Use only the source corpus below plus the inbound message. If the question goes beyond the corpus, say NIL Wealth Strategies can clarify directly instead of making something up.
 
 Hard framing rules:
 - Default framing must be high school athletes and their families.
 - Supplemental health responses must be framed as high-school-family education by default.
-- Do not mention NIL unless the sender explicitly asks about NIL.
-- If NIL is explicitly asked, explain clearly and briefly as future-readiness context.
+- Do not mention Name, Image, and Likeness (NIL) unless the sender explicitly asks about Name, Image, and Likeness.
+- If Name, Image, and Likeness (NIL) is explicitly asked, explain clearly and briefly as future-readiness context.
 - Organization naming rule: use "NIL Wealth Strategies" or "Wealth Strategies" when naming the organization. Do not use standalone "NIL" as the organization name.
 - If asked what supplemental health is, briefly explain it pays cash benefits for covered injuries/events that can help with out-of-pocket costs like deductibles, copays, and coinsurance.
-- If asked about tax, answer briefly but fully with source-backed basics: 1099 reporting, NIL income is taxable, and practical next steps such as tracking expenses and planning estimated taxes.
+- If asked about tax, answer briefly but fully with source-backed basics: 1099 reporting, Name, Image, and Likeness income is taxable, and practical next steps such as tracking expenses and planning estimated taxes.
 
 Insurance naming rule:
 - Do not name any insurer except Aflac.
@@ -407,7 +407,7 @@ Reply rules:
 - Keep it concise, warm, and forwardable.
 - Prefer warm, natural, relationship-focused wording over stiff or overly executive phrasing.
 - Use simple vocabulary that is easy to understand.
-- Under 170 words.
+- Under 205 words.
 - No subject line, no greeting line, no signature.
 - Do not start the email body with Hi, Hello, Hey, Dear, or any salutation.
 - Use simple comfortable wording; avoid big words and corporate jargon.
