@@ -1,4 +1,5 @@
 const { execSync } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
@@ -69,6 +70,38 @@ function setNodeParameters(wf, nodeName, updater) {
   if (!node) throw new Error(`Node not found: ${nodeName}`);
   node.parameters = node.parameters || {};
   updater(node.parameters, node);
+}
+
+function upsertCodeNode(wf, nodeName, jsCode, position) {
+  wf.nodes = wf.nodes || [];
+  let node = wf.nodes.find((n) => n.name === nodeName);
+  if (!node) {
+    node = {
+      id: crypto.randomUUID(),
+      name: nodeName,
+      type: 'n8n-nodes-base.code',
+      typeVersion: 2,
+      position: position || [0, 0],
+      parameters: {},
+    };
+    wf.nodes.push(node);
+  }
+  node.parameters = node.parameters || {};
+  node.parameters.jsCode = jsCode;
+  if (position) node.position = position;
+}
+
+function rerouteMainOutput(wf, fromNode, outputIndex, targetNode) {
+  wf.connections = wf.connections || {};
+  wf.connections[fromNode] = wf.connections[fromNode] || {};
+  wf.connections[fromNode].main = wf.connections[fromNode].main || [];
+  wf.connections[fromNode].main[outputIndex] = [{ node: targetNode, type: 'main', index: 0 }];
+}
+
+function setMainOutput(wf, fromNode, toNode) {
+  wf.connections = wf.connections || {};
+  wf.connections[fromNode] = wf.connections[fromNode] || {};
+  wf.connections[fromNode].main = [[{ node: toNode, type: 'main', index: 0 }]];
 }
 
 const SUPPORT_KB_PATH = path.join(process.cwd(), 'src', 'support-knowledge-base.json');
@@ -165,7 +198,82 @@ function renderFaqBlock(faqDoc) {
 const supportFaq = loadSupportFaq();
 const supportFaqBlock = renderFaqBlock(supportFaq);
 
-const wf02Prompt = String.raw`={{ "Draft a NIL Wealth support reply using the source-backed support framework below.\n\nInbound sender: " + $("[GMAIL] Parse Support Email").first().json.from_name + " <" + $("[GMAIL] Parse Support Email").first().json.from_email + ">\nSubject: " + $("[GMAIL] Parse Support Email").first().json.subject + "\nMessage:\n" + $("[GMAIL] Parse Support Email").first().json.body_text + "\n\nReturn two versions plus a recommendation block." }}`;
+const wf02Prompt = String.raw`={{ "Draft a NIL Wealth support reply using the source-backed support framework below.\n\nInbound sender: " + $("[GMAIL] Parse Support Email").first().json.from_name + " <" + $("[GMAIL] Parse Support Email").first().json.from_email + ">\nSubject: " + $("[GMAIL] Parse Support Email").first().json.subject + "\nMessage:\n" + $("[GMAIL] Parse Support Email").first().json.body_text + "\n\nLIVE WEBSITE SNAPSHOT (fetched this run):\n" + ($("[GMAIL] Build Live Support Snapshot").first().json.live_support_snapshot || "Live snapshot unavailable; use approved corpus below.") + "\n\nReturn two versions plus a recommendation block." }}`;
+
+const liveSnapshotCode = `const inputItems = $input.all();
+const SOURCES = [
+  { key: 'main-site', url: 'https://mynilwealthstrategies.com/' },
+  { key: 'parent-guide', url: 'https://parentsguide.mynilwealthstrategies.com/' },
+  { key: 'supplemental-health-guide', url: 'https://supplementalhealth.mynilwealthstrategies.com/' },
+  { key: 'risk-awareness-guide', url: 'https://riskawareness.mynilwealthstrategies.com/' },
+  { key: 'tax-education-guide', url: 'https://taxeducation.mynilwealthstrategies.com/' },
+];
+
+function stripHtml(html) {
+  return String(html || '')
+    .replace(/<script[\\s\\S]*?<\\/script>/gi, ' ')
+    .replace(/<style[\\s\\S]*?<\\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/\\s+/g, ' ')
+    .trim();
+}
+
+function trimSentenceSafe(text, maxLen) {
+  const clean = String(text || '').trim();
+  if (!clean || clean.length <= maxLen) return clean;
+  const cut = clean.slice(0, maxLen);
+  const punct = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '));
+  return (punct > 120 ? cut.slice(0, punct + 1) : cut).trim();
+}
+
+async function fetchSnippet(source) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 9000);
+  try {
+    const response = await fetch(source.url, {
+      method: 'GET',
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'NIL-Wealth-Workflow/1.0 (+support snapshot)',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
+    });
+    if (!response.ok) {
+      return { key: source.key, url: source.url, ok: false, note: 'HTTP ' + response.status };
+    }
+    const html = await response.text();
+    const text = trimSentenceSafe(stripHtml(html), 800);
+    return { key: source.key, url: source.url, ok: true, snippet: text || 'No readable text found.' };
+  } catch (error) {
+    return { key: source.key, url: source.url, ok: false, note: String(error && error.message ? error.message : error) };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+const settled = await Promise.all(SOURCES.map((source) => fetchSnippet(source)));
+const lines = [];
+lines.push('Fresh website snippets (fetched at runtime):');
+for (const item of settled) {
+  lines.push('- ' + item.key + ' (' + item.url + ')');
+  if (item.ok) {
+    lines.push('  - snippet: ' + item.snippet);
+  } else {
+    lines.push('  - unavailable: ' + item.note);
+  }
+}
+
+const live_support_snapshot = lines.join('\\n').slice(0, 7000);
+return inputItems.map((item) => ({
+  json: {
+    ...item.json,
+    live_support_snapshot,
+    live_support_snapshot_fetched_at: new Date().toISOString(),
+  },
+}));`;
 
 const wf02System = `You are NIL Wealth Strategies' support specialist. You draft clear, source-backed replies for athletes, parents, and coaches.
 
@@ -259,7 +367,7 @@ return [{ json: {
   guide_type:            b.guide_type     || 'supplemental-health-guide'
 }}];`;
 
-const wf03Prompt = String.raw`={{ "Compose a forwardable NIL Wealth support email.\nSituation type: " + ($("[CC] Parse CC Payload").first().json.situation_type || "answer_question") + "\nCoach/contact name: " + ($("[CC] Parse CC Payload").first().json.contact_name || $("[CC] Parse CC Payload").first().json.coach_name || "Coach") + "\nContact email: " + ($("[CC] Parse CC Payload").first().json.contact_email || "") + "\nGuide type: " + ($("[CC] Parse CC Payload").first().json.guide_type || "supplemental-health-guide") + "\nCoach message: " + ($("[CC] Parse CC Payload").first().json.coach_message || $("[CC] Parse CC Payload").first().json.support_body || "(no message provided)") + "\nConversation history: " + ($("[CC] Parse CC Payload").first().json.conversation_history || "No prior history") }}`;
+const wf03Prompt = String.raw`={{ "Compose a forwardable NIL Wealth support email.\nSituation type: " + ($("[CC] Parse CC Payload").first().json.situation_type || "answer_question") + "\nCoach/contact name: " + ($("[CC] Parse CC Payload").first().json.contact_name || $("[CC] Parse CC Payload").first().json.coach_name || "Coach") + "\nContact email: " + ($("[CC] Parse CC Payload").first().json.contact_email || "") + "\nGuide type: " + ($("[CC] Parse CC Payload").first().json.guide_type || "supplemental-health-guide") + "\nCoach message: " + ($("[CC] Parse CC Payload").first().json.coach_message || $("[CC] Parse CC Payload").first().json.support_body || "(no message provided)") + "\nConversation history: " + ($("[CC] Parse CC Payload").first().json.conversation_history || "No prior history") + "\n\nLIVE WEBSITE SNAPSHOT (fetched this run):\n" + ($("[CC] Build Live Support Snapshot").first().json.live_support_snapshot || "Live snapshot unavailable; use approved corpus below.") }}`;
 
 const wf03System = `You are NIL Wealth Strategies' support specialist writing a real support email that may be forwarded from a coach to a parent or athlete.
 
@@ -422,6 +530,16 @@ return [{ json: {
 } }];`;
 
 function patchWf02(wf) {
+  upsertCodeNode(
+    wf,
+    '[GMAIL] Build Live Support Snapshot',
+    liveSnapshotCode,
+    [3360, 1152]
+  );
+
+  rerouteMainOutput(wf, '[GMAIL] Emit message.ingested', 0, '[GMAIL] Build Live Support Snapshot');
+  setMainOutput(wf, '[GMAIL] Build Live Support Snapshot', '[GMAIL] AI: Draft Support Reply');
+
   setNodeParameters(wf, '[GMAIL] AI: Draft Support Reply', (parameters) => {
     parameters.text = wf02Prompt;
     parameters.options = parameters.options || {};
@@ -430,6 +548,16 @@ function patchWf02(wf) {
 }
 
 function patchWf03(wf) {
+  upsertCodeNode(
+    wf,
+    '[CC] Build Live Support Snapshot',
+    liveSnapshotCode,
+    [-544, 1152]
+  );
+
+  rerouteMainOutput(wf, '[CC] Already Sent?', 0, '[CC] Build Live Support Snapshot');
+  setMainOutput(wf, '[CC] Build Live Support Snapshot', '[CC] AI: Compose Email Body');
+
   setNodeParameters(wf, '[CC] Parse CC Payload', (parameters) => {
     parameters.jsCode = wf03ParseCode;
   });
