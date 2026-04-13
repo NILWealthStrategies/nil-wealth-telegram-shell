@@ -206,7 +206,7 @@ async function runOutreachCoachInterest() {
     parent_guide_link: "https://parentsguide.mynilwealthstrategies.com/",
   });
 
-  const userPrompt = `Create 3 follow-up reply drafts for this Programs conversation:\n${prompt}\n\nRules:\n- This is a manual reply in an ongoing outreach thread after the coach already answered\n- Outreach tone must feel personal, natural, and human, not corporate, polished, or salesy\n- Sound like a real person talking to a coach in plain English\n- Briefly explain what I do, why I do it, and my personal background: I went through 3 surgeries, had financial help, and saw how out-of-pocket costs can stack for families\n- Keep that explanation short and conversational, not a speech\n- If the inbound message is a smooth/open reply, answer the question directly and keep momentum\n- If the inbound message is an objection, acknowledge it first, reduce pressure, and give an easy next step\n- Do not suggest calls, meetings, or calendar invites unless the inbound message explicitly asks for a phone call or meeting\n- If no explicit meeting request exists, the next step should be a simple reply, clarification, or short forwardable resource\n- Keep under 110 words\n- Include one clear next step\n- Do not mention AI\n- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless the count is explicitly provided in the prompt\n- Avoid generic phrases like "valuable insights," "numerous teams," "unforeseen circumstances," or "navigate this complex topic"\nReturn: {"v1":{"subject":"...","body":"..."},"v2":{...},"v3":{...}}`;
+  const userPrompt = `Create 3 follow-up reply drafts for this Programs conversation:\n${prompt}\n\nRules:\n- This is a manual reply in an ongoing outreach thread after the coach already answered\n- Outreach tone must feel personal, natural, and human, not corporate, polished, or salesy\n- Sound like a real person talking to a coach in plain English\n- Use this intro meaning at the top (exact wording or very close): Hey Coach [LastName] — I'm with NIL Wealth Strategies... former D1... three surgeries... out-of-pocket costs can stack... high school family gap context\n- Fully answer the coach question before CTA\n- Include this clarity clearly: payouts can be used for anything the family needs, not just medical bills\n- Include this clarity clearly: families can still receive full benefit payout even if school or college coverage pays part of medical costs\n- Use simple grammar and simple words only\n- If the inbound message is a smooth/open reply, answer the question directly and keep momentum\n- If the inbound message is an objection, acknowledge it first, reduce pressure, and give an easy next step\n- Do not suggest calls, meetings, or calendar invites unless the inbound message explicitly asks for a phone call or meeting\n- If no explicit meeting request exists, the next step should be a simple reply, clarification, or short forwardable resource\n- Make each version complete and longer (roughly 160-280 words)\n- Include one clear next step\n- End with:\nBest regards,\nThe NIL Wealth Strategies Team\n- Do not mention AI\n- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless the count is explicitly provided in the prompt\n- Avoid generic phrases like "valuable insights," "numerous teams," "unforeseen circumstances," or "navigate this complex topic"\nReturn: {"v1":{"subject":"...","body":"..."},"v2":{...},"v3":{...}}`;
 
   const rawContent = await callOpenAI(OUTREACH_SYSTEM, userPrompt, true);
   const parsed = JSON.parse(rawContent);
@@ -219,13 +219,15 @@ async function runOutreachCoachInterest() {
 
   check("No 'Dear [Name]' formal greeting", v2, (v) => notContains(v, "dear "));
   check("No 'I hope this email finds you'", v2, (v) => notContains(v, "i hope this email", "i hope this finds you"));
-  check("No 'sincerely' or 'best regards'", v2, (v) => notContains(v, "sincerely,", "best regards,", "kind regards,"));
+  check("Has required signoff", v2, (v) => contains(v, "best regards", "nil wealth strategies team"));
   check("No meeting/calendar push (unrequested)", v2, (v) => notContains(v, "schedule a call", "book a time", "calendar", "set up a meeting", "let's hop on"));
   check("No NIL mention (no NIL asked)", v2, (v) => notContains(v, "nil income", "nil earnings", "nil tax", "nil deal", "nil revenue"));
-  check("Under 130 words", v2, (v) => wordCount(v) <= 130);
-  check("Has a clear next step", v2, (v) => contains(v, "send", "forward", "reply", "let me know", "share", "happy to"));
+  check("Longer complete response", v2, (v) => wordCount(v) >= 90);
+  check("Has a clear next step", v2, (v) => contains(v, "send", "forward", "reply", "let me know", "share", "happy to", "hit me up"));
   check("Does NOT mention AI", v2, (v) => !(/\bai\b/i.test(String(v || ""))) && notContains(v, "chatgpt", "generated", "automated"));
   check("Mentions personal background naturally", v2, (v) => contains(v, "surg", "out-of-pocket", "cost", "personal", "family"));
+  check("States payout can be used for anything", v2, (v) => contains(v, "anything", "any need", "not just medical", "not only medical"));
+  check("States full payout still applies with other coverage", v2, (v) => contains(v, "full benefit", "full payout", "still receive", "school", "college"));
 }
 
 // ── SCENARIO 2: Parent website question ──────────────────────────────────
@@ -302,7 +304,7 @@ Return two versions plus a recommendation block.`;
   console.log(`\n  RECOMMENDATION: ${recommendation}`);
   console.log(`\n  CHECKS:`);
 
-  check("Formal tone — complete sentences", noLinkBody, (v) => notContains(v, "hey ", "nope", "totally", "yeah,"));
+  check("Formal tone — complete sentences", noLinkBody, (v) => !(/^(hey|yo|sup)\b/i.test(v.trim())) && notContains(v, "nope", "totally", "yeah,"));
   check("Acknowledges the objection / their concern", noLinkBody, (v) => contains(v, "understand", "valid", "makes sense", "that's fair", "appreciate", "great question", "fair point"));
   check("Explains deductibles/copays/gap concept", noLinkBody, (v) => contains(v, "deductible", "copay", "coinsurance", "gap", "out-of-pocket", "supplement", "alongside", "in addition"));
   check("States it does NOT replace existing coverage", noLinkBody, (v) => contains(v, "not replace", "supplement", "additional", "alongside", "works with"));
