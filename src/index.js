@@ -5070,7 +5070,7 @@ async function runTestScenario(scType) {
   // ── Page 1: Conversation/Instantly first view ───────────────
   if (scType === "OUTREACH_COACH_INTEREST") {
     const coachLastName = String(sc.name || "Coach").trim().split(/\s+/).filter(Boolean).slice(-1)[0] || "Coach";
-    const outboundSeed = `Hey Coach ${escT(coachLastName)} - I'm with NIL Wealth Strategies. We help student athletes at all levels really understand financial risks, how NIL income is taxed, and how to plan for injury-related expenses - things that usually are not explained in a clear or practical way. I'm a former D1 athlete, and during my college career I went through three surgeries, so I saw firsthand how quickly out-of-pocket costs can stack up after an injury. Because of that, we prioritize high school athletes specifically for injury expense coverage, since parents are often the ones left dealing with those gaps that primary insurance does not fully cover on its own.`;
+    const outboundSeed = `Hey Coach ${escT(coachLastName)} — I'm with NIL Wealth Strategies. We help student athletes at all levels really understand financial risks, how NIL income is taxed, and how to plan for injury-related expenses — things that usually aren't explained in a clear or practical way. I'm a former D1 athlete, and during my college career I went through three surgeries, so I saw firsthand how quickly out-of-pocket costs can stack up after an injury. Because of that, we prioritize high school athletes specifically for injury expense coverage, since parents are often the ones left dealing with those gaps that primary insurance doesn't fully cover on its own.`;
     pages.push([
       `📤 INSTANTLY OUTBOUND`,
       `--`,
@@ -8505,7 +8505,7 @@ Rules:
 - Do not use first name only, and do not use full name in greeting
 - If introducing this to families is relevant, include this simple line: "I can send a message you can forward, and you can review it before it is sent."
 - If parent-group help is relevant, mention it only after the direct answer is clear and frame it as an easy follow-up resource
-- INTRO TEMPLATE HARD RULE: use this base intro meaning and tone at the start of each draft, then create unique phrasing per version without changing the core facts: "Hey Coach [LastName] - I'm with NIL Wealth Strategies. We help student athletes at all levels really understand financial risks, how NIL income is taxed, and how to plan for injury-related expenses - things that usually are not explained in a clear or practical way. I'm a former D1 athlete, and during my college career I went through three surgeries, so I saw firsthand how quickly out-of-pocket costs can stack up after an injury. Because of that, we prioritize high school athletes specifically for injury expense coverage, since parents are often the ones left dealing with those gaps that primary insurance does not fully cover on its own."
+- INTRO TEMPLATE HARD RULE: use this base intro meaning and tone at the start of each draft, then create unique phrasing per version without changing the core facts: "Hey Coach [LastName] — I'm with NIL Wealth Strategies. We help student athletes at all levels really understand financial risks, how NIL income is taxed, and how to plan for injury-related expenses — things that usually aren't explained in a clear or practical way. I'm a former D1 athlete, and during my college career I went through three surgeries, so I saw firsthand how quickly out-of-pocket costs can stack up after an injury. Because of that, we prioritize high school athletes specifically for injury expense coverage, since parents are often the ones left dealing with those gaps that primary insurance doesn't fully cover on its own."
 - Keep these intro facts mandatory in every version: financial risk + NIL tax education + injury expense planning + former D1 + three surgeries + high school family gap context
 - V2 is the quality bar for tone: warm, natural, relationship-focused, and easy to read
 - Make V1 sound very close to that same warm V2 tone, but slightly more direct
@@ -8681,10 +8681,9 @@ ${officialWebsiteLink}`.trim();
       `- To see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury: ${aflacOption3Link}`,
       "Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.",
       "Please note that coaches do not sell, explain, or enroll insurance. Coaches do not handle money or paperwork. Families review coverage and enroll directly with Aflac. NIL Wealth Strategies provides education and support only.",
-      "You can respond to this message with any questions - we're happy to help.",
+      "You can respond to this message with any questions — we're happy to help.",
       "Thank you for your attention and support in ensuring our athletes are well-protected.",
-      "Best regards,",
-      "The NIL Wealth Strategies Team",
+      "Best regards,\nThe NIL Wealth Strategies Team",
     ].join("\n\n"),
     v2: [
       "Dear parents,",
@@ -8696,10 +8695,9 @@ ${officialWebsiteLink}`.trim();
       `- To see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury: ${aflacOption3Link}`,
       "Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.",
       "Please note that coaches do not sell, explain, or enroll insurance. Coaches do not handle money or paperwork. Families review coverage and enroll directly with Aflac. NIL Wealth Strategies provides education and support only.",
-      "You can respond to this message with any questions - we're happy to help.",
+      "You can respond to this message with any questions — we're happy to help.",
       "Thank you for your attention and support in ensuring our athletes are well-protected.",
-      "Best regards,",
-      "The NIL Wealth Strategies Team",
+      "Best regards,\nThe NIL Wealth Strategies Team",
     ].join("\n\n"),
     v3: [
       "Dear parents,",
@@ -8711,10 +8709,9 @@ ${officialWebsiteLink}`.trim();
       `- To see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury: ${aflacOption3Link}`,
       "Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.",
       "Please note that coaches do not sell, explain, or enroll insurance. Coaches do not handle money or paperwork. Families review coverage and enroll directly with Aflac. NIL Wealth Strategies provides education and support only.",
-      "You can respond to this message with any questions - we're happy to help.",
+      "You can respond to this message with any questions — we're happy to help.",
       "Thank you for your attention and support in ensuring our athletes are well-protected.",
-      "Best regards,",
-      "The NIL Wealth Strategies Team",
+      "Best regards,\nThe NIL Wealth Strategies Team",
     ].join("\n\n"),
   };
   nextBody = privacySafeSupportByVersion[key] || nextBody;
