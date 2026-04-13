@@ -176,6 +176,7 @@ const APP_BOOT_TS_MS = Date.now();
 const CLICK_TRACKER_BASE_URL = normalizeAbsoluteHttpUrl(process.env.CLICK_TRACKER_BASE_URL || "");
 const DEFAULT_PARENT_GUIDE_URL = "https://parentsguide.mynilwealthstrategies.com/";
 const DEFAULT_OFFICIAL_WEBSITE_URL = "https://mynilwealthstrategies.com/";
+const DEFAULT_AFLAC_PROOF_URL = "https://drive.google.com/file/d/1YPaNQtr6oIhpSKhEaYXRw9FZH41RVdQd/view?usp=sharing";
 const FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY =
 String(process.env.FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY || "false").toLowerCase() === "true";
 // NY time
@@ -1287,6 +1288,7 @@ async function sbCoachIdsForSource(source = "all") {
 function normalizeGuideKey(rawType) {
   const t = String(rawType || "").trim().toLowerCase();
   if (!t) return "";
+  if ((t.includes("aflac") && t.includes("proof")) || (t.includes("google") && t.includes("drive"))) return "aflac-proof";
   if (t.includes("parent") && t.includes("guide")) return "parent-guide";
   if (t.includes("supplemental") && t.includes("guide")) return "supplemental-health-guide";
   if (t.includes("risk") && t.includes("guide")) return "risk-awareness-guide";
@@ -1318,6 +1320,7 @@ function guideKeyFromUrl(rawUrl) {
     if (candidate === "enroll") return "enroll";
     if (candidate === "eapp") return "eapp";
     if (candidate === "website") return "website";
+    if (candidate === "aflac-proof") return "aflac-proof";
   }
 
   if (host.includes("parentsguide.mynilwealthstrategies.com")) return "parent-guide";
@@ -1329,6 +1332,7 @@ function guideKeyFromUrl(rawUrl) {
     return "enroll";
   }
   if (host.includes("mynilwealthstrategies.com")) return "website";
+  if (host.includes("drive.google.com") && path.includes("/file/d/")) return "aflac-proof";
 
   return "";
 }
@@ -1348,8 +1352,9 @@ function buildTrackedGuideLink(rawUrl, conv) {
   const coachId = String(conv?.coach_id || "").trim();
 
   if (parsed.pathname.startsWith("/go/")) {
-    if (recipientEmail && !parsed.searchParams.get("person_email")) {
-      parsed.searchParams.set("person_email", recipientEmail);
+    if (recipientEmail && !parsed.searchParams.get("person_key")) {
+      parsed.searchParams.set("person_key", hashStable(recipientEmail));
+      parsed.searchParams.set("person_key_source", "query");
     }
     if (coachId && !parsed.searchParams.get("coach_id")) {
       parsed.searchParams.set("coach_id", coachId);
@@ -1366,10 +1371,13 @@ function buildTrackedGuideLink(rawUrl, conv) {
   const coachSuffix = coachId ? `-${encodeURIComponent(coachId)}` : "";
   if (guideKey === "website") {
     prettyTracked.pathname = coachSuffix ? `/website${coachSuffix}` : "/website";
+  } else if (guideKey === "aflac-proof") {
+    prettyTracked.pathname = coachSuffix ? `/aflac-proof${coachSuffix}` : "/aflac-proof";
   } else {
     prettyTracked.pathname = `/${guideKey}${coachSuffix}`;
   }
-  prettyTracked.searchParams.set("person_email", recipientEmail);
+  prettyTracked.searchParams.set("person_key", hashStable(recipientEmail));
+  prettyTracked.searchParams.set("person_key_source", "query");
   if (coachId) prettyTracked.searchParams.set("coach_id", coachId);
   prettyTracked.searchParams.set("actor_type", "parent");
 
@@ -1394,6 +1402,10 @@ function officialWebsiteLinkForConversation(conv) {
   return buildTrackedGuideLink(DEFAULT_OFFICIAL_WEBSITE_URL, conv);
 }
 
+function aflacProofLinkForConversation(conv) {
+  return buildTrackedGuideLink(DEFAULT_AFLAC_PROOF_URL, conv);
+}
+
 function rewriteOutboundTrackedLinks(rawBody, conv) {
   const body = String(rawBody || "");
   if (!body) return body;
@@ -1405,6 +1417,21 @@ function rewriteOutboundTrackedLinks(rawBody, conv) {
     const rewritten = buildTrackedGuideLink(trimmed, conv);
     return `${rewritten}${suffix}`;
   });
+}
+
+function ensureAflacOption3(body, conv) {
+  const text = String(body || "").trim();
+  if (!text) return text;
+  const trackedAflacProofLink = aflacProofLinkForConversation(conv) || DEFAULT_AFLAC_PROOF_URL;
+  if (text.includes(trackedAflacProofLink) || text.includes("Aflac Carrier Overview (Option 3):")) {
+    return text;
+  }
+  const option3Block = [
+    "Aflac Carrier Overview (Option 3):",
+    "Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.",
+    trackedAflacProofLink,
+  ].join("\n");
+  return `${text}\n\n${option3Block}`.trim();
 }
 
 function isForwardedGuideSignal(rawType) {
@@ -4743,10 +4770,26 @@ function promoteV3ToV1(drafts) {
 
 function testVersionFromPage(cached, pageIdx) {
   const map = cached?.draftPageIndex || {};
-  if (map.v1 === pageIdx) return "v1";
-  if (map.v2 === pageIdx) return "v2";
-  if (map.v3 === pageIdx) return "v3";
+  if (map.drafts === pageIdx) {
+    return cached?.selectedDraftVersion || "v1";
+  }
   return null;
+}
+
+function buildTestDraftPage(cached) {
+  const selected = cached?.selectedDraftVersion || "v1";
+  const subject = cached?.draftSubjects?.[selected] || "";
+  const body = cached?.draftBodies?.[selected] || "";
+  const label = selected.toUpperCase();
+  return [
+    `✍️ Reply Drafts (V1/V2/V3)`,
+    `Conversation: ${cached?.convId || "SIM"}`,
+    `Selected: ${label}`,
+    ``,
+    `Subject: ${escT(subject)}`,
+    ``,
+    escT(body),
+  ].join("\n");
 }
 
 // Paged keyboard — only Prev/Next + Re-run + All Scenarios
@@ -4962,19 +5005,22 @@ async function runTestScenario(scType) {
       };
       const parentGuideLink = parentGuideLinkForConversation(simulatedConv) || DEFAULT_PARENT_GUIDE_URL;
       const officialWebsiteLink = officialWebsiteLinkForConversation(simulatedConv) || DEFAULT_OFFICIAL_WEBSITE_URL;
-      const ccSys = "You generate CC Support messages for Wealth Strategies. Bridge: concise, conversational, polished note from outreach person to coach looping in support. The bridge must explicitly tell the coach that the note below is what they can forward to the parent group. Support: formal, persuasive, complete message the coach forwards to parent group. The support message must build information in the right order: context, supplemental-health overview, role clarity, why the Parent Guide is worth opening, then the response line. Keep the focus on supplemental health coverage first, with risk awareness education and tax guidance from an enrolled agent and multi-licensed insurance specialist. Never use the words NIL or Name, Image, and Likeness unless the sender explicitly asks about them. Do not name any insurer except Aflac. Mention extra carrier credibility details only when credibility is explicitly asked. Return JSON.";
+      const aflacProofLink = aflacProofLinkForConversation(simulatedConv) || DEFAULT_AFLAC_PROOF_URL;
+      const ccSys = "You generate CC Support messages for Wealth Strategies. Bridge: concise, conversational, polished note from outreach person to coach looping in support. The bridge must explicitly tell the coach that the note below is what they can forward to the parent group. Support: formal, persuasive, complete message the coach forwards to parent group. The support message must be parent-focused only and must never include or summarize private coach conversation details. Keep the focus on how this helps athletes and families. Do not mention any insurer except Aflac. Return JSON.";
       const ccResult = JSON.parse(await askAI(ccSys,
-        `Generate CC messages for this coach conversation:\nCoach: ${sc.name} — ${sc.school} ${sc.sport} (${sc.state})\nMessage: ${sc.message}\n\nBridge (conversational, professional; outreach person says support team is looped in; explicitly say the note below is what the coach can forward to the parent group; do not repeat the coach name in the bridge body):\nSupport (formal, written to be forwarded to the parent group — fully answer the message with no word limit — first give parents clear context, then explain supplemental-health coverage in plain terms including accident insurance and hospital indemnity, then clarify roles in fluent professional wording, then explain why the Parent Guide is worth opening by telling families what they will find there, then include this exact line: "You can respond to this message with any questions — we're happy to help.", and include both mandatory links exactly as written:\nLearn more in the Parent Guide:\n${parentGuideLink}\nOfficial Wealth Strategies Website:\n${officialWebsiteLink}):\n\nReturn: {"bridge":{"body":"..."},"support":{"body":"..."}}`,
+        `Generate CC messages for this coach conversation:\nCoach: ${sc.name} — ${sc.school} ${sc.sport} (${sc.state})\n\nBridge (conversational, professional; outreach person says support team is looped in; explicitly say the note below is what the coach can forward to the parent group; do not repeat the coach name in the bridge body):\nSupport (formal, written to be forwarded to the parent group; parent-focused only; do not quote or summarize private coach conversation details; explain how this supports families and athletes; include this exact line: "You can respond to this message with any questions — we're happy to help."; include mandatory links exactly as written:\nLearn more in the Parent Guide:\n${parentGuideLink}\nOfficial Wealth Strategies Website:\n${officialWebsiteLink}\nAflac Carrier Overview (Option 3):\n${aflacProofLink}\nInclude this credibility line in plain wording: Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.):\n\nReturn: {"bridge":{"body":"..."},"support":{"body":"..."}}`,
         true
       ));
       ccBridge = ccResult?.bridge?.body || "";
       ccSupport = ccResult?.support?.body || "";
       const hasParentLabel = ccSupport.includes("Learn more in the Parent Guide:");
       const hasWebsiteLabel = ccSupport.includes("Official Wealth Strategies Website:");
+      const hasAflacLabel = ccSupport.includes("Aflac Carrier Overview (Option 3):");
       const hasParentLink = ccSupport.includes(parentGuideLink);
       const hasWebsiteLink = ccSupport.includes(officialWebsiteLink);
-      if (!hasParentLabel || !hasWebsiteLabel || !hasParentLink || !hasWebsiteLink) {
-        ccSupport = `${String(ccSupport || "").trim()}\n\nLearn more in the Parent Guide:\n${parentGuideLink}\n\nOfficial Wealth Strategies Website:\n${officialWebsiteLink}`.trim();
+      const hasAflacLink = ccSupport.includes(aflacProofLink);
+      if (!hasParentLabel || !hasWebsiteLabel || !hasAflacLabel || !hasParentLink || !hasWebsiteLink || !hasAflacLink) {
+        ccSupport = `${String(ccSupport || "").trim()}\n\nLearn more in the Parent Guide:\n${parentGuideLink}\n\nOfficial Wealth Strategies Website:\n${officialWebsiteLink}\n\nAflac Carrier Overview (Option 3):\nBacked by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.\n${aflacProofLink}`.trim();
       }
     } catch {}
   }
@@ -5018,9 +5064,11 @@ async function runTestScenario(scType) {
   // Step 5: Build paged content — matches real card formats exactly
   const pages = [];
 
+  const aflacProofLinkForScenario = aflacProofLinkForConversation({ contact_email: sc.email, coach_id: sc.coach_id || "" }) || DEFAULT_AFLAC_PROOF_URL;
+
   // ── Page 1: Conversation/Instantly first view ───────────────
   if (scType === "OUTREACH_COACH_INTEREST") {
-    const outboundSeed = `Hi ${escT(sc.name)}, thanks for reaching out. We can help your families with simple supplemental health coverage education, and our support team can answer parent questions directly after you forward this note.`;
+    const outboundSeed = `Hi ${escT(sc.name)} - I am with Wealth Strategies. We help high school athletes and families understand supplemental health options in plain language, and we handle parent questions directly so your staff is not carrying the load. Is your program the right place to share this with families?`;
     pages.push([
       `📤 INSTANTLY OUTBOUND`,
       `--`,
@@ -5100,35 +5148,17 @@ async function runTestScenario(scType) {
     ].join("\n"));
   }
 
-  // ── Page 3/4/5: Drafts card with full V1/V2/V3 views ─
+  v1 = ensureAflacOption3(v1, { contact_email: sc.email, coach_id: sc.coach_id || "" });
+  v2 = ensureAflacOption3(v2, { contact_email: sc.email, coach_id: sc.coach_id || "" });
+  v3 = ensureAflacOption3(v3, { contact_email: sc.email, coach_id: sc.coach_id || "" });
+
+  // ── Single Draft Page: button-switch V1/V2/V3 (no separate pages) ─
   const draftPageIndex = {};
-  draftPageIndex.v1 = pages.length;
-  pages.push([
-    `✍️ Reply Drafts — V1`,
-    `Conversation: ${convId}`,
-    ``,
-    `Subject: ${escT(v1subj)}`,
-    ``,
-    escT(v1),
-  ].join("\n"));
-  draftPageIndex.v2 = pages.length;
-  pages.push([
-    `✍️ Reply Drafts — V2`,
-    `Conversation: ${convId}`,
-    ``,
-    `Subject: ${escT(v2subj)}`,
-    ``,
-    escT(v2),
-  ].join("\n"));
-  draftPageIndex.v3 = pages.length;
-  pages.push([
-    `✍️ Reply Drafts — V3`,
-    `Conversation: ${convId}`,
-    ``,
-    `Subject: ${escT(v3subj)}`,
-    ``,
-    escT(v3),
-  ].join("\n"));
+  draftPageIndex.drafts = pages.length;
+  const draftBodies = { v1, v2, v3 };
+  const draftSubjects = { v1: v1subj, v2: v2subj, v3: v3subj };
+  const selectedDraftVersion = "v1";
+  pages.push(buildTestDraftPage({ convId, selectedDraftVersion, draftBodies, draftSubjects }));
 
   // ── Page 4 (Coach Interest): CC Support ──────────────────────
   if (scType === "OUTREACH_COACH_INTEREST" && (ccBridge || ccSupport)) {
@@ -5159,7 +5189,7 @@ async function runTestScenario(scType) {
     : [`📊 TEST RESULTS`, `--`, `${convId} · ${lane}`, ``, `⚠️ ${passed}/${totalChecks} checks passed — ${failures.length} failure${failures.length > 1 ? "s" : ""}:`, ``, ...failures.map(f => `❌ ${escT(f)}`), ``, `Scenario: ${scType}`].join("\n")
   );
 
-  return { convId, scType, pages, draftPageIndex };
+  return { convId, scType, pages, draftPageIndex, selectedDraftVersion, draftBodies, draftSubjects, aflacProofLinkForScenario };
 }
 
 // Build test dashboard card ─────────────────────────────────
@@ -5254,11 +5284,14 @@ bot.action(/^TEST:draft:([^:]+):(v[123])$/, safeAction(async (ctx) => {
     await smartRender(ctx, `⚠️ Session expired — please re-run the test.`, Markup.inlineKeyboard([[Markup.button.callback("⬅ All Scenarios", "TEST:back")]])).catch(() => {});
     return;
   }
-  const idx = cached?.draftPageIndex?.[version];
+  const idx = cached?.draftPageIndex?.drafts;
   if (typeof idx !== "number") {
     await smartRender(ctx, `⚠️ Draft view unavailable — please re-run the test.`, Markup.inlineKeyboard([[Markup.button.callback("⬅ All Scenarios", "TEST:back")]])).catch(() => {});
     return;
   }
+  cached.selectedDraftVersion = version;
+  cached.pages[idx] = buildTestDraftPage(cached);
+  testScenarioCache.set(convId, cached);
   const { scType, pages } = cached;
   const pageText = `${pages[idx]}\n\nPage ${idx + 1}/${pages.length}`;
   await smartRender(ctx, pageText, testPageKb(scType, convId, idx, pages.length)).catch(() => {});
@@ -8539,21 +8572,25 @@ const json = await res.json();
 const content = json?.choices?.[0]?.message?.content;
 if (!content) throw new Error("No draft content from OpenAI");
 const parsed = JSON.parse(content);
-return promoteV3ToV1(parsed || {});
+const drafts = promoteV3ToV1(parsed || {});
+for (const k of ["v1", "v2", "v3"]) {
+  if (drafts?.[k]?.body) {
+    drafts[k].body = ensureAflacOption3(drafts[k].body, conv);
+  }
+}
+return drafts;
 }
 
 async function generateCCDrafts(conv) {
 if (!OPENAI_API_KEY) {
 throw new Error("Missing OPENAI_API_KEY");
 }
-const inbound = await sbLatestInboundMessage(conv.id);
 const parentGuideLink = parentGuideLinkForConversation(conv);
 const officialWebsiteLink = officialWebsiteLinkForConversation(conv);
 const prompt = {
 contact_email: conv.contact_email || "",
 subject: conv.subject || "",
 preview: conv.preview || "",
-latest_inbound: inbound?.body || inbound?.preview || "",
 coach_name: conv.coach_name || "",
 source: conv.source || "outreach",
 parent_guide_link: parentGuideLink,
@@ -8624,7 +8661,50 @@ ${parentGuideLink}`.trim();
 Official Wealth Strategies Website:
 ${officialWebsiteLink}`.trim();
   }
-  draft.body = nextBody;
+  const aflacOption3Link = aflacProofLinkForConversation(conv) || DEFAULT_AFLAC_PROOF_URL;
+  const privacySafeSupportByVersion = {
+    v1: [
+      "Families, this note is to help you review optional supplemental health coverage support for student-athletes in plain language.",
+      "This support can help families understand accident coverage and hospital-indemnity support, plus risk and tax education, before making any decision.",
+      roleClarity,
+      "You can respond to this message with any questions — we're happy to help.",
+      "Learn more in the Parent Guide:",
+      parentGuideLink,
+      "Official Wealth Strategies Website:",
+      officialWebsiteLink,
+      "Aflac Carrier Overview (Option 3):",
+      "Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.",
+      aflacOption3Link,
+    ].join("\n\n"),
+    v2: [
+      "Families, we want this to feel clear and low-pressure.",
+      "You can review optional supplemental health information at your own pace and decide what fits your athlete and family.",
+      roleClarity,
+      "You can respond to this message with any questions — we're happy to help.",
+      "Learn more in the Parent Guide:",
+      parentGuideLink,
+      "Official Wealth Strategies Website:",
+      officialWebsiteLink,
+      "Aflac Carrier Overview (Option 3):",
+      "Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.",
+      aflacOption3Link,
+    ].join("\n\n"),
+    v3: [
+      "Start here with the Parent Guide so your family can quickly see what this support covers and how it can help athletes.",
+      "Coverage review is optional, and families can move at their own pace with direct support for questions.",
+      roleClarity,
+      "You can respond to this message with any questions — we're happy to help.",
+      "Learn more in the Parent Guide:",
+      parentGuideLink,
+      "Official Wealth Strategies Website:",
+      officialWebsiteLink,
+      "Aflac Carrier Overview (Option 3):",
+      "Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.",
+      aflacOption3Link,
+    ].join("\n\n"),
+  };
+  nextBody = privacySafeSupportByVersion[key] || nextBody;
+  draft.body = ensureAflacOption3(nextBody, conv);
 }
 return parsed;
 }
@@ -8632,12 +8712,12 @@ return parsed;
 // CC drafts cache (in-memory, per conversation)
 const ccDraftsCache = new Map();
 
-function draftsKeyboard(convId, selectedVersion = null) {
+function draftsKeyboard(convId, selectedVersion = 1) {
 const tag = (v) => selectedVersion === v ? " ✅" : "";
 return Markup.inlineKeyboard([
 [Markup.button.callback(`View V1${tag(1)}`, `DRAFTS:view:${convId}:1`), Markup.button.callback(`View V2${tag(2)}`, `DRAFTS:view:${convId}:2`), Markup.button.callback(`View V3${tag(3)}`, `DRAFTS:view:${convId}:3`)],
 [Markup.button.callback("✏️ Edit Selected", `DRAFTS:edit:${convId}`), Markup.button.callback("♻️ Regenerate", `DRAFTS:regen:${convId}`)],
-[Markup.button.callback("📤 Send (Support)", `CONFIRMSEND:${convId}:1:support`), Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]
+[Markup.button.callback("📤 Send (Support)", `CONFIRMSEND:${convId}:${selectedVersion}:support`), Markup.button.callback("⬅ Back", `OPENCARD:${convId}`)]
 ]);
 }
 
@@ -8648,13 +8728,18 @@ let text = `✍️ Reply Drafts (V1/V2/V3)\nConversation: ${idShort(convId)}\n`;
 if (note) text += `\n${note}\n`;
 if (!drafts.length) {
 text += "\nNo drafts yet. Tap Regenerate.";
-return smartRender(ctx, text, draftsKeyboard(convId, null));
+return smartRender(ctx, text, draftsKeyboard(convId, 1));
+}
+if (selected) {
+text += `\n✅ Selected: V${selected.version}`;
+text += `\n📧 Subject: ${selected.subject || "—"}\n`;
+text += `\n📝 Body:\n${selected.body || "(empty)"}\n`;
 }
 for (const d of drafts) {
-const marker = d.selected ? "✅" : "▫️";
-text += `\n${marker} V${d.version}\nSubject: ${d.subject || "—"}\n${shorten(d.body || "", 220)}\n`;
+if (selected && d.version === selected.version) continue;
+text += `\n▫️ V${d.version} Preview\nSubject: ${d.subject || "—"}\n${shorten(d.body || "", 180)}\n`;
 }
-return smartRender(ctx, text, draftsKeyboard(convId, selected?.version || null));
+return smartRender(ctx, text, draftsKeyboard(convId, selected?.version || 1));
 }
 
 bot.action(/^DRAFTS:open:(.+)$/, safeAction(async (ctx) => {
@@ -8715,17 +8800,8 @@ const draft = drafts.find((d) => d.version === version);
 if (!draft) {
 return smartRender(ctx, `❌ Draft V${version} not found.`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `DRAFTS:open:${convId}`)]]));
 }
-const selected = drafts.find((d) => d.selected);
-const isSelected = selected?.version === version;
-const marker = isSelected ? "✅ SELECTED" : "";
-let text = `✍️ Draft V${version} ${marker}\nConversation: ${idShort(convId)}\n\n`;
-text += `📧 Subject: ${draft.subject || "—"}\n\n`;
-text += `📝 Body:\n${draft.body || "(empty)"}`;
-const buttons = [
-[Markup.button.callback(isSelected ? "✅ Selected" : "✅ Select This", `DRAFTS:use:${convId}:${version}`)],
-[Markup.button.callback("⬅ Back to Drafts", `DRAFTS:open:${convId}`)]
-];
-await smartRender(ctx, text, Markup.inlineKeyboard(buttons));
+await sbSelectConversationDraft(convId, version);
+await renderDraftsCard(ctx, convId, `Viewing V${version}`);
 } catch (err) {
 logError("DRAFTS:view", err);
 await smartRender(ctx, `❌ Error: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", `DRAFTS:open:${convId}`)]]));
@@ -8743,20 +8819,7 @@ return smartRender(ctx, `❌ Conversation not found.`, Markup.inlineKeyboard([[M
 }
 if (await blockInstantlyManagedAction(ctx, conv, convId, "Draft selection")) return;
 await sbSelectConversationDraft(convId, version);
-// Show the draft view with updated selection
-const drafts = await sbListConversationDrafts(convId);
-const draft = drafts.find((d) => d.version === version);
-if (!draft) {
-return renderDraftsCard(ctx, convId, `✅ Selected V${version}`);
-}
-let text = `✍️ Draft V${version} ✅ SELECTED\nConversation: ${idShort(convId)}\n\n`;
-text += `📧 Subject: ${draft.subject || "—"}\n\n`;
-text += `📝 Body:\n${draft.body || "(empty)"}`;
-const buttons = [
-[Markup.button.callback("✅ Selected", `DRAFTS:use:${convId}:${version}`)],
-[Markup.button.callback("⬅ Back to Drafts", `DRAFTS:open:${convId}`)]
-];
-await smartRender(ctx, text, Markup.inlineKeyboard(buttons));
+await renderDraftsCard(ctx, convId, `✅ Selected V${version}`);
 } catch (err) {
 logError("DRAFTS:use", err);
 await smartRender(ctx, `❌ Select draft failed: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("⬅ Back", "DASH:back")]]));
