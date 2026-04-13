@@ -8697,7 +8697,9 @@ ${aflacOption3Link}
 
 Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders. Please note that coaches do not sell, explain, or enroll insurance, nor do they handle money or paperwork. Families review coverage and enroll directly with Aflac. NIL Wealth Strategies provides education and support only.
 
-Coaches do not sell, explain, or enroll insurance. Coaches do not handle money or paperwork. Families review coverage and enroll directly with Aflac. NIL Wealth Strategies provides education and support only.`;
+Coaches do not sell, explain, or enroll insurance. Coaches do not handle money or paperwork. Families review coverage and enroll directly with Aflac. NIL Wealth Strategies provides education and support only.
+
+Best regards - NIL Wealth Strategies`;
   const privacySafeSupportByVersion = {
     v1: requiredParentForwardSupport,
     v2: requiredParentForwardSupport,
