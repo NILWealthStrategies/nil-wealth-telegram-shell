@@ -1419,15 +1419,12 @@ function normalizeMessageSpacing(value) {
 function ensureAflacOption3(body, conv) {
   const text = normalizeMessageSpacing(body);
   if (!text) return text;
-  const trackedAflacProofLink = aflacProofLinkForConversation(conv) || DEFAULT_AFLAC_PROOF_URL;
-  if (text.includes(trackedAflacProofLink) || text.includes("To see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury:")) {
+  const requiredAflacLine = "To see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury: https://mynilwealthstrategies.com/go/aflac-proof?pk=dbf81c3a";
+  const requiredAflacCred = "NIL Wealth Strategies is backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.";
+  if (text.includes(requiredAflacLine)) {
     return text;
   }
-  const option3Block = [
-    "To see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury:",
-    "Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.",
-    trackedAflacProofLink,
-  ].join("\n");
+  const option3Block = [requiredAflacLine, "", requiredAflacCred].join("\n");
   return `${text}\n\n${option3Block}`.trim();
 }
 
@@ -5005,23 +5002,23 @@ async function runTestScenario(scType) {
       const aflacProofLink = aflacProofLinkForConversation(simulatedConv) || DEFAULT_AFLAC_PROOF_URL;
       const ccSys = "You generate CC Support messages for Wealth Strategies. Bridge: concise, conversational, polished note from outreach person to coach looping in support. The bridge must explicitly tell the coach that the note below is what they can forward to the parent group. Support: formal, persuasive, complete message the coach forwards to parent group. The support message must be parent-focused only and must never include or summarize private coach conversation details. Keep the focus on how this helps athletes and families. HARD SCOPE RULE: only include information needed to answer this thread and do not add unrelated detail. The first two support paragraphs must be practical and direct, not promotional, and must explain primary-insurance gaps and supplemental coverage in plain language. Do not mention any insurer except Aflac. Return JSON.";
       const ccResult = JSON.parse(await askAI(ccSys,
-        `Generate CC messages for this coach conversation:\nCoach: ${sc.name} — ${sc.school} ${sc.sport} (${sc.state})\n\nBridge (conversational, professional; outreach person says support team is looped in; explicitly say the note below is what the coach can forward to the parent group; do not repeat the coach name in the bridge body):\nSupport (formal, written to be forwarded to the parent group; parent-focused only; do not quote or summarize private coach conversation details; explain how this supports families and athletes; the first two paragraphs must use this practical tone and meaning in plain wording: families need help understanding injury expense coverage for student-athletes; primary insurance does not always cover everything; high school and youth families often carry extra costs; supplemental health works alongside primary insurance and can pay families directly for covered injuries; funds can help with medical bills, travel, time off work, and other out-of-pocket costs; families also get simple guidance on financial risk and NIL income tax education. Include this exact line: "You can respond to this message with any questions — we're happy to help."; include mandatory links exactly as written:\nLearn more in the Parent Guide:\n${parentGuideLink}\nOfficial Wealth Strategies Website:\n${officialWebsiteLink}\nTo see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury:\n${aflacProofLink}\nInclude this credibility line in plain wording: Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders. Include this role clarity note in simple wording: Coaches do not sell, explain, or enroll insurance. Coaches do not handle money or paperwork. Families review coverage and enroll directly with Aflac. NIL Wealth Strategies provides education and support only.):\n\nReturn: {"bridge":{"body":"..."},"support":{"body":"..."}}`,
+        `Generate CC messages for this coach conversation:\nCoach: ${sc.name} — ${sc.school} ${sc.sport} (${sc.state})\n\nBridge (conversational, professional; outreach person says support team is looped in; explicitly say the note below is what the coach can forward to the parent group; do not repeat the coach name in the bridge body):\nSupport (formal, written to be forwarded to the parent group; parent-focused only; do not quote or summarize private coach conversation details; explain how this supports families and athletes; the first two paragraphs must use this practical tone and meaning in plain wording: families need help understanding injury expense coverage for student-athletes; primary insurance does not always cover everything; high school and youth families often carry extra costs; supplemental health works alongside primary insurance and can pay families directly for covered injuries; funds can help with medical bills, travel, time off work, and other out-of-pocket costs; families also get simple guidance on financial risk and NIL income tax education. Include this exact line: "You can respond to this message with any questions — we're happy to help."; include mandatory links exactly as written:\nLearn more in the Parent Guide:\n${parentGuideLink}\nOfficial Wealth Strategies Website:\n${officialWebsiteLink}\nTo see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury: https://mynilwealthstrategies.com/go/aflac-proof?pk=dbf81c3a\n\nNIL Wealth Strategies is backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders. Include this role clarity note in simple wording: Coaches do not sell, explain, or enroll insurance. Coaches do not handle money or paperwork. Families review coverage and enroll directly with Aflac. NIL Wealth Strategies provides education and support only.):\n\nReturn: {"bridge":{"body":"..."},"support":{"body":"..."}}`,
         true
       ));
       ccBridge = ccResult?.bridge?.body || "";
       ccSupport = ccResult?.support?.body || "";
       const hasParentLabel = ccSupport.includes("Learn more in the Parent Guide:");
       const hasWebsiteLabel = ccSupport.includes("Official Wealth Strategies Website:");
-      const hasAflacLabel = ccSupport.includes("To see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury:");
+      const hasAflacLabel = ccSupport.includes("To see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury: https://mynilwealthstrategies.com/go/aflac-proof?pk=dbf81c3a");
       const hasRoleClarity = /coaches do not sell, explain, or enroll insurance/i.test(ccSupport)
         && /coaches do not handle money or paperwork/i.test(ccSupport)
         && /families review coverage and enroll directly with aflac/i.test(ccSupport)
         && /nil wealth strategies provides education and support only/i.test(ccSupport);
       const hasParentLink = ccSupport.includes(parentGuideLink);
       const hasWebsiteLink = ccSupport.includes(officialWebsiteLink);
-      const hasAflacLink = ccSupport.includes(aflacProofLink);
+      const hasAflacLink = ccSupport.includes("https://mynilwealthstrategies.com/go/aflac-proof?pk=dbf81c3a") || ccSupport.includes(aflacProofLink);
       if (!hasParentLabel || !hasWebsiteLabel || !hasAflacLabel || !hasParentLink || !hasWebsiteLink || !hasAflacLink || !hasRoleClarity) {
-        ccSupport = `${String(ccSupport || "").trim()}\n\nCoaches do not sell, explain, or enroll insurance.\nCoaches do not handle money or paperwork.\nFamilies review coverage and enroll directly with Aflac.\nNIL Wealth Strategies provides education and support only.\n\nLearn more in the Parent Guide:\n${parentGuideLink}\n\nOfficial Wealth Strategies Website:\n${officialWebsiteLink}\n\nTo see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury:\nBacked by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.\n${aflacProofLink}`.trim();
+        ccSupport = `${String(ccSupport || "").trim()}\n\nCoaches do not sell, explain, or enroll insurance.\nCoaches do not handle money or paperwork.\nFamilies review coverage and enroll directly with Aflac.\nNIL Wealth Strategies provides education and support only.\n\nLearn more in the Parent Guide:\n${parentGuideLink}\n\nOfficial Wealth Strategies Website:\n${officialWebsiteLink}\n\nTo see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury: https://mynilwealthstrategies.com/go/aflac-proof?pk=dbf81c3a\n\nNIL Wealth Strategies is backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.`.trim();
       }
     } catch {}
   }
@@ -8692,10 +8689,11 @@ Learn more in the Parent Guide:
 ${parentGuideLink}
 Official Wealth Strategies Website:
 ${officialWebsiteLink}
-To see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury:
-${aflacOption3Link}
+To see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury: https://mynilwealthstrategies.com/go/aflac-proof?pk=dbf81c3a
 
-Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders. Please note that coaches do not sell, explain, or enroll insurance, nor do they handle money or paperwork. Families review coverage and enroll directly with Aflac. NIL Wealth Strategies provides education and support only.
+NIL Wealth Strategies is backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.
+
+Please note that coaches do not sell, explain, or enroll insurance, nor do they handle money or paperwork. Families review coverage and enroll directly with Aflac. NIL Wealth Strategies provides education and support only.
 
 Coaches do not sell, explain, or enroll insurance. Coaches do not handle money or paperwork. Families review coverage and enroll directly with Aflac. NIL Wealth Strategies provides education and support only.
 
