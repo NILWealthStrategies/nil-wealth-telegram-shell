@@ -123,6 +123,14 @@ Style rules:
 - No bullet lists unless the question clearly needs a short list.
 - Never mention internal systems, tracking, campaigns, or bots.`;
 
+const SUPPORT_OBJECTION_APPENDIX = `
+
+Objection and de-escalation rules:
+- If the sender pushes back (for example says they already have insurance or questions the need), the first sentence must explicitly acknowledge their concern with plain wording (for example: "I understand your concern" or "That is a fair question").
+- In objection replies, include at least one explicit no-pressure door-open line near the end (for example: "No pressure, and if helpful I am happy to answer questions.").
+- If the sender asks to stop contact or be removed, confirm removal clearly and do not recommend a guide or link (include_link=no and recommended_guide=none).
+`;
+
 // ── OpenAI helper ─────────────────────────────────────────────────────────
 
 async function callOpenAI(systemPrompt, userPrompt, jsonMode = false) {
@@ -239,7 +247,7 @@ Hi, my son plays varsity soccer at Lincoln High School. I came across your websi
 
 Return two versions plus a recommendation block.`;
 
-  const rawContent = await callOpenAI(SUPPORT_SYSTEM, userPrompt, false);
+  const rawContent = await callOpenAI(`${SUPPORT_SYSTEM}\n${SUPPORT_OBJECTION_APPENDIX}`, userPrompt, false);
 
   // Extract NO_LINK_VERSION block — stop at LINK_VERSION or RECOMMENDATION
   const noLinkMatch = rawContent.match(/NO_LINK_VERSION:\s*([\s\S]*?)(?=\n{0,3}LINK_VERSION:|\n{0,3}RECOMMENDATION:|$)/i);
@@ -281,7 +289,7 @@ I appreciate the email but I don't really see the point here. My son already has
 
 Return two versions plus a recommendation block.`;
 
-  const rawContent = await callOpenAI(SUPPORT_SYSTEM, userPrompt, false);
+  const rawContent = await callOpenAI(`${SUPPORT_SYSTEM}\n${SUPPORT_OBJECTION_APPENDIX}`, userPrompt, false);
 
   const noLinkMatch = rawContent.match(/NO_LINK_VERSION:\s*([\s\S]*?)(?:\n\n?LINK_VERSION:|$)/i);
   const noLinkBody = noLinkMatch ? noLinkMatch[1].trim() : rawContent.trim();
@@ -322,7 +330,7 @@ Look, I've gotten three of these emails now and I'm pretty annoyed. This is clea
 
 Return two versions plus a recommendation block.`;
 
-  const rawContent = await callOpenAI(SUPPORT_SYSTEM, userPrompt, false);
+  const rawContent = await callOpenAI(`${SUPPORT_SYSTEM}\n${SUPPORT_OBJECTION_APPENDIX}`, userPrompt, false);
 
   // Extract NO_LINK_VERSION block — stop at LINK_VERSION or RECOMMENDATION
   const noLinkMatch = rawContent.match(/NO_LINK_VERSION:\s*([\s\S]*?)(?=\n{0,3}LINK_VERSION:|\n{0,3}RECOMMENDATION:|$)/i);
