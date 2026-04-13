@@ -8682,49 +8682,26 @@ Official Wealth Strategies Website:
 ${officialWebsiteLink}`.trim();
   }
   const aflacOption3Link = aflacProofLinkForConversation(conv) || DEFAULT_AFLAC_PROOF_URL;
+  const requiredParentForwardSupport = `Dear Parents,
+
+Understanding injury expense coverage for our student-athletes is crucial for every family. It's important to know that primary insurance often does not cover all costs related to sports injuries. Many families, particularly those involved in high school and youth sports, may face additional expenses out of pocket. Supplemental health insurance works alongside your primary insurance to help cover these costs and can provide families with direct payments for covered injuries.
+
+These funds can be used to help with medical bills, travel expenses, time off work, and other out-of-pocket costs that might arise from an athlete's injury. Additionally, families will receive straightforward guidance on managing financial risks and education about NIL income tax. You can respond to this message with any questions — we're happy to help.
+
+Learn more in the Parent Guide:
+${parentGuideLink}
+Official Wealth Strategies Website:
+${officialWebsiteLink}
+To see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury:
+${aflacOption3Link}
+
+Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders. Please note that coaches do not sell, explain, or enroll insurance, nor do they handle money or paperwork. Families review coverage and enroll directly with Aflac. NIL Wealth Strategies provides education and support only.
+
+Coaches do not sell, explain, or enroll insurance. Coaches do not handle money or paperwork. Families review coverage and enroll directly with Aflac. NIL Wealth Strategies provides education and support only.`;
   const privacySafeSupportByVersion = {
-    v1: [
-      "Dear parents,",
-      "We're sharing this to help families better understand injury expense coverage for student-athletes. When an injury happens, primary insurance doesn't always cover everything, and families are often left to handle those extra costs on their own. Because of that, this is especially important for high school and youth athletes and their families.",
-      "To help with this, supplemental health coverage is available. It works alongside your primary insurance and pays you directly if your child gets injured. The money can be used for anything at all, including travel, bills, lost income from missed work, and more. Families can still receive the full benefit payout even if school or college coverage pays part of medical costs. This coverage is optional and it covers all accidents and hospital visits, not just sports injuries - including car accidents, slips and falls, and any accident. The goal is to help you feel more prepared and avoid added financial stress during recovery.",
-      "In addition to that, families also have access to simple guidance to better understand financial risks and NIL income tax education - areas that aren't often taught but can become important as athletes move forward. For detailed information, please check out the following resources:",
-      `- Learn more in the Parent Guide: ${parentGuideLink}`,
-      `- Official Wealth Strategies Website: ${officialWebsiteLink}`,
-      `- To see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury: ${aflacOption3Link}`,
-      "Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.",
-      "Please note that coaches do not sell, explain, or enroll insurance. Coaches do not handle money or paperwork. Families review coverage and enroll directly with Aflac. NIL Wealth Strategies provides education and support only.",
-      "You can respond to this message with any questions — we're happy to help.",
-      "Thank you for your attention and support in ensuring our athletes are well-protected.",
-      "Best regards,\nThe NIL Wealth Strategies Team",
-    ].join("\n\n"),
-    v2: [
-      "Dear parents,",
-      "We're sharing this so families can clearly understand injury expense coverage for student-athletes. When an injury happens, primary insurance does not always cover every cost, and families can end up carrying extra expenses themselves. This matters most for high school and youth athletes and their families.",
-      "Supplemental health coverage is available to help with that gap. It works alongside your primary insurance and pays you directly if your child gets injured. Those funds can be used for anything at all, including travel, bills, lost income from missed work, and more, and families can still receive the full benefit payout even if school or college coverage pays part of medical costs. This coverage is optional and it covers all accidents and hospital visits, not just sports injuries - including car accidents, slips and falls, and any accident. This helps families feel more prepared during recovery.",
-      "Families also have access to simple guidance on financial risks and NIL income tax education - topics that are often not explained early but can become important as athletes move forward. For detailed information, please check out the following resources:",
-      `- Learn more in the Parent Guide: ${parentGuideLink}`,
-      `- Official Wealth Strategies Website: ${officialWebsiteLink}`,
-      `- To see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury: ${aflacOption3Link}`,
-      "Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.",
-      "Please note that coaches do not sell, explain, or enroll insurance. Coaches do not handle money or paperwork. Families review coverage and enroll directly with Aflac. NIL Wealth Strategies provides education and support only.",
-      "You can respond to this message with any questions — we're happy to help.",
-      "Thank you for your attention and support in ensuring our athletes are well-protected.",
-      "Best regards,\nThe NIL Wealth Strategies Team",
-    ].join("\n\n"),
-    v3: [
-      "Dear parents,",
-      "We're sharing this to help families review injury expense coverage for student-athletes in a practical way. Primary insurance can leave gaps after an injury, and families are often left covering extra costs on their own. That is why this is especially important for high school and youth athletes and their families.",
-      "Supplemental health coverage is one way to help close those gaps. It works with your primary insurance and pays you directly if your child gets injured. Families can use that money for anything at all, including travel, bills, lost income from missed work, and more, and families can still receive the full benefit payout even if school or college coverage pays part of medical costs. This coverage is optional and it covers all accidents and hospital visits, not just sports injuries - including car accidents, slips and falls, and any accident. This helps reduce financial stress during recovery.",
-      "Alongside coverage education, families can also access simple guidance on financial risks and NIL income tax education - areas that are often not taught clearly but can become important over time. For detailed information, please check out the following resources:",
-      `- Learn more in the Parent Guide: ${parentGuideLink}`,
-      `- Official Wealth Strategies Website: ${officialWebsiteLink}`,
-      `- To see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury: ${aflacOption3Link}`,
-      "Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.",
-      "Please note that coaches do not sell, explain, or enroll insurance. Coaches do not handle money or paperwork. Families review coverage and enroll directly with Aflac. NIL Wealth Strategies provides education and support only.",
-      "You can respond to this message with any questions — we're happy to help.",
-      "Thank you for your attention and support in ensuring our athletes are well-protected.",
-      "Best regards,\nThe NIL Wealth Strategies Team",
-    ].join("\n\n"),
+    v1: requiredParentForwardSupport,
+    v2: requiredParentForwardSupport,
+    v3: requiredParentForwardSupport,
   };
   nextBody = privacySafeSupportByVersion[key] || nextBody;
   draft.body = ensureAflacOption3(nextBody, conv);
