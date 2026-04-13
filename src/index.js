@@ -1406,15 +1406,25 @@ function rewriteOutboundTrackedLinks(rawBody, conv) {
   });
 }
 
+function normalizeMessageSpacing(value) {
+  const text = String(value || "").replace(/\r\n/g, "\n");
+  return text
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trimEnd())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function ensureAflacOption3(body, conv) {
-  const text = String(body || "").trim();
+  const text = normalizeMessageSpacing(body);
   if (!text) return text;
   const trackedAflacProofLink = aflacProofLinkForConversation(conv) || DEFAULT_AFLAC_PROOF_URL;
-  if (text.includes(trackedAflacProofLink) || text.includes("Aflac Coverage 3 Example:")) {
+  if (text.includes(trackedAflacProofLink) || text.includes("To see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury:")) {
     return text;
   }
   const option3Block = [
-    "Aflac Coverage 3 Example:",
+    "To see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury:",
     "Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.",
     trackedAflacProofLink,
   ].join("\n");
@@ -4955,7 +4965,7 @@ async function runTestScenario(scType) {
   if (scType === "OUTREACH_COACH_INTEREST") {
     const payload = JSON.stringify({ contact_email: sc.email, subject: sc.subject, latest_inbound: sc.message, coach_name: sc.name, school: sc.school, sport: sc.sport });
     const result = JSON.parse(await askAI(OUTREACH_SYS,
-      `Create 3 follow-up reply drafts for this outreach conversation:\n${payload}\n\nRules:\n- Hard memory rule: use only the facts in this thread payload\n- Do not pull from any other client, coach, parent, campaign, or prior conversation outside this thread\n- Tone: conversational and relationship-building, while still professional\n- Voice should feel credible and coach-to-coach without sounding overly cool\n- Keep phrasing fluent and natural; avoid forced wording\n- Fully answer the coach's actual questions before mentioning any next step\n- If the coach asked multiple questions, cover each one fully and clearly\n- V1, V2, and V3 each must fully answer every coach question before any CTA or support mention\n- Do not mention any personal playing background\n- V2 is the quality bar for tone: warm, natural, relationship-focused, and easy to read\n- Make V1 sound very close to that same warm V2 tone, but slightly more direct\n- Make V3 sound close to that same warm V2 tone too, while being complete and professional\n- If parent-group help is relevant, mention CC support only after the direct answer and frame it as an easy follow-up\n- Keep wording simple and clear, avoid big words and avoid slang\n- Use simple vocabulary that is easy to understand on a quick read\n- Keep punctuation light, no hype punctuation and no repeated exclamation points\n- No formal greetings no corporate polish\n- No meeting or call suggestions unless explicitly asked\n- Fully answer every point in the message — no word limit, write as much as needed\n- Include one clear next step\n- After answering, include practical next steps by offering 2-3 simple options or inviting a direct reply to continue the conversation\n- HARD UNIQUENESS RULE: V1, V2, and V3 must each be completely unique in opener, sentence flow, phrasing, and CTA wording\n- Do not reuse the same first sentence across versions\n- Do not mention AI\n- Do not name any insurer except Aflac\n- ${selectedReplyStyle}\nReturn: {"v1":{"subject":"...","body":"..."},"v2":{"subject":"...","body":"..."},"v3":{"subject":"...","body":"..."}}`,
+      `Create 3 follow-up reply drafts for this outreach conversation:\n${payload}\n\nRules:\n- Hard memory rule: use only the facts in this thread payload\n- Do not pull from any other client, coach, parent, campaign, or prior conversation outside this thread\n- Tone: conversational and relationship-building, while still professional\n- Voice should feel credible and coach-to-coach without sounding overly cool\n- Keep phrasing fluent and natural; avoid forced wording\n- Fully answer the coach's actual questions before mentioning any next step\n- If the coach asked multiple questions, cover each one fully and clearly\n- V1, V2, and V3 each must fully answer every coach question before any CTA or support mention\n- If you use a greeting, use "Coach [LastName]" only\n- Do not use first name only, and do not use full name in greeting\n- Do not mention any personal playing background\n- V2 is the quality bar for tone: warm, natural, relationship-focused, and easy to read\n- Make V1 sound very close to that same warm V2 tone, but slightly more direct\n- Make V3 sound close to that same warm V2 tone too, while being complete and professional\n- If parent-group help is relevant, mention CC support only after the direct answer and frame it as an easy follow-up\n- Keep wording simple and clear, avoid big words and avoid slang\n- Use simple vocabulary that is easy to understand on a quick read\n- Keep punctuation light, no hype punctuation and no repeated exclamation points\n- No formal greetings no corporate polish\n- No meeting or call suggestions unless explicitly asked\n- Fully answer every point in the message — no word limit, write as much as needed\n- Include one clear next step\n- After answering, include practical next steps by offering 2-3 simple options or inviting a direct reply to continue the conversation\n- HARD UNIQUENESS RULE: V1, V2, and V3 must each be completely unique in opener, sentence flow, phrasing, and CTA wording\n- Do not reuse the same first sentence across versions\n- Do not mention AI\n- Do not name any insurer except Aflac\n- ${selectedReplyStyle}\nReturn: {"v1":{"subject":"...","body":"..."},"v2":{"subject":"...","body":"..."},"v3":{"subject":"...","body":"..."}}`,
       true
     ));
     const reordered = promoteV3ToV1(result || {});
@@ -4995,19 +5005,19 @@ async function runTestScenario(scType) {
       const aflacProofLink = aflacProofLinkForConversation(simulatedConv) || DEFAULT_AFLAC_PROOF_URL;
       const ccSys = "You generate CC Support messages for Wealth Strategies. Bridge: concise, conversational, polished note from outreach person to coach looping in support. The bridge must explicitly tell the coach that the note below is what they can forward to the parent group. Support: formal, persuasive, complete message the coach forwards to parent group. The support message must be parent-focused only and must never include or summarize private coach conversation details. Keep the focus on how this helps athletes and families. Do not mention any insurer except Aflac. Return JSON.";
       const ccResult = JSON.parse(await askAI(ccSys,
-        `Generate CC messages for this coach conversation:\nCoach: ${sc.name} — ${sc.school} ${sc.sport} (${sc.state})\n\nBridge (conversational, professional; outreach person says support team is looped in; explicitly say the note below is what the coach can forward to the parent group; do not repeat the coach name in the bridge body):\nSupport (formal, written to be forwarded to the parent group; parent-focused only; do not quote or summarize private coach conversation details; explain how this supports families and athletes; include this exact line: "You can respond to this message with any questions — we're happy to help."; include mandatory links exactly as written:\nLearn more in the Parent Guide:\n${parentGuideLink}\nOfficial Wealth Strategies Website:\n${officialWebsiteLink}\nAflac Coverage 3 Example:\n${aflacProofLink}\nInclude this credibility line in plain wording: Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.):\n\nReturn: {"bridge":{"body":"..."},"support":{"body":"..."}}`,
+        `Generate CC messages for this coach conversation:\nCoach: ${sc.name} — ${sc.school} ${sc.sport} (${sc.state})\n\nBridge (conversational, professional; outreach person says support team is looped in; explicitly say the note below is what the coach can forward to the parent group; do not repeat the coach name in the bridge body):\nSupport (formal, written to be forwarded to the parent group; parent-focused only; do not quote or summarize private coach conversation details; explain how this supports families and athletes; include this exact line: "You can respond to this message with any questions — we're happy to help."; include mandatory links exactly as written:\nLearn more in the Parent Guide:\n${parentGuideLink}\nOfficial Wealth Strategies Website:\n${officialWebsiteLink}\nTo see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury:\n${aflacProofLink}\nInclude this credibility line in plain wording: Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.):\n\nReturn: {"bridge":{"body":"..."},"support":{"body":"..."}}`,
         true
       ));
       ccBridge = ccResult?.bridge?.body || "";
       ccSupport = ccResult?.support?.body || "";
       const hasParentLabel = ccSupport.includes("Learn more in the Parent Guide:");
       const hasWebsiteLabel = ccSupport.includes("Official Wealth Strategies Website:");
-      const hasAflacLabel = ccSupport.includes("Aflac Coverage 3 Example:");
+      const hasAflacLabel = ccSupport.includes("To see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury:");
       const hasParentLink = ccSupport.includes(parentGuideLink);
       const hasWebsiteLink = ccSupport.includes(officialWebsiteLink);
       const hasAflacLink = ccSupport.includes(aflacProofLink);
       if (!hasParentLabel || !hasWebsiteLabel || !hasAflacLabel || !hasParentLink || !hasWebsiteLink || !hasAflacLink) {
-        ccSupport = `${String(ccSupport || "").trim()}\n\nLearn more in the Parent Guide:\n${parentGuideLink}\n\nOfficial Wealth Strategies Website:\n${officialWebsiteLink}\n\nAflac Coverage 3 Example:\nBacked by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.\n${aflacProofLink}`.trim();
+        ccSupport = `${String(ccSupport || "").trim()}\n\nLearn more in the Parent Guide:\n${parentGuideLink}\n\nOfficial Wealth Strategies Website:\n${officialWebsiteLink}\n\nTo see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury:\nBacked by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.\n${aflacProofLink}`.trim();
       }
     } catch {}
   }
@@ -5055,7 +5065,8 @@ async function runTestScenario(scType) {
 
   // ── Page 1: Conversation/Instantly first view ───────────────
   if (scType === "OUTREACH_COACH_INTEREST") {
-    const outboundSeed = `Hi ${escT(sc.name)} - I am with NIL Wealth Strategies. I am a former D1 athlete, and during my college career I had 3 surgeries, so I saw firsthand how fast out-of-pocket costs can stack up. In the high school setting, parents often have to cover those costs on their own. That is why we do this work: we help student-athlete families with simple education on supplemental health, risk awareness, and tax basics that are usually not taught in school. Are you the right person to share this with families?`;
+    const coachLastName = String(sc.name || "Coach").trim().split(/\s+/).filter(Boolean).slice(-1)[0] || "Coach";
+    const outboundSeed = `Hey Coach ${escT(coachLastName)} - I am with NIL Wealth Strategies. I am a former D1 athlete, and during my college career I had 3 surgeries, so I saw firsthand how fast out-of-pocket expenses can stack up after an injury. In the high school setting, parents often have to handle those costs on their own. That is exactly why we do this work: we help student-athlete families understand supplemental health coverage, risk awareness, and tax education in simple terms they can actually use. We focus on protecting families from surprise costs and making the options easy to understand. Are you the right person to share this with families?`;
     pages.push([
       `📤 INSTANTLY OUTBOUND`,
       `--`,
@@ -8474,6 +8485,8 @@ Rules:
 - Keep phrasing fluent and natural; avoid forced wording
 - Fully answer the coach's actual question before suggesting any next step
 - If the inbound asks multiple questions, answer each one clearly and efficiently
+- If you use a greeting, use "Coach [LastName]" only
+- Do not use first name only, and do not use full name in greeting
 - If parent-group help is relevant, mention it only after the direct answer is clear and frame it as an easy follow-up resource
 - Do not mention any personal playing background
 - V2 is the quality bar for tone: warm, natural, relationship-focused, and easy to read
@@ -8525,6 +8538,10 @@ const content = json?.choices?.[0]?.message?.content;
 if (!content) throw new Error("No draft content from OpenAI");
 const parsed = JSON.parse(content);
 const drafts = promoteV3ToV1(parsed || {});
+for (const k of ["v1", "v2", "v3"]) {
+  if (drafts?.[k]?.subject) drafts[k].subject = normalizeMessageSpacing(drafts[k].subject);
+  if (drafts?.[k]?.body) drafts[k].body = normalizeMessageSpacing(drafts[k].body);
+}
 if (isPrograms) {
   return drafts;
 }
@@ -8627,7 +8644,7 @@ ${officialWebsiteLink}`.trim();
       parentGuideLink,
       "Official Wealth Strategies Website:",
       officialWebsiteLink,
-      "Aflac Coverage 3 Example:",
+      "To see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury:",
       "Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.",
       aflacOption3Link,
     ].join("\n\n"),
@@ -8640,7 +8657,7 @@ ${officialWebsiteLink}`.trim();
       parentGuideLink,
       "Official Wealth Strategies Website:",
       officialWebsiteLink,
-      "Aflac Coverage 3 Example:",
+      "To see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury:",
       "Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.",
       aflacOption3Link,
     ].join("\n\n"),
@@ -8653,7 +8670,7 @@ ${officialWebsiteLink}`.trim();
       parentGuideLink,
       "Official Wealth Strategies Website:",
       officialWebsiteLink,
-      "Aflac Coverage 3 Example:",
+      "To see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury:",
       "Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.",
       aflacOption3Link,
     ].join("\n\n"),
