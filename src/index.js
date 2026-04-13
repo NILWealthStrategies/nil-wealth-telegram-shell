@@ -175,6 +175,7 @@ const DASHBOARD_OPS_CACHE_TTL_MS = Number(process.env.DASHBOARD_OPS_CACHE_TTL_MS
 const APP_BOOT_TS_MS = Date.now();
 const CLICK_TRACKER_BASE_URL = normalizeAbsoluteHttpUrl(process.env.CLICK_TRACKER_BASE_URL || "");
 const DEFAULT_PARENT_GUIDE_URL = "https://parentsguide.mynilwealthstrategies.com/";
+const DEFAULT_OFFICIAL_WEBSITE_URL = "https://mynilwealthstrategies.com/";
 const FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY =
 String(process.env.FORWARDED_REQUIRE_EXPLICIT_RECIPIENT_IDENTITY || "false").toLowerCase() === "true";
 // NY time
@@ -1316,6 +1317,7 @@ function guideKeyFromUrl(rawUrl) {
     if (candidate === "tax-education-guide") return "tax-education-guide";
     if (candidate === "enroll") return "enroll";
     if (candidate === "eapp") return "eapp";
+    if (candidate === "website") return "website";
   }
 
   if (host.includes("parentsguide.mynilwealthstrategies.com")) return "parent-guide";
@@ -1326,6 +1328,7 @@ function guideKeyFromUrl(rawUrl) {
     if (path.includes("eapp")) return "eapp";
     return "enroll";
   }
+  if (host.includes("mynilwealthstrategies.com")) return "website";
 
   return "";
 }
@@ -1361,7 +1364,11 @@ function buildTrackedGuideLink(rawUrl, conv) {
 
   const prettyTracked = new URL("https://mynilwealthstrategies.com");
   const coachSuffix = coachId ? `-${encodeURIComponent(coachId)}` : "";
-  prettyTracked.pathname = `/${guideKey}${coachSuffix}`;
+  if (guideKey === "website") {
+    prettyTracked.pathname = coachSuffix ? `/website${coachSuffix}` : "/website";
+  } else {
+    prettyTracked.pathname = `/${guideKey}${coachSuffix}`;
+  }
   prettyTracked.searchParams.set("person_email", recipientEmail);
   if (coachId) prettyTracked.searchParams.set("coach_id", coachId);
   prettyTracked.searchParams.set("actor_type", "parent");
@@ -1381,6 +1388,10 @@ function buildTrackedGuideLink(rawUrl, conv) {
 
 function parentGuideLinkForConversation(conv) {
   return buildTrackedGuideLink(DEFAULT_PARENT_GUIDE_URL, conv);
+}
+
+function officialWebsiteLinkForConversation(conv) {
+  return buildTrackedGuideLink(DEFAULT_OFFICIAL_WEBSITE_URL, conv);
 }
 
 function rewriteOutboundTrackedLinks(rawBody, conv) {
@@ -1835,6 +1846,27 @@ const { data, error } = await ops()
 .range(offset, offset + limit - 1);
 if (error) throw new Error(error.message);
 return data || [];
+}
+
+async function sbListMessagesOldest(conversation_id, { offset = 0, limit = 6 } = {}) {
+const { data, error } = await ops()
+.from("messages")
+.select("id, direction, sender, from_email, to_email, subject, body, preview, created_at")
+.eq("conversation_id", conversation_id)
+.order("created_at", { ascending: true })
+.range(offset, offset + limit - 1);
+if (error) throw new Error(error.message);
+return data || [];
+}
+
+async function sbCountMessagesByDirection(conversation_id, direction) {
+const { count, error } = await ops()
+.from("messages")
+.select("id", { count: "exact", head: true })
+.eq("conversation_id", conversation_id)
+.eq("direction", direction);
+if (error) throw new Error(error.message);
+return count || 0;
 }
 async function sbListCcSupportEvents(conversation_id, { limit = 100 } = {}) {
   try {
@@ -4457,11 +4489,14 @@ return msg;
 }
 // ---------- CONVERSATION CARD (v5.3 CLEAN + OPS SAFE) ----------
 async function buildConversationCard(conv, options = {}) {
-const [msgCount, latest] = await Promise.all([
+const [msgCount, latest, oldest, inboundCount] = await Promise.all([
 sbCountMessages(conv.id).catch(() => 0),
 sbListMessages(conv.id, { offset: 0, limit: 1 }).catch(() => []),
+sbListMessagesOldest(conv.id, { offset: 0, limit: 1 }).catch(() => []),
+sbCountMessagesByDirection(conv.id, "inbound").catch(() => 0),
 ]);
 const latestMessage = Array.isArray(latest) && latest.length ? latest[0] : null;
+const oldestMessage = Array.isArray(oldest) && oldest.length ? oldest[0] : null;
 const lastDirection = latestMessage?.direction === "outbound" ? "outbound" : latestMessage?.direction === "inbound" ? "inbound" : "—";
 const lastAgeMinutes = (() => {
 const t = latestMessage?.created_at ? new Date(latestMessage.created_at).getTime() : null;
@@ -4472,10 +4507,11 @@ const lastAgeText = lastAgeMinutes == null ? "—" : tFmtMin(lastAgeMinutes) || 
 const instantlyThreadSummary = isInstantlySource(conv)
 ? `Thread Summary: ${msgCount} msgs • Last: ${lastDirection} • ${lastAgeText} ago`
 : null;
-const hasInstantlyCard = isInstantlySource(conv) && latestMessage?.direction === "inbound";
 const { text, isInstantlyInbound } = buildConversationCardText(conv, {
 msgCount,
 latestMessage,
+oldestMessage,
+inboundCount,
 instantlyThreadSummary,
 urgentAfterMinutes: URGENT_AFTER_MINUTES,
 displayMode: options?.displayMode,
@@ -4484,6 +4520,7 @@ supportFromEmail: SUPPORT_FROM_EMAIL,
 outreachFromEmail: OUTREACH_FROM_EMAIL,
 },
 });
+const hasInstantlyCard = isInstantlySource(conv) && msgCount > 0;
 return {
 text,
 msgCount,
@@ -4870,7 +4907,7 @@ async function runTestScenario(scType) {
     ],
     REMOVAL_DEMAND: [
       "Style lane A: concise apology and direct removal confirmation",
-      "Style lane B: formal compliance-first acknowledgment",
+      "Style lane B: clear compliance-first acknowledgment",
       "Style lane C: calm minimal wording with written confirmation focus",
       "Style lane D: direct opt-out confirmation with no extra language",
       "Style lane E: respectful closure with no re-engagement language",
@@ -4919,13 +4956,22 @@ async function runTestScenario(scType) {
   let ccBridge = "", ccSupport = "";
   if (scType === "OUTREACH_COACH_INTEREST") {
     try {
+      const simulatedConv = {
+        contact_email: sc.email,
+        coach_id: sc.coach_id || "",
+      };
+      const parentGuideLink = parentGuideLinkForConversation(simulatedConv);
+      const officialWebsiteLink = officialWebsiteLinkForConversation(simulatedConv);
       const ccSys = "You generate CC Support messages for Wealth Strategies. Bridge: concise, conversational, polished note from outreach person to coach looping in support. The bridge must explicitly tell the coach that the note below is what they can forward to the parent group. Support: formal, persuasive, complete message the coach forwards to parent group. The support message must build information in the right order: context, supplemental-health overview, role clarity, why the Parent Guide is worth opening, then the response line. Keep the focus on supplemental health coverage first, with risk awareness education and tax guidance from an enrolled agent and multi-licensed insurance specialist. Never use the words NIL or Name, Image, and Likeness unless the sender explicitly asks about them. Do not name any insurer except Aflac. Mention extra carrier credibility details only when credibility is explicitly asked. Return JSON.";
       const ccResult = JSON.parse(await askAI(ccSys,
-        `Generate CC messages for this coach conversation:\nCoach: ${sc.name} — ${sc.school} ${sc.sport} (${sc.state})\nMessage: ${sc.message}\n\nBridge (conversational, professional; outreach person says support team is looped in; explicitly say the note below is what the coach can forward to the parent group; do not repeat the coach name in the bridge body):\nSupport (formal, written to be forwarded to the parent group — fully answer the message with no word limit — first give parents clear context, then explain supplemental-health coverage in plain terms including accident insurance and hospital indemnity, then clarify roles in fluent professional wording, then explain why the Parent Guide is worth opening by telling families what they will find there, then include this exact line: "You can respond to this message with any questions — we're happy to help.", and include: "Learn more in the Parent Guide:" on one line followed by this link on the next line: https://mynilwealthstrategies.com/access-parent-guide):\n\nReturn: {"bridge":{"body":"..."},"support":{"body":"..."}}`,
+        `Generate CC messages for this coach conversation:\nCoach: ${sc.name} — ${sc.school} ${sc.sport} (${sc.state})\nMessage: ${sc.message}\n\nBridge (conversational, professional; outreach person says support team is looped in; explicitly say the note below is what the coach can forward to the parent group; do not repeat the coach name in the bridge body):\nSupport (formal, written to be forwarded to the parent group — fully answer the message with no word limit — first give parents clear context, then explain supplemental-health coverage in plain terms including accident insurance and hospital indemnity, then clarify roles in fluent professional wording, then explain why the Parent Guide is worth opening by telling families what they will find there, then include this exact line: "You can respond to this message with any questions — we're happy to help.", and include both mandatory links exactly as written:\nLearn more in the Parent Guide:\n${parentGuideLink}\nOfficial Wealth Strategies Website:\n${officialWebsiteLink}):\n\nReturn: {"bridge":{"body":"..."},"support":{"body":"..."}}`,
         true
       ));
       ccBridge = ccResult?.bridge?.body || "";
       ccSupport = ccResult?.support?.body || "";
+      if (!ccSupport.includes(parentGuideLink) || !ccSupport.includes(officialWebsiteLink)) {
+        ccSupport = `${String(ccSupport || "").trim()}\n\nLearn more in the Parent Guide:\n${parentGuideLink}\n\nOfficial Wealth Strategies Website:\n${officialWebsiteLink}`.trim();
+      }
     } catch {}
   }
 
@@ -4968,29 +5014,51 @@ async function runTestScenario(scType) {
   // Step 5: Build paged content — matches real card formats exactly
   const pages = [];
 
-  // ── Page 1: Conversation card (real format) ──────────────────
-  pages.push([
-    `💬 CONVERSATION`,
-    `--`,
-    `ID: ${convId} • ${lane}`,
-    `Identity: ${escT(sc.name)}`,
-    ``,
-    `Role: ${roleStr}`,
-    ``,
-    `Status: 📝 Needs Reply`,
-    `Coach: ${scType === "OUTREACH_COACH_INTEREST" ? escT(sc.name) : "—"}`,
-    `Contact: ${escT(sc.email)}`,
-    ``,
-    `📧 Subject: ${escT(sc.subject)}`,
-    ``,
-    `Preview: Open Thread for full inbound body`,
-    ``,
-    `--`,
-    `Updated: ${dateStr}, ${ts}`,
-    `💬 Messages: 1`,
-    `🔵 Fresh`,
-    `CC: Off`,
-  ].join("\n"));
+  // ── Page 1: Conversation/Instantly first view ───────────────
+  if (scType === "OUTREACH_COACH_INTEREST") {
+    const outboundSeed = `Hi ${escT(sc.name)}, thanks for reaching out. We can help your families with simple supplemental health coverage education, and our support team can answer parent questions directly after you forward this note.`;
+    pages.push([
+      `📤 INSTANTLY OUTBOUND`,
+      `--`,
+      `${escT(sc.name)}`,
+      `From (Outreach): ${escT(OUTREACH_FROM_EMAIL || "noreply@mynilwealthstrategies.com")}`,
+      `Thread Summary: 1 msgs • Last: outbound • just now`,
+      ``,
+      `Outbound Message`,
+      testTrunc(outboundSeed, 420),
+      ``,
+      `Ref: Campaign ${escT(sc.campaign_id || "—")}`,
+      ``,
+      `--`,
+      `ID: ${convId}`,
+      `Updated: ${dateStr}, ${ts}`,
+      `💬 Messages: 1`,
+      `🔵 Fresh`,
+    ].join("\n"));
+  } else {
+    pages.push([
+      `💬 CONVERSATION`,
+      `--`,
+      `ID: ${convId} • ${lane}`,
+      `Identity: ${escT(sc.name)}`,
+      ``,
+      `Role: ${roleStr}`,
+      ``,
+      `Status: 📝 Needs Reply`,
+      `Coach: ${scType === "OUTREACH_COACH_INTEREST" ? escT(sc.name) : "—"}`,
+      `Contact: ${escT(sc.email)}`,
+      ``,
+      `📧 Subject: ${escT(sc.subject)}`,
+      ``,
+      `Preview: Open Thread for full inbound body`,
+      ``,
+      `--`,
+      `Updated: ${dateStr}, ${ts}`,
+      `💬 Messages: 1`,
+      `🔵 Fresh`,
+      `CC: Off`,
+    ].join("\n"));
+  }
 
   // ── Page 2: Thread view (inbound message) ─────────────────────
   pages.push([
@@ -5006,6 +5074,27 @@ async function runTestScenario(scType) {
     `🕐 ${dateStr}, ${ts}`,
     `🧪 SIMULATED THREAD`,
   ].join("\n"));
+
+  if (scType === "OUTREACH_COACH_INTEREST") {
+    pages.push([
+      `💬 INSTANTLY REPLY`,
+      `--`,
+      `${escT(sc.name)}`,
+      `From (Outreach): ${escT(OUTREACH_FROM_EMAIL || "noreply@mynilwealthstrategies.com")}`,
+      `Thread Summary: 2 msgs • Last: inbound • just now`,
+      ``,
+      `Reply`,
+      testTrunc(escT(v1), 420),
+      ``,
+      `Ref: Campaign ${escT(sc.campaign_id || "—")}`,
+      ``,
+      `--`,
+      `ID: ${convId}`,
+      `Updated: ${dateStr}, ${ts}`,
+      `💬 Messages: 2`,
+      `🟠 Due soon`,
+    ].join("\n"));
+  }
 
   // ── Page 3/4/5: Drafts card with full V1/V2/V3 views ─
   const draftPageIndex = {};
@@ -8378,7 +8467,7 @@ guide_opens_year: Number(conv.guide_opens_year || 0),
 guide_category_clicks_total_year: guideCategoryClicksYear,
 };
 const programsSystemPrompt = "You write thorough, human outreach replies for coach conversations. The sender is personal, mission-driven, and sounds like a real person, not a sales rep. Hard tone rule: outreach should be conversational and relationship-building while still professional. No corporate polish, no stiff formal greetings, no structured paragraphs, and no slangy hype language. Insurance mention rule: do not name any insurer except Aflac. If carrier credibility is mentioned, use this fact pattern: Aflac holds an AM Best financial strength rating of A+ (Superior), and coaches including Deion Sanders, Nick Saban, and Dawn Staley have publicly endorsed Aflac's mission of protecting families. HARD VOCABULARY RULE: use plain everyday words anyone would use in a normal conversation. No big words, no jargon. If a term must be used, explain what it means right away. Return JSON with v1,v2,v3 each containing subject and body."; 
-const supportSystemPrompt = "You write thorough, structured support replies. Hard tone rule: support must be FORMAL — professional, organized, clear, and complete sentences. Not casual slang, not text-message style. Warm but polished. Fully answer every sender question before offering a next step. Keep the focus on supplemental health coverage first, with risk awareness education and tax guidance from an enrolled agent and multi-licensed insurance specialist. Never use the words NIL or Name, Image, and Likeness unless the sender explicitly asks about them. If tax is asked, include a clear explanation of 1099 reporting, taxable income basics, and practical next steps like tracking expenses and planning estimated taxes. If asked what supplemental health is, clearly explain accident insurance and hospital indemnity: accident insurance pays cash benefits for covered accidental injuries and related care, and hospital indemnity pays cash benefits for covered hospital admissions or stays to help with out-of-pocket costs and related bills. Insurance mention rule: do not name any insurer except Aflac. Mention extra carrier credibility details only when credibility is explicitly asked. HARD VOCABULARY RULE: use plain everyday words that any parent can read easily. No big words, no industry jargon, no corporate language. If a term must be used, explain what it means right away. Return JSON with v1,v2,v3 each containing subject and body.";
+const supportSystemPrompt = "You write thorough, structured support replies. Hard tone rule: support must be professional — clear, organized, and complete sentences. Not casual slang, not text-message style. Warm and easy to read. Fully answer every sender question before offering a next step. Keep the focus on supplemental health coverage first, with risk awareness education and tax guidance from an enrolled agent and multi-licensed insurance specialist. Never use the words NIL or Name, Image, and Likeness unless the sender explicitly asks about them. If tax is asked, include a clear explanation of 1099 reporting, taxable income basics, and practical next steps like tracking expenses and planning estimated taxes. If asked what supplemental health is, clearly explain accident insurance and hospital indemnity: accident insurance pays cash benefits for covered accidental injuries and related care, and hospital indemnity pays cash benefits for covered hospital admissions or stays to help with out-of-pocket costs and related bills. Insurance mention rule: do not name any insurer except Aflac. Mention extra carrier credibility details only when credibility is explicitly asked. HARD VOCABULARY RULE: use plain everyday words that any parent can read easily. No big words, no industry jargon, no corporate language. If a term must be used, explain what it means right away. Return JSON with v1,v2,v3 each containing subject and body.";
 const programsStyleVariant = [
   "A: short punchy sentences low punctuation",
   "B: one quick story line then practical next step",
@@ -8408,6 +8497,9 @@ Rules:
 - If the inbound message is an objection acknowledge first reduce pressure then offer an easy next step
 - Do not suggest calls meetings or calendar invites unless the inbound explicitly asks for that
 - If no explicit meeting request exists the next step should be a simple reply or short forwardable resource
+- Hard rule: never frame this as extra workload for the coach or staff
+- If workload concern appears, state clearly the coach only forwards the message and support handles parent questions
+- Explain this helps protect players by giving families clear accident and hospital-indemnity coverage education
 - Use metric context only when it truly fits
 - Fully answer every point in the message — no word limit, write as much as needed
 - Include one clear next step
@@ -8421,7 +8513,7 @@ Rules:
 - Style variant for this generation: ${programsStyleVariant}
 - Avoid generic phrases like "valuable insights," "numerous teams," "unforeseen circumstances," or "navigate this complex topic"
 Return: {"v1":{"subject":"...","body":"..."},"v2":{...},"v3":{...}}`;
-const supportUserPrompt = `Create 3 reply drafts for this inbound conversation:\n${JSON.stringify(prompt)}\n\nRules:\n- HARD TONE RULE: support tone must be formal — professional, structured, complete sentences, warm but polished. No casual slang or conversational shorthand.\n- Fully answer every sender question or concern before offering a next step\n- Keep the focus on supplemental health coverage first, then risk awareness education and tax guidance from an enrolled agent and multi-licensed insurance specialist\n- Never use the words NIL or Name, Image, and Likeness unless the sender explicitly asks about them\n- If tax is asked, include a clear explanation of 1099 reporting, taxable income basics, and practical next steps like tracking expenses and planning estimated taxes\n- If asked what supplemental health is, clearly explain accident insurance and hospital indemnity: accident insurance pays cash benefits for covered accidental injuries and related care, and hospital indemnity pays cash benefits for covered hospital admissions or stays to help with out-of-pocket costs and related bills\n- V1 answer-first and thorough — open directly with the full answer, cover every part of the question in depth, professional tone\n- V2 warm and thorough — open with empathy or acknowledgment first, then give the same complete answer with a relationship-focused tone\n- V3 organized and thorough — open from a completely different angle than V1 and V2, give the full answer in a different structural order, every question still fully covered\n- HARD UNIQUENESS RULE: not one sentence should repeat across V1, V2, V3. Different openers, different sentence flow, different phrasing throughout, different closing CTA\n- Each version must go deep on every question asked — do not skip or skim anything\n- HARD VOCABULARY RULE: use plain everyday words that any parent can read easily. No big words, no jargon, no corporate language. If a term must be used, explain what it means right away\n- Fully answer every point in the message — no word limit, write as much as needed\n- No greeting line at the start\n- Include one clear next step\n- After answering, include practical next steps by offering 2-3 simple options or inviting a direct reply to continue the conversation\n- Do not mention AI\n- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless the count is explicitly provided in the prompt\n- Avoid generic filler or vague corporate language\nReturn: {\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}}`;
+const supportUserPrompt = `Create 3 reply drafts for this inbound conversation:\n${JSON.stringify(prompt)}\n\nRules:\n- HARD TONE RULE: support tone must be professional — clear, structured, complete sentences, warm and easy to read. No casual slang or conversational shorthand.\n- Fully answer every sender question or concern before offering a next step\n- Keep the focus on supplemental health coverage first, then risk awareness education and tax guidance from an enrolled agent and multi-licensed insurance specialist\n- Never use the words NIL or Name, Image, and Likeness unless the sender explicitly asks about them\n- If tax is asked, include a clear explanation of 1099 reporting, taxable income basics, and practical next steps like tracking expenses and planning estimated taxes\n- If asked what supplemental health is, clearly explain accident insurance and hospital indemnity: accident insurance pays cash benefits for covered accidental injuries and related care, and hospital indemnity pays cash benefits for covered hospital admissions or stays to help with out-of-pocket costs and related bills\n- If the sender says they already have coverage, explicitly explain this does not replace their existing plan and they still may not have accident insurance or hospital indemnity, and explain why those benefits matter\n- V1 answer-first and thorough — open directly with the full answer, cover every part of the question in depth, professional tone\n- V2 warm and thorough — open with empathy or acknowledgment first, then give the same complete answer with a relationship-focused tone\n- V3 organized and thorough — open from a completely different angle than V1 and V2, give the full answer in a different structural order, every question still fully covered\n- HARD UNIQUENESS RULE: not one sentence should repeat across V1, V2, V3. Different openers, different sentence flow, different phrasing throughout, different closing CTA\n- Each version must go deep on every question asked — do not skip or skim anything\n- HARD VOCABULARY RULE: use plain everyday words that any parent can read easily. No big words, no jargon, no corporate language. Do not use words like therefore or however. If a term must be used, explain what it means right away\n- Fully answer every point in the message — no word limit, write as much as needed\n- Keep the answer complete but avoid unnecessary filler and repetition\n- No greeting line at the start\n- Include one clear next step\n- After answering, include practical next steps by offering 2-3 simple options or inviting a direct reply to continue the conversation\n- Do not mention AI\n- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless the count is explicitly provided in the prompt\n- Avoid generic filler or vague corporate language\nReturn: {\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}}`;
 const res = await fetch("https://api.openai.com/v1/chat/completions", {
 method: "POST",
 headers: {
@@ -8452,6 +8544,7 @@ throw new Error("Missing OPENAI_API_KEY");
 }
 const inbound = await sbLatestInboundMessage(conv.id);
 const parentGuideLink = parentGuideLinkForConversation(conv);
+const officialWebsiteLink = officialWebsiteLinkForConversation(conv);
 const prompt = {
 contact_email: conv.contact_email || "",
 subject: conv.subject || "",
@@ -8460,6 +8553,7 @@ latest_inbound: inbound?.body || inbound?.preview || "",
 coach_name: conv.coach_name || "",
 source: conv.source || "outreach",
 parent_guide_link: parentGuideLink,
+official_website_link: officialWebsiteLink,
 };
 const res = await fetch("https://api.openai.com/v1/chat/completions", {
 method: "POST",
@@ -8472,8 +8566,8 @@ model: "gpt-4o-mini",
 temperature: 0.7,
 response_format: { type: "json_object" },
 messages: [
-{ role: "system", content: "You write CC bridge and support messages. HARD TONE RULES: Bridge drafts should be conversational, and professional (not stiff, not slangy). Each bridge draft must explicitly tell the coach that the note below is what they can forward to the parent group. Do not repeat the coach's name in the bridge body. Support drafts must be FORMAL — professional, complete sentences, structured, warm but polished, written to be forwarded to parents. Support drafts are fully self-contained so a parent who has never heard of this program gets complete context. Support drafts must explicitly tell parents they can respond to this message with questions, explain what this email is about, and include a compelling, credible reason to click the parent guide link. Keep the focus on supplemental health coverage first, with risk awareness education and tax guidance from an enrolled agent and multi-licensed insurance specialist. Never use the words NIL or Name, Image, and Likeness unless the sender explicitly asks about them. Insurance mention rule: do not name any insurer except Aflac. If carrier credibility is mentioned, include: Aflac holds an AM Best financial strength rating of A+ (Superior), and coaches including Deion Sanders, Nick Saban, and Dawn Staley have publicly endorsed Aflac's mission of protecting families. HARD VOCABULARY RULE: use plain everyday words that any parent can read easily. No big words, no jargon, no corporate language. If a term must be used, explain what it means right away. Return JSON with bridge (v1-v3) and support (v1-v3) drafts, each with subject and body." },
-{ role: "user", content: `Create CC drafts for this conversation:\n${JSON.stringify(prompt)}\n\nCreate 6 drafts total:\n\nBridge messages (sent from outreach to coach contact):\n- V1: Short/Direct (\"Looping in our support team...\")\n- V2: Warm/Personal (build relationship, mention parents will receive helpful info)\n- V3: Ultra-brief (executive style)\n- Bridge drafts should sound like a real person, not a support ticket\n- Each bridge draft must make clear that the note below is what the coach can forward to the parent group\n- Do not repeat the coach's name in the bridge body\n\nSupport messages (forwarded from ${SUPPORT_FROM_EMAIL} — parents are the final reader):\n- These are written assuming the coach will forward this email to their parent group\n- Parents reading this have no prior context — give them enough to understand what this is about\n- REQUIRED in every support draft:\n  1. Context opener: 1-2 sentences explaining what this email is and why they're receiving it\n  2. What this program provides for high school athletes and their families (supplemental health, risk education, tax education)\n  3. A clear line telling parents: \"You can respond to this message with any questions — we're happy to help.\"\n  4. A compelling, specific reason to click the parent guide — explain what families will actually find there and why it helps them review the option without pressure\n  5. The actual parent guide link on its own line: ${parentGuideLink}\n  6. Include role clarity in fluent wording: coaches do not sell, explain in detail, or enroll insurance; coaches do not handle money or paperwork; families review options and enroll directly with Aflac; Wealth Strategies provides education and support only\n  7. Include optional pace language in fluent wording: coverage is optional and families can move at their own pace\n  8. Build the message in this order: context, what families need to know, role clarity, guide value, response line\n- V1: Professional/Detailed — full context, all required elements, structured, answer-first flow\n- V2: Warm/Encouraging — open with empathy, parent-first tone, all required elements, different flow from V1\n- V3: Organized/Thorough — open from a different angle than V1 and V2, lead with the guide CTA, all required elements still covered\n\nGlobal rules:\n- HARD UNIQUENESS RULE: not one sentence should repeat across V1, V2, V3. Different openers, different flow, different phrasing throughout\n- Each version must fully cover all required elements — do not skip anything\n- HARD VOCABULARY RULE: use plain everyday words. No big words, no jargon, no corporate language. If a term must be used, explain what it means right away\n- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless the count is explicitly provided in the prompt\n- Fully answer every point in the message — no word limit, write as much as needed\n- After answering, include practical next steps by offering 2-3 simple options or inviting a direct reply to continue the conversation\n- Avoid generic corporate filler\n- Never use the words NIL or Name, Image, and Likeness unless it was explicitly in the inbound message\nReturn: {\"bridge\":{\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}},\"support\":{\"v1\":{...},\"v2\":{...},\"v3\":{...}}}` }
+{ role: "system", content: "You write CC bridge and support messages. HARD TONE RULES: Bridge drafts should be conversational, and professional (not stiff, not slangy). Each bridge draft must explicitly tell the coach that the note below is what they can forward to the parent group. Do not repeat the coach's name in the bridge body. Never frame this as extra coach workload; clearly state the coach only forwards and support handles parent questions. Support drafts must be professional — clear, complete sentences, structured, warm and easy to read, written to be forwarded to parents. Support drafts are fully self-contained so a parent who has never heard of this program gets complete context. Support drafts must explicitly tell parents they can respond to this message with questions, explain what this email is about, and include a compelling, credible reason to click the parent guide link. Keep the focus on supplemental health coverage first, with risk awareness education and tax guidance from an enrolled agent and multi-licensed insurance specialist. Never use the words NIL or Name, Image, and Likeness unless the sender explicitly asks about them. Insurance mention rule: do not name any insurer except Aflac. If carrier credibility is mentioned, include: Aflac holds an AM Best financial strength rating of A+ (Superior), and coaches including Deion Sanders, Nick Saban, and Dawn Staley have publicly endorsed Aflac's mission of protecting families. HARD VOCABULARY RULE: use plain everyday words that any parent can read easily. No big words, no jargon, no corporate language. Do not use words like therefore or however. If a term must be used, explain what it means right away. Return JSON with bridge (v1-v3) and support (v1-v3) drafts, each with subject and body." },
+{ role: "user", content: `Create CC drafts for this conversation:\n${JSON.stringify(prompt)}\n\nCreate 6 drafts total:\n\nBridge messages (sent from outreach to coach contact):\n- V1: Short/Direct (\"Looping in our support team...\")\n- V2: Warm/Personal (build relationship, mention parents will receive helpful info)\n- V3: Ultra-brief (executive style)\n- Bridge drafts should sound like a real person, not a support ticket\n- Each bridge draft must make clear that the note below is what the coach can forward to the parent group\n- Do not repeat the coach's name in the bridge body\n\nSupport messages (forwarded from ${SUPPORT_FROM_EMAIL} — parents are the final reader):\n- These are written assuming the coach will forward this email to their parent group\n- Parents reading this have no prior context — give them enough to understand what this is about\n- REQUIRED in every support draft:\n  1. Context opener: 1-2 sentences explaining what this email is and why they're receiving it\n  2. What this program provides for high school athletes and their families (supplemental health, risk education, tax education)\n  3. A clear line telling parents: \"You can respond to this message with any questions — we're happy to help.\"\n  4. A compelling, specific reason to click the parent guide — explain what families will actually find there and why it helps them review the option without pressure\n  5. MANDATORY LINKS with no exceptions:\n     - Parent Guide link on its own line: ${parentGuideLink}\n     - Official Website link on its own line: ${officialWebsiteLink}\n  6. Include role clarity in fluent wording: coaches do not sell, explain in detail, or enroll insurance; coaches do not handle money or paperwork; families review options and enroll directly with Aflac; Wealth Strategies provides education and support only\n  7. Include optional pace language in fluent wording: coverage is optional and families can move at their own pace\n  8. Build the message in this order: context, what families need to know, role clarity, guide value, response line\n- V1: Professional/Detailed — full context, all required elements, structured, answer-first flow\n- V2: Warm/Encouraging — open with empathy, parent-first tone, all required elements, different flow from V1\n- V3: Organized/Thorough — open from a different angle than V1 and V2, lead with the guide CTA, all required elements still covered\n\nGlobal rules:\n- HARD UNIQUENESS RULE: not one sentence should repeat across V1, V2, V3. Different openers, different flow, different phrasing throughout\n- Each version must fully cover all required elements — do not skip anything\n- HARD VOCABULARY RULE: use plain everyday words. No big words, no jargon, no corporate language. Do not use words like therefore or however. If a term must be used, explain what it means right away\n- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless the count is explicitly provided in the prompt\n- Fully answer every point in the message — no word limit, write as much as needed\n- After answering, include practical next steps by offering 2-3 simple options or inviting a direct reply to continue the conversation\n- Avoid generic corporate filler\n- Never use the words NIL or Name, Image, and Likeness unless it was explicitly in the inbound message\nReturn: {\"bridge\":{\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}},\"support\":{\"v1\":{...},\"v2\":{...},\"v3\":{...}}}` }
 ]
 })
 });
@@ -8518,6 +8612,14 @@ You can respond to this message with any questions — we're happy to help.`.tri
 
 Learn more in the Parent Guide:
 ${parentGuideLink}`.trim();
+  const escapedWebsiteLink = officialWebsiteLink.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const hasWebsiteLink = new RegExp(escapedWebsiteLink, "i").test(nextBody);
+  if (!hasWebsiteLink) {
+    nextBody = `${nextBody}
+
+Official Wealth Strategies Website:
+${officialWebsiteLink}`.trim();
+  }
   draft.body = nextBody;
 }
 return parsed;
@@ -10767,6 +10869,46 @@ app.post("/api/nil-outbox/result", async (req, res) => {
     return res.status(500).json({
       ok: false,
       error: error instanceof Error ? error.message : "Internal error",
+    });
+  }
+});
+
+// ---------- DEBUG: TEST SCENARIO RUNNER ----------
+// Runs the same scenario generator used by /test and returns pages for verification.
+app.post("/debug/test-scenario", async (req, res) => {
+  try {
+    const secret = req.header("x-nil-secret");
+    if (!secret || secret !== BASE_WEBHOOK_SECRET) {
+      return res.status(401).json({ ok: false, error: "unauthorized" });
+    }
+
+    if (!OPENAI_API_KEY) {
+      return res.status(400).json({ ok: false, error: "OPENAI_API_KEY not configured" });
+    }
+
+    const requestedType = String(req.body?.scenarioType || req.body?.scenario_type || "OUTREACH_COACH_INTEREST").trim();
+    const validTypes = ["OUTREACH_COACH_INTEREST", "PARENT_BASIC_QUESTION", "OBJECTION_INSURANCE", "REMOVAL_DEMAND"];
+    const scType = validTypes.includes(requestedType) ? requestedType : "OUTREACH_COACH_INTEREST";
+
+    const result = await runTestScenario(scType);
+    testScenarioCache.set(result.convId, result);
+    if (testScenarioCache.size > 30) {
+      const firstKey = testScenarioCache.keys().next().value;
+      testScenarioCache.delete(firstKey);
+    }
+
+    return res.status(200).json({
+      ok: true,
+      scenario_type: scType,
+      conv_id: result.convId,
+      page_count: result.pages.length,
+      draft_page_index: result.draftPageIndex,
+      pages: result.pages,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
     });
   }
 });

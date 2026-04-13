@@ -76,7 +76,7 @@ function threadDebugBlock(conv) {
     : "";
 }
 
-function buildConversationCardText(conv, { msgCount, latestMessage, instantlyThreadSummary, urgentAfterMinutes, displayMode, senderProfiles }) {
+function buildConversationCardText(conv, { msgCount, latestMessage, oldestMessage, inboundCount, instantlyThreadSummary, urgentAfterMinutes, displayMode, senderProfiles }) {
   const lane = laneLabel(sourceSafe(conv.source));
   const sla = slaBadge(conv.updated_at, urgentAfterMinutes);
   const until = urgentCountdown(conv.updated_at, urgentAfterMinutes);
@@ -121,24 +121,43 @@ function buildConversationCardText(conv, { msgCount, latestMessage, instantlyThr
   const handoffBadge = (conv.needs_support_handoff === true && !conv.cc_support_suggested)
     ? `🚨 HANDOFF DETECTED${conv.handoff_detected_reason ? ` — ${conv.handoff_detected_reason}` : ""}\nTap "📌 Loop in Support" to take over from Instantly.\n--\n`
     : "";
-  const hasInstantlyCard = isInstantlySource(conv) && latestMessage?.direction === "inbound";
-  const isInstantlyInbound = hasInstantlyCard && displayMode !== "conversation";
+  const supportSenderLower = String(senderProfiles?.supportFromEmail || "").toLowerCase();
+  const latestFrom = String(latestMessage?.from_email || "").toLowerCase();
+  const latestSender = String(latestMessage?.sender || "").toLowerCase();
+  const latestIsOpsOutbound = latestMessage?.direction === "outbound" && (
+    (supportSenderLower && latestFrom === supportSenderLower) ||
+    (latestSender && !latestSender.includes("instantly"))
+  );
+
+  const hasInstantlyCard = isInstantlySource(conv) && Number(msgCount || 0) > 0;
+  const defaultInstantlyView = hasInstantlyCard && !latestIsOpsOutbound;
+  const isInstantlyInbound = hasInstantlyCard && (displayMode ? displayMode !== "conversation" : defaultInstantlyView);
 
   if (isInstantlyInbound) {
     const ownerLine = conv.coach_name || conv.contact_email || "—";
     const outreachSender = conv.outreach_from_email || senderProfiles?.outreachFromEmail || "—";
-    const rawReply = safeStr(latestMessage?.body || latestMessage?.preview || conv.preview || "");
+    const firstOutboundRaw = safeStr(oldestMessage?.body || oldestMessage?.preview || "");
+    const firstOutbound = firstOutboundRaw || safeStr(conv.subject || conv.preview || "Outreach sent.");
+    const firstOutIsLong = firstOutbound.length > 220;
+    const firstOutPreview = firstOutIsLong ? `${firstOutbound.slice(0, 220).trimEnd()}…` : firstOutbound;
+    const rawReply = safeStr(latestMessage?.body || latestMessage?.preview || "");
     const isLong = rawReply.length > 300;
     const replyPreview = isLong ? `${rawReply.slice(0, 300).trimEnd()}…` : rawReply || "—";
     const campaignId = extractCampaignId(conv, latestMessage);
-    const text = `💬 INSTANTLY REPLY
+
+    const hasInbound = Number(inboundCount || 0) > 0;
+    const stageLabel = hasInbound ? "💬 INSTANTLY REPLY" : "📤 INSTANTLY OUTBOUND";
+    const stageBody = hasInbound
+      ? `Reply\n${replyPreview}${isLong ? "\n(Read more in Thread)" : ""}`
+      : `Outbound Message\n${firstOutPreview}${firstOutIsLong ? "\n(Read more in Thread)" : ""}`;
+
+    const text = `${stageLabel}
 --
 ${ownerLine}
 From (Outreach): ${outreachSender}
 ${instantlyThreadSummary ? `${instantlyThreadSummary}\n` : ""}
 
-Reply
-${replyPreview}${isLong ? "\n(Read more in Thread)" : ""}
+${stageBody}
 
 Ref: Campaign ${campaignId}
 
