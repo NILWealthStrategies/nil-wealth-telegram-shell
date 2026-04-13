@@ -224,7 +224,7 @@ async function runOutreachCoachInterest() {
   check("No NIL mention (no NIL asked)", v2, (v) => notContains(v, "nil income", "nil earnings", "nil tax", "nil deal", "nil revenue"));
   check("Under 130 words", v2, (v) => wordCount(v) <= 130);
   check("Has a clear next step", v2, (v) => contains(v, "send", "forward", "reply", "let me know", "share", "happy to"));
-  check("Does NOT mention AI", v2, (v) => notContains(v, "ai", "chatgpt", "generated", "automated"));
+  check("Does NOT mention AI", v2, (v) => !(/\bai\b/i.test(String(v || ""))) && notContains(v, "chatgpt", "generated", "automated"));
   check("Mentions personal background naturally", v2, (v) => contains(v, "surg", "out-of-pocket", "cost", "personal", "family"));
 }
 

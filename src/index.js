@@ -8506,7 +8506,7 @@ Rules:
 - If introducing this to families is relevant, include this simple line: "I can send a message you can forward, and you can review it before it is sent."
 - If parent-group help is relevant, mention it only after the direct answer is clear and frame it as an easy follow-up resource
 - Include a brief personal credibility line in natural wording that explicitly mentions three surgeries or out-of-pocket costs after injury
-- When relevant, explain this helps families understand financial risk, how NIL income is taxed, and how injury-related costs can affect planning
+- Only if the inbound explicitly asks about NIL, explain how NIL income is taxed; otherwise keep the focus on injury-related financial risk and planning only
 - V2 is the quality bar for tone: warm, natural, relationship-focused, and easy to read
 - Make V1 sound very close to that same warm V2 tone, but slightly more direct
 - Make V3 sound close to that same warm V2 tone too, while being complete and professional
@@ -8528,6 +8528,7 @@ Rules:
 - Optional continuity rule: use recent_thread_context only when it helps answer the latest inbound clearly; if not needed, answer directly and do not force continuity references
 - Fully answer every point in the message — no word limit, write as much as needed
 - Include one clear next step
+- The next step sentence must explicitly include one of these phrases: "let me know", "reply", "share", or "send"
 - After answering, include practical next steps by offering 2-3 simple options or inviting a direct reply to continue the conversation
 - HARD UNIQUENESS RULE: not one full sentence should repeat across V1, V2, V3. Different openers, different sentence flow, different phrasing throughout, different CTA
 - Never reuse the same opener across V1 V2 V3
