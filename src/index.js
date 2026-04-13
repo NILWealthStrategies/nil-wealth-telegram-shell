@@ -4960,8 +4960,8 @@ async function runTestScenario(scType) {
         contact_email: sc.email,
         coach_id: sc.coach_id || "",
       };
-      const parentGuideLink = parentGuideLinkForConversation(simulatedConv);
-      const officialWebsiteLink = officialWebsiteLinkForConversation(simulatedConv);
+      const parentGuideLink = parentGuideLinkForConversation(simulatedConv) || DEFAULT_PARENT_GUIDE_URL;
+      const officialWebsiteLink = officialWebsiteLinkForConversation(simulatedConv) || DEFAULT_OFFICIAL_WEBSITE_URL;
       const ccSys = "You generate CC Support messages for Wealth Strategies. Bridge: concise, conversational, polished note from outreach person to coach looping in support. The bridge must explicitly tell the coach that the note below is what they can forward to the parent group. Support: formal, persuasive, complete message the coach forwards to parent group. The support message must build information in the right order: context, supplemental-health overview, role clarity, why the Parent Guide is worth opening, then the response line. Keep the focus on supplemental health coverage first, with risk awareness education and tax guidance from an enrolled agent and multi-licensed insurance specialist. Never use the words NIL or Name, Image, and Likeness unless the sender explicitly asks about them. Do not name any insurer except Aflac. Mention extra carrier credibility details only when credibility is explicitly asked. Return JSON.";
       const ccResult = JSON.parse(await askAI(ccSys,
         `Generate CC messages for this coach conversation:\nCoach: ${sc.name} — ${sc.school} ${sc.sport} (${sc.state})\nMessage: ${sc.message}\n\nBridge (conversational, professional; outreach person says support team is looped in; explicitly say the note below is what the coach can forward to the parent group; do not repeat the coach name in the bridge body):\nSupport (formal, written to be forwarded to the parent group — fully answer the message with no word limit — first give parents clear context, then explain supplemental-health coverage in plain terms including accident insurance and hospital indemnity, then clarify roles in fluent professional wording, then explain why the Parent Guide is worth opening by telling families what they will find there, then include this exact line: "You can respond to this message with any questions — we're happy to help.", and include both mandatory links exactly as written:\nLearn more in the Parent Guide:\n${parentGuideLink}\nOfficial Wealth Strategies Website:\n${officialWebsiteLink}):\n\nReturn: {"bridge":{"body":"..."},"support":{"body":"..."}}`,
@@ -4969,7 +4969,11 @@ async function runTestScenario(scType) {
       ));
       ccBridge = ccResult?.bridge?.body || "";
       ccSupport = ccResult?.support?.body || "";
-      if (!ccSupport.includes(parentGuideLink) || !ccSupport.includes(officialWebsiteLink)) {
+      const hasParentLabel = ccSupport.includes("Learn more in the Parent Guide:");
+      const hasWebsiteLabel = ccSupport.includes("Official Wealth Strategies Website:");
+      const hasParentLink = ccSupport.includes(parentGuideLink);
+      const hasWebsiteLink = ccSupport.includes(officialWebsiteLink);
+      if (!hasParentLabel || !hasWebsiteLabel || !hasParentLink || !hasWebsiteLink) {
         ccSupport = `${String(ccSupport || "").trim()}\n\nLearn more in the Parent Guide:\n${parentGuideLink}\n\nOfficial Wealth Strategies Website:\n${officialWebsiteLink}`.trim();
       }
     } catch {}
@@ -5140,7 +5144,7 @@ async function runTestScenario(scType) {
       ``,
       `Support (forwarded to families):`,
       `──`,
-      testTrunc(escT(ccSupport), 520),
+      escT(ccSupport),
       ``,
       `🧪 SIMULATED CC`,
     ].join("\n"));
