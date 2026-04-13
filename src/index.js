@@ -1352,15 +1352,11 @@ function buildTrackedGuideLink(rawUrl, conv) {
   const coachId = String(conv?.coach_id || "").trim();
 
   if (parsed.pathname.startsWith("/go/")) {
-    if (recipientEmail && !parsed.searchParams.get("person_key")) {
-      parsed.searchParams.set("person_key", hashStable(recipientEmail));
-      parsed.searchParams.set("person_key_source", "query");
+    if (recipientEmail && !parsed.searchParams.get("pk")) {
+      parsed.searchParams.set("pk", hashStable(recipientEmail));
     }
     if (coachId && !parsed.searchParams.get("coach_id")) {
       parsed.searchParams.set("coach_id", coachId);
-    }
-    if (!parsed.searchParams.get("actor_type")) {
-      parsed.searchParams.set("actor_type", "parent");
     }
     return parsed.toString();
   }
@@ -1369,17 +1365,8 @@ function buildTrackedGuideLink(rawUrl, conv) {
 
   const prettyTracked = new URL("https://mynilwealthstrategies.com");
   const coachSuffix = coachId ? `-${encodeURIComponent(coachId)}` : "";
-  if (guideKey === "website") {
-    prettyTracked.pathname = coachSuffix ? `/website${coachSuffix}` : "/website";
-  } else if (guideKey === "aflac-proof") {
-    prettyTracked.pathname = coachSuffix ? `/aflac-proof${coachSuffix}` : "/aflac-proof";
-  } else {
-    prettyTracked.pathname = `/${guideKey}${coachSuffix}`;
-  }
-  prettyTracked.searchParams.set("person_key", hashStable(recipientEmail));
-  prettyTracked.searchParams.set("person_key_source", "query");
-  if (coachId) prettyTracked.searchParams.set("coach_id", coachId);
-  prettyTracked.searchParams.set("actor_type", "parent");
+  prettyTracked.pathname = coachSuffix ? `/go/${guideKey}${coachSuffix}` : `/go/${guideKey}`;
+  prettyTracked.searchParams.set("pk", hashStable(recipientEmail));
 
   if (!CLICK_TRACKER_BASE_URL) {
     return prettyTracked.toString();
@@ -1423,11 +1410,11 @@ function ensureAflacOption3(body, conv) {
   const text = String(body || "").trim();
   if (!text) return text;
   const trackedAflacProofLink = aflacProofLinkForConversation(conv) || DEFAULT_AFLAC_PROOF_URL;
-  if (text.includes(trackedAflacProofLink) || text.includes("Aflac Carrier Overview (Option 3):")) {
+  if (text.includes(trackedAflacProofLink) || text.includes("Aflac Coverage 3 Example:")) {
     return text;
   }
   const option3Block = [
-    "Aflac Carrier Overview (Option 3):",
+    "Aflac Coverage 3 Example:",
     "Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.",
     trackedAflacProofLink,
   ].join("\n");
@@ -4853,9 +4840,9 @@ async function runTestScenario(scType) {
     throw new Error(String(lastErr?.message || "OpenAI request failed"));
   }
 
-  const TEST_SUPPORT_SYS = "You write thorough, structured support replies for Wealth Strategies. Support tone must be formal, polished, complete, and easy to read. Replies must fully answer every question the sender asked before offering any next step. Keep the focus on supplemental health coverage first, with risk awareness education and tax guidance from an enrolled agent and multi-licensed insurance specialist. Never use the words NIL or Name, Image, and Likeness unless the sender explicitly asks about them. If tax is asked, include a clear explanation of 1099 reporting, taxable income basics, and practical next steps like tracking expenses and planning estimated taxes. If asked what supplemental health is, clearly explain accident insurance and hospital indemnity: accident insurance pays cash benefits for covered accidental injuries and related care, and hospital indemnity pays cash benefits for covered hospital admissions or stays to help with out-of-pocket costs and related bills. Do not mention any insurer except Aflac, and mention extra carrier credibility details only when credibility is explicitly asked. HARD VOCABULARY RULE: use plain everyday words that any parent can read easily. No big words, no industry jargon, no corporate language. If a term must be used, explain what it means right away. Return strict JSON with v1, v2, v3, and rec.";
+  const TEST_SUPPORT_SYS = "You write thorough, structured support replies for Wealth Strategies. Support tone must be formal, polished, complete, and easy to read. Replies must fully answer every question the sender asked before offering any next step. Use only the facts in the current thread payload and never pull details from any other client or conversation. Keep the focus on supplemental health coverage first, with risk awareness education and tax guidance from an enrolled agent and multi-licensed insurance specialist. Never use the words NIL or Name, Image, and Likeness unless the sender explicitly asks about them. If tax is asked, include a clear explanation of 1099 reporting, taxable income basics, and practical next steps like tracking expenses and planning estimated taxes. If asked what supplemental health is, clearly explain accident insurance and hospital indemnity: accident insurance pays cash benefits for covered accidental injuries and related care, and hospital indemnity pays cash benefits for covered hospital admissions or stays to help with out-of-pocket costs and related bills. Do not mention any insurer except Aflac, and mention extra carrier credibility details only when credibility is explicitly asked. HARD VOCABULARY RULE: use plain everyday words that any parent can read easily. No big words, no industry jargon, no corporate language. If a term must be used, explain what it means right away. Return strict JSON with v1, v2, v3, and rec.";
 
-  const OUTREACH_SYS = "You write thorough, human outreach replies for coach conversations. Tone must be conversational and relationship-building while still professional. Replies must directly answer every question the coach asked before suggesting a next step. If parent-group support is relevant, mention it only after the direct answer is clear. No corporate polish, no formal greetings, no hype language. Return JSON with v1,v2,v3 each containing subject and body.";
+  const OUTREACH_SYS = "You write thorough, human outreach replies for coach conversations. Tone must be conversational and relationship-building while still professional. Use only the facts in the current thread payload and never pull details from any other client or conversation. Replies must directly answer every question the coach asked before suggesting a next step. If parent-group support is relevant, mention it only after the direct answer is clear. No corporate polish, no formal greetings, no hype language. Return JSON with v1,v2,v3 each containing subject and body.";
 
   // Step 1: Generate fresh scenario — NO named insurance companies
   const typePrompts = {
@@ -4968,7 +4955,7 @@ async function runTestScenario(scType) {
   if (scType === "OUTREACH_COACH_INTEREST") {
     const payload = JSON.stringify({ contact_email: sc.email, subject: sc.subject, latest_inbound: sc.message, coach_name: sc.name, school: sc.school, sport: sc.sport });
     const result = JSON.parse(await askAI(OUTREACH_SYS,
-      `Create 3 follow-up reply drafts for this outreach conversation:\n${payload}\n\nRules:\n- Tone: conversational and relationship-building, while still professional\n- Voice should feel credible and coach-to-coach without sounding overly cool\n- Keep phrasing fluent and natural; avoid forced wording\n- Fully answer the coach's actual questions before mentioning any next step\n- If the coach asked multiple questions, cover each one clearly and efficiently\n- Do not mention any personal playing background\n- V2 is the quality bar for tone: warm, natural, relationship-focused, and easy to read\n- Make V1 sound very close to that same warm V2 tone, but slightly more direct\n- Make V3 sound close to that same warm V2 tone too, while being complete and professional\n- If parent-group help is relevant, mention CC support only after the direct answer and frame it as an easy follow-up\n- Keep wording simple and clear, avoid big words and avoid slang\n- Use simple vocabulary that is easy to understand on a quick read\n- Keep punctuation light, no hype punctuation and no repeated exclamation points\n- No formal greetings no corporate polish\n- No meeting or call suggestions unless explicitly asked\n- Fully answer every point in the message — no word limit, write as much as needed\n- Include one clear next step\n- After answering, include practical next steps by offering 2-3 simple options or inviting a direct reply to continue the conversation\n- HARD UNIQUENESS RULE: V1, V2, and V3 must each be completely unique in opener, sentence flow, phrasing, and CTA wording\n- Do not reuse the same first sentence across versions\n- Do not mention AI\n- Do not name any insurer except Aflac\n- ${selectedReplyStyle}\nReturn: {"v1":{"subject":"...","body":"..."},"v2":{"subject":"...","body":"..."},"v3":{"subject":"...","body":"..."}}`,
+      `Create 3 follow-up reply drafts for this outreach conversation:\n${payload}\n\nRules:\n- Hard memory rule: use only the facts in this thread payload\n- Do not pull from any other client, coach, parent, campaign, or prior conversation outside this thread\n- Tone: conversational and relationship-building, while still professional\n- Voice should feel credible and coach-to-coach without sounding overly cool\n- Keep phrasing fluent and natural; avoid forced wording\n- Fully answer the coach's actual questions before mentioning any next step\n- If the coach asked multiple questions, cover each one clearly and efficiently\n- Do not mention any personal playing background\n- V2 is the quality bar for tone: warm, natural, relationship-focused, and easy to read\n- Make V1 sound very close to that same warm V2 tone, but slightly more direct\n- Make V3 sound close to that same warm V2 tone too, while being complete and professional\n- If parent-group help is relevant, mention CC support only after the direct answer and frame it as an easy follow-up\n- Keep wording simple and clear, avoid big words and avoid slang\n- Use simple vocabulary that is easy to understand on a quick read\n- Keep punctuation light, no hype punctuation and no repeated exclamation points\n- No formal greetings no corporate polish\n- No meeting or call suggestions unless explicitly asked\n- Fully answer every point in the message — no word limit, write as much as needed\n- Include one clear next step\n- After answering, include practical next steps by offering 2-3 simple options or inviting a direct reply to continue the conversation\n- HARD UNIQUENESS RULE: V1, V2, and V3 must each be completely unique in opener, sentence flow, phrasing, and CTA wording\n- Do not reuse the same first sentence across versions\n- Do not mention AI\n- Do not name any insurer except Aflac\n- ${selectedReplyStyle}\nReturn: {"v1":{"subject":"...","body":"..."},"v2":{"subject":"...","body":"..."},"v3":{"subject":"...","body":"..."}}`,
       true
     ));
     const reordered = promoteV3ToV1(result || {});
@@ -5008,19 +4995,19 @@ async function runTestScenario(scType) {
       const aflacProofLink = aflacProofLinkForConversation(simulatedConv) || DEFAULT_AFLAC_PROOF_URL;
       const ccSys = "You generate CC Support messages for Wealth Strategies. Bridge: concise, conversational, polished note from outreach person to coach looping in support. The bridge must explicitly tell the coach that the note below is what they can forward to the parent group. Support: formal, persuasive, complete message the coach forwards to parent group. The support message must be parent-focused only and must never include or summarize private coach conversation details. Keep the focus on how this helps athletes and families. Do not mention any insurer except Aflac. Return JSON.";
       const ccResult = JSON.parse(await askAI(ccSys,
-        `Generate CC messages for this coach conversation:\nCoach: ${sc.name} — ${sc.school} ${sc.sport} (${sc.state})\n\nBridge (conversational, professional; outreach person says support team is looped in; explicitly say the note below is what the coach can forward to the parent group; do not repeat the coach name in the bridge body):\nSupport (formal, written to be forwarded to the parent group; parent-focused only; do not quote or summarize private coach conversation details; explain how this supports families and athletes; include this exact line: "You can respond to this message with any questions — we're happy to help."; include mandatory links exactly as written:\nLearn more in the Parent Guide:\n${parentGuideLink}\nOfficial Wealth Strategies Website:\n${officialWebsiteLink}\nAflac Carrier Overview (Option 3):\n${aflacProofLink}\nInclude this credibility line in plain wording: Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.):\n\nReturn: {"bridge":{"body":"..."},"support":{"body":"..."}}`,
+        `Generate CC messages for this coach conversation:\nCoach: ${sc.name} — ${sc.school} ${sc.sport} (${sc.state})\n\nBridge (conversational, professional; outreach person says support team is looped in; explicitly say the note below is what the coach can forward to the parent group; do not repeat the coach name in the bridge body):\nSupport (formal, written to be forwarded to the parent group; parent-focused only; do not quote or summarize private coach conversation details; explain how this supports families and athletes; include this exact line: "You can respond to this message with any questions — we're happy to help."; include mandatory links exactly as written:\nLearn more in the Parent Guide:\n${parentGuideLink}\nOfficial Wealth Strategies Website:\n${officialWebsiteLink}\nAflac Coverage 3 Example:\n${aflacProofLink}\nInclude this credibility line in plain wording: Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.):\n\nReturn: {"bridge":{"body":"..."},"support":{"body":"..."}}`,
         true
       ));
       ccBridge = ccResult?.bridge?.body || "";
       ccSupport = ccResult?.support?.body || "";
       const hasParentLabel = ccSupport.includes("Learn more in the Parent Guide:");
       const hasWebsiteLabel = ccSupport.includes("Official Wealth Strategies Website:");
-      const hasAflacLabel = ccSupport.includes("Aflac Carrier Overview (Option 3):");
+      const hasAflacLabel = ccSupport.includes("Aflac Coverage 3 Example:");
       const hasParentLink = ccSupport.includes(parentGuideLink);
       const hasWebsiteLink = ccSupport.includes(officialWebsiteLink);
       const hasAflacLink = ccSupport.includes(aflacProofLink);
       if (!hasParentLabel || !hasWebsiteLabel || !hasAflacLabel || !hasParentLink || !hasWebsiteLink || !hasAflacLink) {
-        ccSupport = `${String(ccSupport || "").trim()}\n\nLearn more in the Parent Guide:\n${parentGuideLink}\n\nOfficial Wealth Strategies Website:\n${officialWebsiteLink}\n\nAflac Carrier Overview (Option 3):\nBacked by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.\n${aflacProofLink}`.trim();
+        ccSupport = `${String(ccSupport || "").trim()}\n\nLearn more in the Parent Guide:\n${parentGuideLink}\n\nOfficial Wealth Strategies Website:\n${officialWebsiteLink}\n\nAflac Coverage 3 Example:\nBacked by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.\n${aflacProofLink}`.trim();
       }
     } catch {}
   }
@@ -5068,7 +5055,7 @@ async function runTestScenario(scType) {
 
   // ── Page 1: Conversation/Instantly first view ───────────────
   if (scType === "OUTREACH_COACH_INTEREST") {
-    const outboundSeed = `Hi ${escT(sc.name)} - I am with Wealth Strategies. We help high school athletes and families understand supplemental health options in plain language, and we handle parent questions directly so your staff is not carrying the load. Is your program the right place to share this with families?`;
+    const outboundSeed = `Hi ${escT(sc.name)} - I am with Wealth Strategies. I am a former D1 athlete, and during my college career I had 3 surgeries, so I saw firsthand how fast out-of-pocket costs can stack up. In the high school setting, parents often have to cover those costs on their own. We help high school athletes and families with simple education on supplemental health, risk awareness, and tax basics that usually are not taught in school. Is your program the right place to share this with families?`;
     pages.push([
       `📤 INSTANTLY OUTBOUND`,
       `--`,
@@ -5127,30 +5114,11 @@ async function runTestScenario(scType) {
     `🧪 SIMULATED THREAD`,
   ].join("\n"));
 
-  if (scType === "OUTREACH_COACH_INTEREST") {
-    pages.push([
-      `💬 INSTANTLY REPLY`,
-      `--`,
-      `${escT(sc.name)}`,
-      `From (Outreach): ${escT(OUTREACH_FROM_EMAIL || "noreply@mynilwealthstrategies.com")}`,
-      `Thread Summary: 2 msgs • Last: inbound • just now`,
-      ``,
-      `Reply`,
-      testTrunc(escT(v1), 420),
-      ``,
-      `Ref: Campaign ${escT(sc.campaign_id || "—")}`,
-      ``,
-      `--`,
-      `ID: ${convId}`,
-      `Updated: ${dateStr}, ${ts}`,
-      `💬 Messages: 2`,
-      `🟠 Due soon`,
-    ].join("\n"));
+  if (scType !== "OUTREACH_COACH_INTEREST") {
+    v1 = ensureAflacOption3(v1, { contact_email: sc.email, coach_id: sc.coach_id || "" });
+    v2 = ensureAflacOption3(v2, { contact_email: sc.email, coach_id: sc.coach_id || "" });
+    v3 = ensureAflacOption3(v3, { contact_email: sc.email, coach_id: sc.coach_id || "" });
   }
-
-  v1 = ensureAflacOption3(v1, { contact_email: sc.email, coach_id: sc.coach_id || "" });
-  v2 = ensureAflacOption3(v2, { contact_email: sc.email, coach_id: sc.coach_id || "" });
-  v3 = ensureAflacOption3(v3, { contact_email: sc.email, coach_id: sc.coach_id || "" });
 
   // ── Single Draft Page: button-switch V1/V2/V3 (no separate pages) ─
   const draftPageIndex = {};
@@ -8478,18 +8446,6 @@ throw new Error("Missing OPENAI_API_KEY");
 }
 const inbound = await sbLatestInboundMessage(conv.id);
 const isPrograms = sourceSafe(conv.source) === "programs";
-let guideCategoryClicksYear = null;
-if (isPrograms) {
-  try {
-    const yearly = await sbMetricSummary({ source: "programs", window: "year" });
-    guideCategoryClicksYear =
-      Number(yearly?.supplementalHealthGuideClicks || 0) +
-      Number(yearly?.riskAwarenessGuideClicks || 0) +
-      Number(yearly?.taxEducationGuideClicks || 0);
-  } catch (_) {
-    guideCategoryClicksYear = null;
-  }
-}
 const prompt = {
 contact_email: conv.contact_email || "",
 subject: conv.subject || "",
@@ -8498,10 +8454,6 @@ latest_inbound: inbound?.body || inbound?.preview || "",
 coach_name: conv.coach_name || "",
 source: conv.source || "support",
 followup_due_at: conv.followup_next_action_at || conv.next_action_at || null,
-metrics_window: "year",
-enroll_clicks_year: Number(conv.enroll_clicks_year || 0),
-guide_opens_year: Number(conv.guide_opens_year || 0),
-guide_category_clicks_total_year: guideCategoryClicksYear,
 };
 const programsSystemPrompt = "You write thorough, human outreach replies for coach conversations. The sender is personal, mission-driven, and sounds like a real person, not a sales rep. Hard tone rule: outreach should be conversational and relationship-building while still professional. No corporate polish, no stiff formal greetings, no structured paragraphs, and no slangy hype language. Insurance mention rule: do not name any insurer except Aflac. If carrier credibility is mentioned, use this fact pattern: Aflac holds an AM Best financial strength rating of A+ (Superior), and coaches including Deion Sanders, Nick Saban, and Dawn Staley have publicly endorsed Aflac's mission of protecting families. HARD VOCABULARY RULE: use plain everyday words anyone would use in a normal conversation. No big words, no jargon. If a term must be used, explain what it means right away. Return JSON with v1,v2,v3 each containing subject and body."; 
 const supportSystemPrompt = "You write thorough, structured support replies. Hard tone rule: support must be professional — clear, organized, and complete sentences. Not casual slang, not text-message style. Warm and easy to read. Fully answer every sender question before offering a next step. Keep the focus on supplemental health coverage first, with risk awareness education and tax guidance from an enrolled agent and multi-licensed insurance specialist. Never use the words NIL or Name, Image, and Likeness unless the sender explicitly asks about them. If tax is asked, include a clear explanation of 1099 reporting, taxable income basics, and practical next steps like tracking expenses and planning estimated taxes. If asked what supplemental health is, clearly explain accident insurance and hospital indemnity: accident insurance pays cash benefits for covered accidental injuries and related care, and hospital indemnity pays cash benefits for covered hospital admissions or stays to help with out-of-pocket costs and related bills. Insurance mention rule: do not name any insurer except Aflac. Mention extra carrier credibility details only when credibility is explicitly asked. HARD VOCABULARY RULE: use plain everyday words that any parent can read easily. No big words, no industry jargon, no corporate language. If a term must be used, explain what it means right away. Return JSON with v1,v2,v3 each containing subject and body.";
@@ -8537,7 +8489,8 @@ Rules:
 - Hard rule: never frame this as extra workload for the coach or staff
 - If workload concern appears, state clearly the coach only forwards the message and support handles parent questions
 - Explain this helps protect players by giving families clear accident and hospital-indemnity coverage education
-- Use metric context only when it truly fits
+- Hard memory rule: use only the facts in this thread payload
+- Do not pull from any other client, coach, parent, campaign, dashboard metric, or prior conversation outside this thread
 - Fully answer every point in the message — no word limit, write as much as needed
 - Include one clear next step
 - After answering, include practical next steps by offering 2-3 simple options or inviting a direct reply to continue the conversation
@@ -8546,11 +8499,10 @@ Rules:
 - Do not mention AI
 - Do not invent specific counts (athletes, clients, families, teams, enrollments) unless explicitly provided
 - Do not name any insurer except Aflac
-- If carrier credibility is mentioned include: Aflac holds an AM Best financial strength rating of A+ (Superior), and coaches including Deion Sanders, Nick Saban, and Dawn Staley have publicly endorsed Aflac's mission of protecting families
 - Style variant for this generation: ${programsStyleVariant}
 - Avoid generic phrases like "valuable insights," "numerous teams," "unforeseen circumstances," or "navigate this complex topic"
 Return: {"v1":{"subject":"...","body":"..."},"v2":{...},"v3":{...}}`;
-const supportUserPrompt = `Create 3 reply drafts for this inbound conversation:\n${JSON.stringify(prompt)}\n\nRules:\n- HARD TONE RULE: support tone must be professional — clear, structured, complete sentences, warm and easy to read. No casual slang or conversational shorthand.\n- Fully answer every sender question or concern before offering a next step\n- Keep the focus on supplemental health coverage first, then risk awareness education and tax guidance from an enrolled agent and multi-licensed insurance specialist\n- Never use the words NIL or Name, Image, and Likeness unless the sender explicitly asks about them\n- If tax is asked, include a clear explanation of 1099 reporting, taxable income basics, and practical next steps like tracking expenses and planning estimated taxes\n- If asked what supplemental health is, clearly explain accident insurance and hospital indemnity: accident insurance pays cash benefits for covered accidental injuries and related care, and hospital indemnity pays cash benefits for covered hospital admissions or stays to help with out-of-pocket costs and related bills\n- If the sender says they already have coverage, explicitly explain this does not replace their existing plan and they still may not have accident insurance or hospital indemnity, and explain why those benefits matter\n- V1 answer-first and thorough — open directly with the full answer, cover every part of the question in depth, professional tone\n- V2 warm and thorough — open with empathy or acknowledgment first, then give the same complete answer with a relationship-focused tone\n- V3 organized and thorough — open from a completely different angle than V1 and V2, give the full answer in a different structural order, every question still fully covered\n- HARD UNIQUENESS RULE: not one sentence should repeat across V1, V2, V3. Different openers, different sentence flow, different phrasing throughout, different closing CTA\n- Each version must go deep on every question asked — do not skip or skim anything\n- HARD VOCABULARY RULE: use plain everyday words that any parent can read easily. No big words, no jargon, no corporate language. Do not use words like therefore or however. If a term must be used, explain what it means right away\n- Fully answer every point in the message — no word limit, write as much as needed\n- Keep the answer complete but avoid unnecessary filler and repetition\n- No greeting line at the start\n- Include one clear next step\n- After answering, include practical next steps by offering 2-3 simple options or inviting a direct reply to continue the conversation\n- Do not mention AI\n- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless the count is explicitly provided in the prompt\n- Avoid generic filler or vague corporate language\nReturn: {\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}}`;
+const supportUserPrompt = `Create 3 reply drafts for this inbound conversation:\n${JSON.stringify(prompt)}\n\nRules:\n- Hard memory rule: use only the facts in this thread payload\n- Do not pull from any other client, coach, parent, campaign, dashboard metric, or prior conversation outside this thread\n- HARD TONE RULE: support tone must be professional — clear, structured, complete sentences, warm and easy to read. No casual slang or conversational shorthand.\n- Fully answer every sender question or concern before offering a next step\n- Keep the focus on supplemental health coverage first, then risk awareness education and tax guidance from an enrolled agent and multi-licensed insurance specialist\n- Never use the words NIL or Name, Image, and Likeness unless the sender explicitly asks about them\n- If tax is asked, include a clear explanation of 1099 reporting, taxable income basics, and practical next steps like tracking expenses and planning estimated taxes\n- If asked what supplemental health is, clearly explain accident insurance and hospital indemnity: accident insurance pays cash benefits for covered accidental injuries and related care, and hospital indemnity pays cash benefits for covered hospital admissions or stays to help with out-of-pocket costs and related bills\n- If the sender says they already have coverage, explicitly explain this does not replace their existing plan and they still may not have accident insurance or hospital indemnity, and explain why those benefits matter\n- V1 answer-first and thorough — open directly with the full answer, cover every part of the question in depth, professional tone\n- V2 warm and thorough — open with empathy or acknowledgment first, then give the same complete answer with a relationship-focused tone\n- V3 organized and thorough — open from a completely different angle than V1 and V2, give the full answer in a different structural order, every question still fully covered\n- HARD UNIQUENESS RULE: not one sentence should repeat across V1, V2, V3. Different openers, different sentence flow, different phrasing throughout, different closing CTA\n- Each version must go deep on every question asked — do not skip or skim anything\n- HARD VOCABULARY RULE: use plain everyday words that any parent can read easily. No big words, no jargon, no corporate language. Do not use words like therefore or however. If a term must be used, explain what it means right away\n- Fully answer every point in the message — no word limit, write as much as needed\n- Keep the answer complete but avoid unnecessary filler and repetition\n- No greeting line at the start\n- Include one clear next step\n- After answering, include practical next steps by offering 2-3 simple options or inviting a direct reply to continue the conversation\n- Do not mention AI\n- Do not invent specific counts (athletes, clients, families, teams, enrollments) unless the count is explicitly provided in the prompt\n- Avoid generic filler or vague corporate language\nReturn: {\"v1\":{\"subject\":\"...\",\"body\":\"...\"},\"v2\":{...},\"v3\":{...}}`;
 const res = await fetch("https://api.openai.com/v1/chat/completions", {
 method: "POST",
 headers: {
@@ -8573,6 +8525,9 @@ const content = json?.choices?.[0]?.message?.content;
 if (!content) throw new Error("No draft content from OpenAI");
 const parsed = JSON.parse(content);
 const drafts = promoteV3ToV1(parsed || {});
+if (isPrograms) {
+  return drafts;
+}
 for (const k of ["v1", "v2", "v3"]) {
   if (drafts?.[k]?.body) {
     drafts[k].body = ensureAflacOption3(drafts[k].body, conv);
@@ -8672,7 +8627,7 @@ ${officialWebsiteLink}`.trim();
       parentGuideLink,
       "Official Wealth Strategies Website:",
       officialWebsiteLink,
-      "Aflac Carrier Overview (Option 3):",
+      "Aflac Coverage 3 Example:",
       "Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.",
       aflacOption3Link,
     ].join("\n\n"),
@@ -8685,7 +8640,7 @@ ${officialWebsiteLink}`.trim();
       parentGuideLink,
       "Official Wealth Strategies Website:",
       officialWebsiteLink,
-      "Aflac Carrier Overview (Option 3):",
+      "Aflac Coverage 3 Example:",
       "Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.",
       aflacOption3Link,
     ].join("\n\n"),
@@ -8698,7 +8653,7 @@ ${officialWebsiteLink}`.trim();
       parentGuideLink,
       "Official Wealth Strategies Website:",
       officialWebsiteLink,
-      "Aflac Carrier Overview (Option 3):",
+      "Aflac Coverage 3 Example:",
       "Backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.",
       aflacOption3Link,
     ].join("\n\n"),
@@ -10336,15 +10291,15 @@ app.post("/webhook/metric", async (req, res) => {
         guide_key: null,
       };
       const readFromSearch = (sp) => {
-        out.coach_id = sp.get("coach_id") || sp.get("coachId") || out.coach_id;
-        out.campaign_id = sp.get("campaign_id") || sp.get("campaignId") || out.campaign_id;
-        out.actor_id = sp.get("actor_id") || sp.get("actorId") || out.actor_id;
-        out.actor_type = sp.get("actor_type") || sp.get("actorType") || out.actor_type;
-        out.person_id = sp.get("person_id") || sp.get("personId") || out.person_id;
-        out.person_email = sp.get("person_email") || sp.get("personEmail") || out.person_email;
-        out.person_key = sp.get("person_key") || sp.get("personKey") || out.person_key;
-        out.person_key_source = sp.get("person_key_source") || sp.get("personKeySource") || out.person_key_source;
-        out.guide_key = sp.get("guide_key") || sp.get("guideKey") || out.guide_key;
+        out.coach_id = sp.get("coach_id") || sp.get("coachId") || sp.get("cid") || out.coach_id;
+        out.campaign_id = sp.get("campaign_id") || sp.get("campaignId") || sp.get("camp") || out.campaign_id;
+        out.actor_id = sp.get("actor_id") || sp.get("actorId") || sp.get("aid") || out.actor_id;
+        out.actor_type = sp.get("actor_type") || sp.get("actorType") || sp.get("at") || out.actor_type;
+        out.person_id = sp.get("person_id") || sp.get("personId") || sp.get("pid") || out.person_id;
+        out.person_email = sp.get("person_email") || sp.get("personEmail") || sp.get("pe") || out.person_email;
+        out.person_key = sp.get("person_key") || sp.get("personKey") || sp.get("pk") || out.person_key;
+        out.person_key_source = sp.get("person_key_source") || sp.get("personKeySource") || sp.get("pks") || out.person_key_source;
+        out.guide_key = sp.get("guide_key") || sp.get("guideKey") || sp.get("g") || out.guide_key;
       };
 
       try {
