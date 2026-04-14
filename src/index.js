@@ -5011,7 +5011,7 @@ async function runTestScenario(scType) {
 
 Understanding injury expense coverage for our student-athletes is crucial for every family. It's important to know that primary insurance often does not cover all costs related to sports injuries. Many families, particularly those involved in high school and youth sports, may face additional expenses out of pocket. Supplemental health insurance works alongside your primary insurance to help cover these costs and can provide families with direct payments for covered injuries.
 
-These funds can be used to help with medical bills, travel expenses, time off work, and other out-of-pocket costs that might arise from an athlete's injury. Also the benefit payout is flexible too; it can cover travel bills or any income loss. Additionally, families will receive straightforward guidance on managing financial risks and education about NIL income tax. You can respond to this message with any questions — we're happy to help.
+These funds can be used to help with medical bills, travel expenses, time off work, and other out-of-pocket costs that might arise from an athlete's injury. Also benefit payouts are flexible and can be used for anything you want even if its not medical related. Additionally, families will receive straightforward guidance on managing financial risks and education about NIL income tax. You can respond to this message with any questions — we're happy to help.
 
 Learn more in the Parent Guide:
 ${parentGuideLink}
@@ -8688,7 +8688,7 @@ ${officialWebsiteLink}`.trim();
 
 Understanding injury expense coverage for our student-athletes is crucial for every family. It's important to know that primary insurance often does not cover all costs related to sports injuries. Many families, particularly those involved in high school and youth sports, may face additional expenses out of pocket. Supplemental health insurance works alongside your primary insurance to help cover these costs and can provide families with direct payments for covered injuries.
 
-These funds can be used to help with medical bills, travel expenses, time off work, and other out-of-pocket costs that might arise from an athlete's injury. Also the benefit payout is flexible too; it can cover travel bills or any income loss. Additionally, families will receive straightforward guidance on managing financial risks and education about NIL income tax. You can respond to this message with any questions — we're happy to help.
+These funds can be used to help with medical bills, travel expenses, time off work, and other out-of-pocket costs that might arise from an athlete's injury. Also benefit payouts are flexible and can be used for anything you want even if its not medical related. Additionally, families will receive straightforward guidance on managing financial risks and education about NIL income tax. You can respond to this message with any questions — we're happy to help.
 
 Learn more in the Parent Guide:
 ${parentGuideLink}
