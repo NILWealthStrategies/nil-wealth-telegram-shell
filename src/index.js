@@ -5007,19 +5007,24 @@ async function runTestScenario(scType) {
       ));
       ccBridge = ccResult?.bridge?.body || "";
       ccSupport = ccResult?.support?.body || "";
-      const hasParentLabel = ccSupport.includes("Learn more in the Parent Guide:");
-      const hasWebsiteLabel = ccSupport.includes("Official Wealth Strategies Website:");
-      const hasAflacLabel = ccSupport.includes("To see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury: https://mynilwealthstrategies.com/go/aflac-proof?pk=dbf81c3a");
-      const hasRoleClarity = /coaches do not sell, explain, or enroll insurance/i.test(ccSupport)
-        && /coaches do not handle money or paperwork/i.test(ccSupport)
-        && /families review coverage and enroll directly with aflac/i.test(ccSupport)
-        && /nil wealth strategies provides education and support only/i.test(ccSupport);
-      const hasParentLink = ccSupport.includes(parentGuideLink);
-      const hasWebsiteLink = ccSupport.includes(officialWebsiteLink);
-      const hasAflacLink = ccSupport.includes("https://mynilwealthstrategies.com/go/aflac-proof?pk=dbf81c3a") || ccSupport.includes(aflacProofLink);
-      if (!hasParentLabel || !hasWebsiteLabel || !hasAflacLabel || !hasParentLink || !hasWebsiteLink || !hasAflacLink || !hasRoleClarity) {
-        ccSupport = `${String(ccSupport || "").trim()}\n\nCoaches do not sell, explain, or enroll insurance.\nCoaches do not handle money or paperwork.\nFamilies review coverage and enroll directly with Aflac.\nNIL Wealth Strategies provides education and support only.\n\nLearn more in the Parent Guide:\n${parentGuideLink}\n\nOfficial Wealth Strategies Website:\n${officialWebsiteLink}\n\nTo see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury: https://mynilwealthstrategies.com/go/aflac-proof?pk=dbf81c3a\n\nNIL Wealth Strategies is backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.`.trim();
-      }
+      const requiredScenarioCcSupport = `Dear Parents,
+
+Understanding injury expense coverage for our student-athletes is crucial for every family. It's important to know that primary insurance often does not cover all costs related to sports injuries. Many families, particularly those involved in high school and youth sports, may face additional expenses out of pocket. Supplemental health insurance works alongside your primary insurance to help cover these costs and can provide families with direct payments for covered injuries.
+
+These funds can be used to help with medical bills, travel expenses, time off work, and other out-of-pocket costs that might arise from an athlete's injury. Also the benefit payout is flexible too; it can cover travel bills or any income loss. Additionally, families will receive straightforward guidance on managing financial risks and education about NIL income tax. You can respond to this message with any questions — we're happy to help.
+
+Learn more in the Parent Guide:
+${parentGuideLink}
+Official Wealth Strategies Website:
+${officialWebsiteLink}
+To see this in a real-world example of how coverage works and the amount of benefit payout you may receive from an injury: https://mynilwealthstrategies.com/go/aflac-proof?pk=dbf81c3a
+
+NIL Wealth Strategies is backed by Aflac, AM Best A+ (Superior), with 80 years in supplemental health and trusted by coaches including Nick Saban, Dawn Staley, and Deion Sanders.
+
+Please note that coaches do not sell, explain, or enroll insurance, nor do they handle money or paperwork. Families review coverage and enroll directly with Aflac. NIL Wealth Strategies provides education and support only.
+
+Best regards, NIL Wealth Strategies Team`;
+      ccSupport = requiredScenarioCcSupport;
     } catch {}
   }
 
@@ -8683,7 +8688,7 @@ ${officialWebsiteLink}`.trim();
 
 Understanding injury expense coverage for our student-athletes is crucial for every family. It's important to know that primary insurance often does not cover all costs related to sports injuries. Many families, particularly those involved in high school and youth sports, may face additional expenses out of pocket. Supplemental health insurance works alongside your primary insurance to help cover these costs and can provide families with direct payments for covered injuries.
 
-These funds can be used to help with medical bills, travel expenses, time off work, and other out-of-pocket costs that might arise from an athlete's injury. Additionally, families will receive straightforward guidance on managing financial risks and education about NIL income tax. You can respond to this message with any questions — we're happy to help.
+These funds can be used to help with medical bills, travel expenses, time off work, and other out-of-pocket costs that might arise from an athlete's injury. Also the benefit payout is flexible too; it can cover travel bills or any income loss. Additionally, families will receive straightforward guidance on managing financial risks and education about NIL income tax. You can respond to this message with any questions — we're happy to help.
 
 Learn more in the Parent Guide:
 ${parentGuideLink}
@@ -8695,9 +8700,7 @@ NIL Wealth Strategies is backed by Aflac, AM Best A+ (Superior), with 80 years i
 
 Please note that coaches do not sell, explain, or enroll insurance, nor do they handle money or paperwork. Families review coverage and enroll directly with Aflac. NIL Wealth Strategies provides education and support only.
 
-Coaches do not sell, explain, or enroll insurance. Coaches do not handle money or paperwork. Families review coverage and enroll directly with Aflac. NIL Wealth Strategies provides education and support only.
-
-Best regards - NIL Wealth Strategies`;
+Best regards, NIL Wealth Strategies Team`;
   const privacySafeSupportByVersion = {
     v1: requiredParentForwardSupport,
     v2: requiredParentForwardSupport,
