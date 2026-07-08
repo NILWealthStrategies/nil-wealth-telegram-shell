@@ -62,14 +62,14 @@ if [[ -z "$N8N_API_KEY" ]]; then
   exit 1
 fi
 
-code_auth="$($CURL_BIN -sS -L --max-time 20 -o "$tmp" -w '%{http_code}' -H "X-N8N-API-KEY: $N8N_API_KEY" "$N8N_BASE/rest/workflows?limit=1" || true)"
+code_auth="$($CURL_BIN -sS -L --max-time 20 -o "$tmp" -w '%{http_code}' -H "X-N8N-API-KEY: $N8N_API_KEY" "$N8N_BASE/api/v1/workflows?limit=1" || true)"
 body_auth=""
 if [[ -f "$tmp" ]]; then
   body_auth="$($CAT_BIN "$tmp")"
   $RM_BIN -f "$tmp"
 fi
 
-echo "rest/workflows: HTTP $code_auth"
+echo "api/v1/workflows: HTTP $code_auth"
 
 if [[ "$code_auth" == "200" ]]; then
   echo "PASS: n8n API key is valid for workflow reads."

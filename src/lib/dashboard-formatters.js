@@ -149,6 +149,7 @@ ${formatCappedQueueLabel("📱 Calls", capped.callsCount)}
 ${formatCappedQueueLabel("✅ Completed", capped.completedCount)}
 
 ${buildDashboardMetricsText(metrics)}
+
 ${buildSchoolsDatabaseSummary(globalSchoolsCoverage)}
 
 🚚 DELIVERY HEALTH

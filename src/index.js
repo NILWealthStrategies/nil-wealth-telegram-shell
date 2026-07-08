@@ -207,14 +207,13 @@ app.use(express.json({
   },
 }));
 const supabase = createClient(
-SUPABASE_URL || "https://placeholder.supabase.co",
-SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key",
-{
-auth: { persistSession: false },
-}
+  SUPABASE_URL || "https://placeholder.supabase.co",
+  SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key",
+  {
+    auth: { persistSession: false },
+  }
 );
 const ops = () => supabase.schema("nil");
-
 const _tgSendMessage = bot.telegram.sendMessage.bind(bot.telegram);
 bot.telegram.sendMessage = async (...args) => {
   if (!TELEGRAM_BOT_ACTIVE) return null;
@@ -4573,11 +4572,12 @@ Markup.button.callback("👥 Clients", "CLIENTS:open"),
 ],
 [
 Markup.button.callback("🩺 Health", "HEALTH:open"),
-Markup.button.callback("🎯 Coverage", "COVERAGE:open"),
 Markup.button.callback("↻ Refresh", "DASH:refresh"),
+Markup.button.callback("🎯 Coverage", "COVERAGE:open"),
 ],
 ]);
 }
+
 // ======================================================
 // ALL QUEUES (v5.5 OPS CLEAN + LIVE REFRESH)
 // ======================================================
