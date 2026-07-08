@@ -13,7 +13,7 @@
     },
     {
       "parameters": {
-        "url": "https://nil-ops-bot.render.com/api/nil-outbox/claim?limit=10",
+        "url": "https://nil-wealth-telegram-shell.onrender.com/api/nil-outbox/claim?limit=10",
         "method": "GET",
         "headers": {
           "x-nil-secret": "={{ $env.NIL_SECRET }}"
@@ -55,7 +55,7 @@
     },
     {
       "parameters": {
-        "url": "https://nil-ops-bot.render.com/api/nil-outbox/result",
+        "url": "https://nil-wealth-telegram-shell.onrender.com/api/nil-outbox/result",
         "method": "POST",
         "headers": {
           "x-nil-secret": "={{ $env.NIL_SECRET }}",
@@ -72,7 +72,7 @@
     },
     {
       "parameters": {
-        "url": "https://nil-ops-bot.render.com/api/nil-outbox/result",
+        "url": "https://nil-wealth-telegram-shell.onrender.com/api/nil-outbox/result",
         "method": "POST",
         "headers": {
           "x-nil-secret": "={{ $env.NIL_SECRET }}",

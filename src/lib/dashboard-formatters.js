@@ -124,6 +124,7 @@ function buildDashboardText({
   staleWarning,
   capped,
   metrics,
+  globalSchoolsCoverage,
   opsDelivery,
 }) {
   const staleBlock = staleWarning ? `${staleWarning}\n` : "";
@@ -148,6 +149,7 @@ ${formatCappedQueueLabel("📱 Calls", capped.callsCount)}
 ${formatCappedQueueLabel("✅ Completed", capped.completedCount)}
 
 ${buildDashboardMetricsText(metrics)}
+${buildSchoolsDatabaseSummary(globalSchoolsCoverage)}
 
 🚚 DELIVERY HEALTH
 Overall: ${health.emoji} ${health.label}
@@ -162,6 +164,114 @@ Dead Letters: ${d.deadLetters == null ? "n/a" : d.deadLetters}
 Open Support Tickets: ${d.supportTicketsOpen == null ? "n/a" : d.supportTicketsOpen}
 
 Use buttons below.`;
+}
+
+// =====================================================
+// SCHOOLS DATABASE SUMMARY FORMATTER
+// =====================================================
+function buildSchoolsDatabaseSummary(schoolsData = {}) {
+  const n = (v) => {
+    const x = Number(v);
+    return Number.isFinite(x) ? x : 0;
+  };
+
+  const total = n(schoolsData.total);
+  const reached = n(schoolsData.reached);
+  const coverage = total > 0 ? Math.round((reached / total) * 100 * 10) / 10 : 0;
+
+  const bar = (() => {
+    const filled = Math.round(coverage / 10);
+    const empty = 10 - filled;
+    return `[${'█'.repeat(filled)}${'░'.repeat(empty)}]`;
+  })();
+
+  return `🎯 MARKET COVERAGE
+Schools Database: ${reached}/${total}
+Reached: ${reached} Schools
+Coverage: ${bar} ${coverage}%`;
+}
+
+// =====================================================
+// STATE COVERAGE WITH RESPONSES FORMATTER
+// =====================================================
+function buildStateCoverageWithResponses(statesData = []) {
+  const n = (v) => {
+    const x = Number(v);
+    return Number.isFinite(x) ? x : 0;
+  };
+
+  if (!Array.isArray(statesData) || statesData.length === 0) {
+    return `🎯 STATE COVERAGE
+--
+No states with outreach yet.
+--`;
+  }
+
+  const stateLines = statesData
+    .map((state) => {
+      const st = (state.state || "??").toUpperCase();
+      const schoolsInState = n(state.schoolsInState);
+      const schoolsContacted = n(state.schoolsContacted);
+      const schoolsResponded = n(state.schoolsResponded);
+      const coachesContacted = n(state.coachesContacted);
+      const coachesResponded = n(state.coachesResponded);
+      const counties = n(state.countiesReached);
+
+      const schoolContactPct = schoolsInState > 0
+        ? Math.round((schoolsContacted / schoolsInState) * 1000) / 10
+        : 0;
+      const schoolResponsePct = schoolsContacted > 0
+        ? Math.round((schoolsResponded / schoolsContacted) * 100)
+        : 0;
+      const coachResponsePct = coachesContacted > 0
+        ? Math.round((coachesResponded / coachesContacted) * 100)
+        : 0;
+
+      const schoolContactBar = (() => {
+        const filled = Math.round(schoolContactPct / 10);
+        const empty = 10 - filled;
+        return `[${'█'.repeat(filled)}${'░'.repeat(empty)}]`;
+      })();
+
+      const schoolResponseBar = (() => {
+        const filled = Math.round(schoolResponsePct / 10);
+        const empty = 10 - filled;
+        return `[${'█'.repeat(filled)}${'░'.repeat(empty)}]`;
+      })();
+
+      const coachResponseBar = (() => {
+        const filled = Math.round(coachResponsePct / 10);
+        const empty = 10 - filled;
+        return `[${'█'.repeat(filled)}${'░'.repeat(empty)}]`;
+      })();
+
+      return (
+        `${st}\n` +
+        `  Schools: ${schoolsContacted}/${schoolsInState} ${schoolContactBar} ${schoolContactPct}%\n` +
+        `  Schools Responded: ${schoolsResponded}/${schoolsContacted} ${schoolResponseBar} ${schoolResponsePct}%\n` +
+        `  Coaches Contacted: ${coachesContacted}\n` +
+        `  Coaches Responded: ${coachesResponded}/${coachesContacted} ${coachResponseBar} ${coachResponsePct}%\n` +
+        `  Counties: ${counties}`
+      );
+    })
+    .join("\n\n");
+
+  const totalStates = statesData.length;
+  const totalSchoolsContacted = statesData.reduce((sum, s) => sum + n(s.schoolsContacted), 0);
+  const totalSchoolsResponded = statesData.reduce((sum, s) => sum + n(s.schoolsResponded), 0);
+  const totalCoachesContacted = statesData.reduce((sum, s) => sum + n(s.coachesContacted), 0);
+  const totalCoachesResponded = statesData.reduce((sum, s) => sum + n(s.coachesResponded), 0);
+
+  return (
+    `🎯 STATE COVERAGE\n` +
+    `--\n` +
+    `${totalStates} Active States\n\n` +
+    `Schools: ${totalSchoolsContacted} Contacted • ${totalSchoolsResponded} Responded\n` +
+    `Coaches: ${totalCoachesContacted} Contacted • ${totalCoachesResponded} Responded\n\n` +
+    `--\n\n` +
+    `${stateLines}\n\n` +
+    `--`
+  );
 }
 
 function buildYearSummaryText(y, filterSource) {
@@ -233,6 +343,8 @@ module.exports = {
   allQueuesText,
   buildDashboardMetricsText,
   buildDashboardText,
+  buildSchoolsDatabaseSummary,
+  buildStateCoverageWithResponses,
   buildOpsHealthText,
   buildYearSummaryText,
 };

@@ -48,6 +48,7 @@ const {
   buildDashboardText,
   buildOpsHealthText,
   buildYearSummaryText,
+  buildStateCoverageWithResponses,
 } = require("./lib/dashboard-formatters");
 const {
   buildSubmissionCard,
@@ -88,7 +89,7 @@ const {
 } = require("./lib/view-utils");
 // ---------- VERSION ----------
 const CODE_VERSION =
-"Index.js V7.0";
+"Index.js V8.0";
 const BUILD_VERSION =
 process.env.BUILD_VERSION ||
 process.env.RENDER_GIT_COMMIT ||
@@ -172,6 +173,7 @@ const DASHBOARD_CACHE_TTL_MS = Number(process.env.DASHBOARD_CACHE_TTL_MS || 3000
 const DASHBOARD_SPEED_MODE = String(process.env.DASHBOARD_SPEED_MODE || "true").toLowerCase() !== "false";
 const DASHBOARD_METRICS_CACHE_TTL_MS = Number(process.env.DASHBOARD_METRICS_CACHE_TTL_MS || 10000);
 const DASHBOARD_OPS_CACHE_TTL_MS = Number(process.env.DASHBOARD_OPS_CACHE_TTL_MS || 20000);
+const DASHBOARD_COVERAGE_CACHE_TTL_MS = Number(process.env.DASHBOARD_COVERAGE_CACHE_TTL_MS || 5 * 60 * 1000);
 const APP_BOOT_TS_MS = Date.now();
 const CLICK_TRACKER_BASE_URL = normalizeAbsoluteHttpUrl(process.env.CLICK_TRACKER_BASE_URL || "");
 const DEFAULT_PARENT_GUIDE_URL = "https://parentsguide.mynilwealthstrategies.com/";
@@ -3590,9 +3592,17 @@ function deriveWfHealthFromLive(wfDef, liveWorkflows, executions, workflowDetail
     const finished = latestExec.stoppedAt || latestExec.finishedAt || latestExec.startedAt || null;
     if (latestExec.status === "error" || latestExec.status === "crashed") {
       const ageMin = finished ? Math.round((Date.now() - new Date(finished).getTime()) / 60000) : null;
+      // Detect n8n execution plan limit: kills the run in < 500ms before any node logic runs.
+      const durationMs = (latestExec.startedAt && latestExec.stoppedAt)
+        ? new Date(latestExec.stoppedAt).getTime() - new Date(latestExec.startedAt).getTime()
+        : null;
+      const isExecLimitHit = durationMs !== null && durationMs < 500;
+      const errorDetail = isExecLimitHit
+        ? `n8n execution limit reached — upgrade plan at app.n8n.cloud/account/change-plan`
+        : `last exec ${latestExec.status}${ageMin != null ? ` (${ageMin}m ago)` : ""}${issueSummaries.length ? `; config: ${issueSummaries.join(" | ")}` : ""}`;
       return {
         status: "warn",
-        detail: `last exec ${latestExec.status}${ageMin != null ? ` (${ageMin}m ago)` : ""}${issueSummaries.length ? `; config: ${issueSummaries.join(" | ")}` : ""}`,
+        detail: errorDetail,
         noData: false,
         lastExecAt: finished,
         lastExecStatus: latestExec.status,
@@ -4241,7 +4251,143 @@ function analyticsKeyboard() {
   ]);
 }
 
+const PUBLIC_SCHOOL_TOTALS_BY_STATE = [
+  ["Alabama", 399],
+  ["Alaska", 266],
+  ["Arizona", 616],
+  ["Arkansas", 307],
+  ["California", 2525],
+  ["Colorado", 518],
+  ["Connecticut", 207],
+  ["Delaware", 60],
+  ["Florida", 1053],
+  ["Georgia", 487],
+  ["Hawaii", 69],
+  ["Idaho", 255],
+  ["Illinois", 714],
+  ["Indiana", 440],
+  ["Iowa", 353],
+  ["Kansas", 388],
+  ["Kentucky", 369],
+  ["Louisiana", 361],
+  ["Maine", 123],
+  ["Maryland", 253],
+  ["Massachusetts", 409],
+  ["Michigan", 1158],
+  ["Minnesota", 820],
+  ["Mississippi", 240],
+  ["Missouri", 586],
+  ["Montana", 168],
+  ["Nebraska", 271],
+  ["Nevada", 165],
+  ["New Hampshire", 97],
+  ["New Jersey", 492],
+  ["New Mexico", 239],
+  ["New York", 1406],
+  ["North Carolina", 739],
+  ["North Dakota", 174],
+  ["Ohio", 992],
+  ["Oklahoma", 471],
+  ["Oregon", 344],
+  ["Pennsylvania", 723],
+  ["Rhode Island", 64],
+  ["South Carolina", 264],
+  ["South Dakota", 187],
+  ["Tennessee", 450],
+  ["Texas", 2122],
+  ["Utah", 225],
+  ["Vermont", 56],
+  ["Virginia", 344],
+  ["Washington", 687],
+  ["West Virginia", 128],
+  ["Wisconsin", 582],
+  ["Wyoming", 94],
+];
+const PUBLIC_SCHOOL_TOTALS_US_TOTAL = 24460;
+
+function fallbackStateCoverageRows() {
+  return PUBLIC_SCHOOL_TOTALS_BY_STATE.map(([state, schoolsInState]) => ({
+    state,
+    schoolsInState,
+    schoolsContacted: 0,
+    schoolsResponded: 0,
+    coachesContacted: 0,
+    coachesResponded: 0,
+    countiesReached: 0,
+  }));
+}
+
 // ---------- DASHBOARD TEXT ----------
+// =====================================================
+// SCHOOLS COVERAGE QUERY FUNCTIONS
+// =====================================================
+
+async function sbGlobalCoverageSummary() {
+  try {
+    const { data, error } = await ops()
+      .from("v_global_coverage_summary")
+      .select(
+        "schools_in_database,schools_reached,schools_responded,coaches_contacted,coaches_responded,counties_reached,states_with_activity"
+      )
+      .single();
+
+    if (error) {
+      console.error("❌ Global coverage query error:", error);
+      return { total: PUBLIC_SCHOOL_TOTALS_US_TOTAL, reached: 0, responded: 0 };
+    }
+
+    if (!data) {
+      return { total: PUBLIC_SCHOOL_TOTALS_US_TOTAL, reached: 0, responded: 0 };
+    }
+
+    return {
+      total: data?.schools_in_database || PUBLIC_SCHOOL_TOTALS_US_TOTAL,
+      reached: data?.schools_reached || 0,
+      responded: data?.schools_responded || 0,
+      coachesContacted: data?.coaches_contacted || 0,
+      coachesResponded: data?.coaches_responded || 0,
+      countiesReached: data?.counties_reached || 0,
+      statesActive: data?.states_with_activity || 0,
+    };
+  } catch (err) {
+    console.error("❌ Global coverage fetch failed:", err);
+    return { total: PUBLIC_SCHOOL_TOTALS_US_TOTAL, reached: 0, responded: 0 };
+  }
+}
+
+async function sbStateCoverageWithResponses() {
+  try {
+    const { data, error } = await ops()
+      .from("v_active_states_with_responses")
+      .select(
+        "state,schools_in_state,schools_contacted,schools_responded,coaches_contacted,coaches_responded,counties_reached"
+      )
+      .order("schools_contacted", { ascending: false });
+
+    if (error) {
+      console.error("❌ State coverage query error:", error);
+      return [];
+    }
+
+    if (!Array.isArray(data) || data.length === 0) {
+      return [];
+    }
+
+    return (data || []).map((row) => ({
+      state: row.state,
+      schoolsInState: row.schools_in_state,
+      schoolsContacted: row.schools_contacted,
+      schoolsResponded: row.schools_responded,
+      coachesContacted: row.coaches_contacted,
+      coachesResponded: row.coaches_responded,
+      countiesReached: row.counties_reached,
+    }));
+  } catch (err) {
+    console.error("❌ State coverage fetch failed:", err);
+    return [];
+  }
+}
+
 async function dashboardText(filterSource = "all") {
 const cacheKey = String(filterSource || "all");
 const cached = dashboardTextCache.get(cacheKey);
@@ -4259,6 +4405,34 @@ const getCachedDashboardMetrics = async () => {
     () => sbMetricSummary({ source: filterSource, window: "all" }).catch(() => ({}))
   );
   dashboardMetricsCache.set(cacheKey, { ts: Date.now(), data });
+  return data;
+};
+
+const getCachedGlobalCoverage = async () => {
+  const globalKey = `${cacheKey}_global_coverage`;
+  const cachedGlobal = dashboardMetricsCache.get(globalKey);
+  if (cachedGlobal && Date.now() - cachedGlobal.ts < DASHBOARD_COVERAGE_CACHE_TTL_MS) {
+    return cachedGlobal.data;
+  }
+  const data = await trackPerf(
+    `dashboard.global_coverage.${filterSource}`,
+    () => sbGlobalCoverageSummary().catch(() => ({}))
+  );
+  dashboardMetricsCache.set(globalKey, { ts: Date.now(), data });
+  return data;
+};
+
+const getCachedStateCoverage = async () => {
+  const stateKey = `${cacheKey}_state_coverage`;
+  const cachedStates = dashboardMetricsCache.get(stateKey);
+  if (cachedStates && Date.now() - cachedStates.ts < DASHBOARD_COVERAGE_CACHE_TTL_MS) {
+    return cachedStates.data;
+  }
+  const data = await trackPerf(
+    `dashboard.state_coverage.${filterSource}`,
+    () => sbStateCoverageWithResponses().catch(() => [])
+  );
+  dashboardMetricsCache.set(stateKey, { ts: Date.now(), data });
   return data;
 };
 
@@ -4281,6 +4455,8 @@ const needsReplyBreakdownPromise = sbNeedsReplyBreakdown({ source: filterSource 
 const urgentCombinedPromise = sbCountUrgentCombined({ source: filterSource, role: "all" });
 const forwardedCombinedPromise = sbCountForwardedCombined({ source: filterSource });
 const metricSummaryPromise = getCachedDashboardMetrics();
+const globalCoveragePromise = getCachedGlobalCoverage();
+const stateCoveragePromise = getCachedStateCoverage();
 const opsDeliveryPromise = getCachedOpsDelivery();
 const [
 handoffCount,
@@ -4294,6 +4470,8 @@ completedCount,
 submissionsCount,
 callsCount,
 lastIngestAt,
+globalCoverage,
+stateCoverage,
 opsDelivery,
 ] = await trackPerf(`dashboard.counts.${filterSource}`, () => Promise.all([
 sbCountHandoffPending({ source: filterSource }),
@@ -4308,6 +4486,8 @@ sbCountSubmissions(),
 sbCountCalls(),
 // In speed mode skip expensive ingest timestamp call on every dashboard open.
 DASHBOARD_SPEED_MODE ? Promise.resolve(null) : sbGetLastOpsEventTimestamp(),
+globalCoveragePromise,
+stateCoveragePromise,
 opsDeliveryPromise,
 ]));
 
@@ -4363,6 +4543,7 @@ filterLabel,
 staleWarning,
 capped,
 metrics: m,
+globalSchoolsCoverage: globalCoverage,
 opsDelivery,
 });
 dashboardTextCache.set(cacheKey, { ts: Date.now(), text: rendered });
@@ -4392,6 +4573,7 @@ Markup.button.callback("👥 Clients", "CLIENTS:open"),
 ],
 [
 Markup.button.callback("🩺 Health", "HEALTH:open"),
+Markup.button.callback("🎯 Coverage", "COVERAGE:open"),
 Markup.button.callback("↻ Refresh", "DASH:refresh"),
 ],
 ]);
@@ -5348,6 +5530,28 @@ if (!isAdmin(ctx)) return;
 const wd = await runDataWatchdog({ forceSchema: true });
 await smartRender(ctx, buildWatchdogCardText(wd), watchdogKeyboard());
 }));
+
+// =====================================================
+// COVERAGE BUTTON - State breakdown
+// =====================================================
+
+bot.action("COVERAGE:open", safeCommand(async (ctx) => {
+  if (!(await requireAdminOrNotify(ctx, "coverage_command"))) return;
+
+  const stateCoverage = await sbStateCoverageWithResponses();
+  const text = buildStateCoverageWithResponses(stateCoverage);
+
+  await smartRender(ctx, text, coverageKeyboard());
+}));
+
+function coverageKeyboard() {
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback("🏠 Dashboard", "DASH:back"),
+      Markup.button.callback("↻ Refresh", "COVERAGE:open"),
+    ],
+  ]);
+}
 
 // ---------- FILTER ----------
 bot.action(/^FILTER:(all|programs|support)$/, safeAction(async (ctx) => {
@@ -11047,6 +11251,27 @@ async function buildFirmReadinessReport() {
   );
   await runSchemaCheck("click_events_forwarded_columns", () =>
     ops().from("click_events").select("id, dedupe_key, is_unique_forwarded, person_key, actor_type, actor_id").limit(1)
+  );
+  await runSchemaCheck("schools_registry_contract", () =>
+    ops().from("schools_registry").select("id, school_id, school_name, state, county").limit(1)
+  );
+  await runSchemaCheck("school_outreach_events_contract", () =>
+    ops()
+      .from("school_outreach_events")
+      .select("id, school_id, state, coach_email, response_received, school_response_received")
+      .limit(1)
+  );
+  await runSchemaCheck("v_global_coverage_summary_contract", () =>
+    ops()
+      .from("v_global_coverage_summary")
+      .select("schools_in_database, schools_reached, schools_responded, coaches_contacted, coaches_responded, counties_reached, states_with_activity")
+      .limit(1)
+  );
+  await runSchemaCheck("v_active_states_with_responses_contract", () =>
+    ops()
+      .from("v_active_states_with_responses")
+      .select("state, schools_in_state, schools_contacted, schools_responded, coaches_contacted, coaches_responded, counties_reached")
+      .limit(1)
   );
 
   const ok = criticalFailures.length === 0;
