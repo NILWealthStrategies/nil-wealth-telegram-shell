@@ -5,6 +5,7 @@ BOT_BASE="${BOT_BASE:-https://nil-wealth-telegram-shell.onrender.com}"
 N8N_BASE="${N8N_BASE:-https://nilwealthstrategies.app.n8n.cloud}"
 CF_BASE="${CF_BASE:-https://access.mynilwealthstrategies.com}"
 STRICT_WARN="${STRICT_WARN:-false}"
+N8N_API_KEY="${N8N_API_KEY:-}"
 
 find_bin() {
   local name="$1"
@@ -85,7 +86,28 @@ check_url "Bot /health" "$BOT_BASE/health" '"ok":true'
 check_url "Bot /ready" "$BOT_BASE/ready" '"ok":true'
 check_url "Bot /ready/firm" "$BOT_BASE/ready/firm" '"ok":true'
 check_url "n8n /healthz" "$N8N_BASE/healthz" '"status":"ok"'
-check_url "n8n /rest/workflows" "$N8N_BASE/rest/workflows" ''
+if [[ -n "$N8N_API_KEY" ]]; then
+  tmp="/tmp/quick_audit_n8n_$$"
+  code="$($CURL_BIN -sS -L --max-time 15 -o "$tmp" -w '%{http_code}' -H "X-N8N-API-KEY: $N8N_API_KEY" "$N8N_BASE/rest/workflows?limit=1" || true)"
+  body=""
+  if [[ -f "$tmp" ]]; then
+    body="$($CAT_BIN "$tmp")"
+    $RM_BIN -f "$tmp"
+  fi
+  if [[ "$code" == "200" ]]; then
+    echo "PASS  n8n /rest/workflows auth ($code)"
+    pass_count=$((pass_count + 1))
+  elif [[ "$code" == "401" || "$code" == "403" ]]; then
+    echo "WARN  n8n /rest/workflows auth ($code) key invalid/insufficient"
+    warn_count=$((warn_count + 1))
+  else
+    preview="$(echo "$body" | $SED_BIN -E 's/[[:space:]]+/ /g' | $SED_BIN -n '1p' | $CUT_BIN -c1-120)"
+    echo "FAIL  n8n /rest/workflows auth ($code) ${preview}"
+    fail_count=$((fail_count + 1))
+  fi
+else
+  check_url "n8n /rest/workflows" "$N8N_BASE/rest/workflows" ''
+fi
 check_url "Cloudflare /parent-guide" "$CF_BASE/parent-guide" ''
 check_url "Cloudflare /supplemental-health-guide" "$CF_BASE/supplemental-health-guide" ''
 check_url "Cloudflare /risk-awareness-guide" "$CF_BASE/risk-awareness-guide" ''
