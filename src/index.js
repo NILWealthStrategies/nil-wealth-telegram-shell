@@ -1680,7 +1680,11 @@ function buildWatchdogCardText(wd) {
   const schema = snapshot.schema || {};
   const staleItems = (freshness.checks || [])
     .filter((c) => c.status === "stale")
-    .map((c) => `${c.name} (${c.ageMinutes}m)`)
+    .map((c) => {
+      const ageText = Number.isFinite(c?.ageMinutes) ? `${c.ageMinutes}m` : "unknown";
+      const rowsText = Number.isFinite(c?.rowCount) ? String(c.rowCount) : "?";
+      return `${c.name} (${ageText}, rows:${rowsText})`;
+    })
     .slice(0, 5);
   const freshnessUnknownCount = (freshness.checks || []).filter((c) => c.status === "unknown").length;
   const explainRecCheck = (check) => {
@@ -3099,16 +3103,22 @@ async function sbWatchdogFreshnessChecks() {
 
   const checks = [];
   for (const t of targets) {
+    const rowCount = await sbCountRowsSafe(t.relation);
+    const isEmpty = Number.isFinite(rowCount) && rowCount === 0;
     const latestAt = await sbLatestTimestampFromRelation(t.relation, t.columns);
     const ageMinutes = ageMinutesSince(latestAt);
-    const status = ageMinutes == null
+    const status = isEmpty
       ? "ok"
+      : ageMinutes == null
+        ? "unknown"
       : ageMinutes > WATCHDOG_STALE_MINUTES
         ? "stale"
         : "ok";
     checks.push({
       name: t.name,
       relation: t.relation,
+      rowCount,
+      isEmpty,
       latestAt: latestAt || null,
       ageMinutes,
       status,
