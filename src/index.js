@@ -146,6 +146,7 @@ String(process.env.ENABLE_PERF_LOGS || "false").toLowerCase() === "true";
 const PERF_LOG_WARN_MS = Number(process.env.PERF_LOG_WARN_MS || 1200);
 const WATCHDOG_INTERVAL_MS = Number(process.env.WATCHDOG_INTERVAL_MS || 60 * 60 * 1000);
 const WATCHDOG_STALE_MINUTES = Number(process.env.WATCHDOG_STALE_MINUTES || 60);
+const WATCHDOG_STALE_MINUTES_CLICK_EVENTS = Number(process.env.WATCHDOG_STALE_MINUTES_CLICK_EVENTS || 240);
 const WATCHDOG_SCHEMA_CHECK_INTERVAL_MS = Number(process.env.WATCHDOG_SCHEMA_CHECK_INTERVAL_MS || 60 * 60 * 1000);
 const WORKFLOW_HEALTH_DEFAULT_STALE_MINUTES = Number(process.env.WORKFLOW_HEALTH_DEFAULT_STALE_MINUTES || 60);
 function normalizeAbsoluteHttpUrl(raw) {
@@ -1747,6 +1748,7 @@ Overall: ${watchdogStatusDisplay(snapshot.overallStatus)}
 
 Freshness: ${watchdogStatusDisplay(freshness.overall)}
 Stale Threshold: ${freshness.staleThresholdMinutes || WATCHDOG_STALE_MINUTES}m
+Click Events Threshold: ${freshness.clickEventsStaleThresholdMinutes || WATCHDOG_STALE_MINUTES_CLICK_EVENTS}m
 Stale Sources: ${staleItems.length ? staleItems.join(", ") : "none"}
 If wrong: ${staleItems.length ? "one or more feeds have not updated in time" : freshnessUnknownCount ? "some feeds have no readable timestamp" : "none"}
 
@@ -3090,19 +3092,20 @@ async function sbLatestTimestampFromRelation(relation, columnCandidates) {
 
 async function sbWatchdogFreshnessChecks() {
   const targets = [
-    { name: "ops_events", relation: "ops_events", columns: ["created_at"] },
-    { name: "conversations", relation: "conversations", columns: ["updated_at", "created_at"] },
-    { name: "metric_events", relation: "metric_events", columns: ["created_at"] },
-    { name: "click_events", relation: "click_events", columns: ["created_at"] },
-    { name: "email_outbox", relation: "email_outbox", columns: ["updated_at", "created_at", "sent_at"] },
-    { name: "sms_outbox", relation: "sms_outbox", columns: ["updated_at", "created_at", "sent_at"] },
-    { name: "processed_events", relation: "processed_events", columns: ["created_at"] },
-    { name: "dead_letter_events", relation: "dead_letter_events", columns: ["created_at"] },
-    { name: "support_tickets", relation: "support_tickets", columns: ["updated_at", "created_at"] },
+    { name: "ops_events", relation: "ops_events", columns: ["created_at"], staleMinutes: WATCHDOG_STALE_MINUTES },
+    { name: "conversations", relation: "conversations", columns: ["updated_at", "created_at"], staleMinutes: WATCHDOG_STALE_MINUTES },
+    { name: "metric_events", relation: "metric_events", columns: ["created_at"], staleMinutes: WATCHDOG_STALE_MINUTES },
+    { name: "click_events", relation: "click_events", columns: ["created_at"], staleMinutes: WATCHDOG_STALE_MINUTES_CLICK_EVENTS },
+    { name: "email_outbox", relation: "email_outbox", columns: ["updated_at", "created_at", "sent_at"], staleMinutes: WATCHDOG_STALE_MINUTES },
+    { name: "sms_outbox", relation: "sms_outbox", columns: ["updated_at", "created_at", "sent_at"], staleMinutes: WATCHDOG_STALE_MINUTES },
+    { name: "processed_events", relation: "processed_events", columns: ["created_at"], staleMinutes: WATCHDOG_STALE_MINUTES },
+    { name: "dead_letter_events", relation: "dead_letter_events", columns: ["created_at"], staleMinutes: WATCHDOG_STALE_MINUTES },
+    { name: "support_tickets", relation: "support_tickets", columns: ["updated_at", "created_at"], staleMinutes: WATCHDOG_STALE_MINUTES },
   ];
 
   const checks = [];
   for (const t of targets) {
+    const staleMinutes = Number.isFinite(t?.staleMinutes) ? t.staleMinutes : WATCHDOG_STALE_MINUTES;
     const rowCount = await sbCountRowsSafe(t.relation);
     const isEmpty = Number.isFinite(rowCount) && rowCount === 0;
     const latestAt = await sbLatestTimestampFromRelation(t.relation, t.columns);
@@ -3111,12 +3114,13 @@ async function sbWatchdogFreshnessChecks() {
       ? "ok"
       : ageMinutes == null
         ? "unknown"
-      : ageMinutes > WATCHDOG_STALE_MINUTES
+      : ageMinutes > staleMinutes
         ? "stale"
         : "ok";
     checks.push({
       name: t.name,
       relation: t.relation,
+      staleMinutes,
       rowCount,
       isEmpty,
       latestAt: latestAt || null,
@@ -3129,6 +3133,7 @@ async function sbWatchdogFreshnessChecks() {
   return {
     overall: hasStale ? "warn" : "ok",
     staleThresholdMinutes: WATCHDOG_STALE_MINUTES,
+    clickEventsStaleThresholdMinutes: WATCHDOG_STALE_MINUTES_CLICK_EVENTS,
     checks,
   };
 }
