@@ -89,7 +89,7 @@ const {
 } = require("./lib/view-utils");
 // ---------- VERSION ----------
 const CODE_VERSION =
-"Index.js V8.0";
+"Index.js V8.2";
 const BUILD_VERSION =
 process.env.BUILD_VERSION ||
 process.env.RENDER_GIT_COMMIT ||
