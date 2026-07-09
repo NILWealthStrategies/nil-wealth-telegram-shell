@@ -11,7 +11,10 @@
     "start:bot": "node src/index.js",
     "start:web": "next start",
     "test": "node scripts/startup-guard.js",
+    "release:guarded": "bash scripts/guarded_release.sh",
     "support:sync": "node scripts/patch_wf02_wf03_support_knowledge_live.js",
+    "wf04:validate": "node scripts/validate_wf04_v2_predeploy.js",
+    "wf04:sync": "node scripts/patch_wf04_v2_live.js",
     "support:autosync": "node scripts/auto_sync_support_knowledge.js",
     "support:autosync:once": "node scripts/auto_sync_support_knowledge.js --once",
     "test:scenarios": "node scripts/scenario-tone-test.js"
