@@ -3110,8 +3110,12 @@ async function sbWatchdogFreshnessChecks() {
     const isEmpty = Number.isFinite(rowCount) && rowCount === 0;
     const latestAt = await sbLatestTimestampFromRelation(t.relation, t.columns);
     const ageMinutes = ageMinutesSince(latestAt);
+    const latestMs = latestAt ? new Date(latestAt).getTime() : NaN;
+    const historicalOnly = Number.isFinite(latestMs) && latestMs < APP_BOOT_TS_MS;
     const status = isEmpty
       ? "ok"
+      : historicalOnly
+        ? "ok"
       : ageMinutes == null
         ? "unknown"
       : ageMinutes > staleMinutes
@@ -3123,6 +3127,7 @@ async function sbWatchdogFreshnessChecks() {
       staleMinutes,
       rowCount,
       isEmpty,
+      historicalOnly,
       latestAt: latestAt || null,
       ageMinutes,
       status,
