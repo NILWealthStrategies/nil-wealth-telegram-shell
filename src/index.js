@@ -1759,8 +1759,6 @@ Last Run: ${snapshot.lastRunAt || "never"}
 Overall: ${watchdogStatusDisplay(snapshot.overallStatus)}
 
 Freshness: ${watchdogStatusDisplay(freshness.overall)}
-Stale Threshold: ${freshness.staleThresholdMinutes || WATCHDOG_STALE_MINUTES}m
-Click Events Threshold: ${freshness.clickEventsStaleThresholdMinutes || WATCHDOG_STALE_MINUTES_CLICK_EVENTS}m
 Stale Sources: ${staleItems.length ? staleItems.join(", ") : "none"}
 If wrong: ${staleItems.length ? "one or more feeds have not updated in time" : freshnessUnknownCount ? "some feeds have no readable timestamp" : "none"}
 
