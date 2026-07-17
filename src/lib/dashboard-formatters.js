@@ -378,9 +378,8 @@ ${codeVersion} • Build: ${String(buildVersion).slice(0, 8)}
 📅 Today: ${today}
 🕐 NY Time: ${time}
 🌎 Filter: ${filterLabel}
-🔄 Last Sync: ${lastSyncLabel || '—'}
 
-� BUSINESS SNAPSHOT
+📷 BUSINESS SNAPSHOT
 
 📧 Emails Sent: ${n(s.emailsSent)}
 💬 Coach Replies: ${n(s.coachReplies)}

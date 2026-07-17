@@ -1770,7 +1770,7 @@ If wrong: ${recIssueLines.length ? recIssueLines.join("; ") : "none"}
 Cards & Dashboard: ${watchdogStatusDisplay(cards.overall)}
 If wrong: ${cardIssueLines.length ? cardIssueLines.join("; ") : "none"}
 
-Workflows WF01-WF09: ${watchdogStatusDisplay(workflows.overall)}
+V9 Workflows: ${watchdogStatusDisplay(workflows.overall)}
 Warnings: ${workflowWarnCount} · Unknown: ${workflowUnknownCount}
 ${workflowLines.length ? workflowLines.join("\n") : "No workflow signals yet"}
 If wrong: ${workflowIssueLines.length ? workflowIssueLines.join("; ") : "none"}
@@ -3665,17 +3665,16 @@ function deriveWfHealthFromLive(wfDef, liveWorkflows, executions, workflowDetail
 async function sbWatchdogWorkflowChecks() {
   const { workflows: liveWorkflows, executions, workflowDetails, error: apiError } = await fetchN8nLiveData();
 
-  // WF01–WF09 definitions with keyword sets matching real n8n workflow names
+  // V9 workflow definitions — keywords match actual n8n workflow names
   const wfDefs = [
-    { id: "WF01", name: "Form + Calendly Intake",    keywords: ["instant submission", "intake", "form", "calendly"] },
-    { id: "WF02", name: "Gmail Support Watch",        keywords: ["support handler", "gmail support", "support watch", "gmail"] },
-    { id: "WF03", name: "Send Executor + CC Support", keywords: ["cc support", "send executor"] },
-    { id: "WF04", name: "Lead Pipeline",              keywords: ["lead generation", "lead pipeline", "lead gen"] },
-    { id: "WF05", name: "Ops + Maintenance",          keywords: ["dead letter replayer", "mirror reconciler", "role conflict", "dead letter", "maintenance"] },
-    { id: "WF06", name: "Analytics Ingest",           keywords: ["analytics sync", "analytics ingest", "analytics"] },
-    { id: "WF07", name: "Event Intelligence",         keywords: ["conversation identity", "identity linker", "event intel"] },
-    { id: "WF08", name: "Outbox Dispatcher",          keywords: ["outbox", "send emails", "outbox dispatcher"] },
-    { id: "WF09", name: "Ops Ingest Sender",          keywords: ["sla escalator", "ops ingest", "instantly campaign"] },
+    { id: "WF-V9-01", name: "Website Intake Hub",          keywords: ["website intake", "vercel", "instant submission", "intake hub", "wf-v9-01"] },
+    { id: "WF-V9-02", name: "Support Ingest & Triage",     keywords: ["support ingest", "support triage", "ingest triage", "wf-v9-02"] },
+    { id: "WF-V9-03", name: "Support Response Executor",   keywords: ["support response", "response executor", "send executor", "wf-v9-03"] },
+    { id: "WF-V9-05", name: "Instantly Analytics Sync",    keywords: ["instantly analytics", "analytics sync", "wf-v9-05"] },
+    { id: "WF-V9-06", name: "Event Ingest Hub",            keywords: ["event ingest", "event hub", "cloudflare", "calendly", "wf-v9-06"] },
+    { id: "WF-V9-08", name: "Daily Ops & Health Monitor",  keywords: ["daily ops", "health monitor", "ops maintenance", "wf-v9-08"] },
+    { id: "WF08",     name: "Outbox Dispatcher",            keywords: ["outbox", "send emails", "outbox dispatcher"] },
+    { id: "WF09",     name: "Ops Ingest Sender",            keywords: ["ops ingest sender", "ops ingest", "sla escalator", "instantly campaign"] },
   ];
 
   const checks = wfDefs.map((wfDef) => {
