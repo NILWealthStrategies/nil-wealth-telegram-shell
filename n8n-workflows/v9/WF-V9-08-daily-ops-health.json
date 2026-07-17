@@ -1,0 +1,242 @@
+{
+  "name": "WF-V9-08 | Daily Ops & Health Monitor",
+  "nodes": [
+    {
+      "id": "note",
+      "name": "📋 About This Workflow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 60],
+      "parameters": {
+        "content": "## WF-V9-08 — Daily Ops & Health Monitor\n\n**What it does:** Runs every morning at 7 AM ET (12:00 UTC). Pulls four things from Supabase in parallel:\n\n1. Campaign metrics from nil.analytics_metrics (Emails Sent, Coach Replies, Positive Replies from the last Instantly sync)\n2. Today's form submissions count from nil.submissions\n3. Unresolved dead letters from nil.dead_letters\n4. Open support tickets from nil.support_tickets\n\nBuilds a single plain-text Telegram summary and sends it to the ops chat. If dead letters exceed 5, sends a separate alert. Posts a heartbeat to the ops ingest sender so the bot's Health screen shows this workflow is alive.\n\n**Why it matters:** Without this, you only notice problems when coaches complain. This is your morning briefing and system health check in one workflow.\n\n**Runs:** 7 AM ET daily.\n\n**Tables read:** nil.analytics_metrics, nil.submissions, nil.dead_letters, nil.support_tickets\n\n**Replaces:** NIL WF05 — Ops & Maintenance — V20\n**Also retires:** NIL Mirror Reconciler, NIL Role Conflict Resolver, NIL Dead Letter Replayer, NIL Conversation Identity Linker",
+        "height": 300,
+        "width": 920,
+        "color": 4
+      }
+    },
+    {
+      "id": "schedule",
+      "name": "Daily 7 AM ET",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [200, 420],
+      "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "0 12 * * *" }] }
+      }
+    },
+    {
+      "id": "get-metrics",
+      "name": "Get Campaign Metrics",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [440, 280],
+      "parameters": {
+        "operation": "get",
+        "schema": "nil",
+        "tableId": "analytics_metrics",
+        "returnAll": false,
+        "limit": 1,
+        "filters": { "conditions": [{ "keyName": "metric_key", "value": "instantly_campaign_totals" }] }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-nil", "name": "Supabase NIL Wealth" } }
+    },
+    {
+      "id": "get-submissions",
+      "name": "Get Today Submissions",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [440, 420],
+      "parameters": {
+        "operation": "get",
+        "schema": "nil",
+        "tableId": "submissions",
+        "returnAll": false,
+        "limit": 500,
+        "filters": {
+          "conditions": [{
+            "keyName": "created_at",
+            "condition": "gte",
+            "value": "={{ new Date(new Date().setHours(0,0,0,0)).toISOString() }}"
+          }]
+        }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-nil", "name": "Supabase NIL Wealth" } }
+    },
+    {
+      "id": "get-dead-letters",
+      "name": "Get Dead Letters",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [440, 560],
+      "parameters": {
+        "operation": "get",
+        "schema": "nil",
+        "tableId": "dead_letters",
+        "returnAll": false,
+        "limit": 100,
+        "filters": {
+          "conditions": [{ "keyName": "resolved_at", "condition": "null", "value": "" }]
+        }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-nil", "name": "Supabase NIL Wealth" } }
+    },
+    {
+      "id": "get-tickets",
+      "name": "Get Open Tickets",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [440, 700],
+      "parameters": {
+        "operation": "get",
+        "schema": "nil",
+        "tableId": "support_tickets",
+        "returnAll": false,
+        "limit": 500,
+        "filters": {
+          "conditions": [{ "keyName": "status", "condition": "in", "value": "new,needs_human,queued_auto" }]
+        }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-nil", "name": "Supabase NIL Wealth" } }
+    },
+    {
+      "id": "build-summary",
+      "name": "Build Daily Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 490],
+      "parameters": {
+        "jsCode": "const metrics = $('Get Campaign Metrics').first()?.json || {};\nconst submissionCount = $('Get Today Submissions').all().length;\nconst deadLetterCount = $('Get Dead Letters').all().length;\nconst openTicketCount = $('Get Open Tickets').all().length;\nconst todayStr = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'numeric', day: 'numeric', year: 'numeric' }).format(new Date());\nconst timeStr = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true }).format(new Date());\nconst lastSync = metrics.synced_at ? new Date(metrics.synced_at).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true }) + ' ET' : 'never';\nconst summary = [\n  '📅 DAILY OPS SUMMARY — ' + todayStr,\n  '',\n  '📊 CAMPAIGN (All-Time)',\n  '📧 Emails Sent: ' + (metrics.emails_sent || 0),\n  '💬 Coach Replies: ' + (metrics.coach_replies || 0),\n  '👍 Positive Replies: ' + (metrics.positive_replies || 0),\n  '',\n  '📋 TODAY',\n  '🌐 Website Forms: ' + submissionCount,\n  '🎫 Open Support Tickets: ' + openTicketCount,\n  '💀 Unresolved Dead Letters: ' + deadLetterCount,\n  '',\n  '🔄 Last Instantly Sync: ' + lastSync,\n  '',\n  timeStr + ' ET — V9 Daily Check'\n].join('\\n');\nreturn [{ json: { summary, dead_letter_count: deadLetterCount, open_ticket_count: openTicketCount, has_issues: deadLetterCount > 5 } }];"
+      }
+    },
+    {
+      "id": "send-summary",
+      "name": "Send Daily Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [940, 380],
+      "parameters": {
+        "authentication": "headerAuth",
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "chat_id", "value": "={{ $env.TELEGRAM_CHAT_ID }}" },
+            { "name": "text", "value": "={{ $json.summary }}" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "has-issues",
+      "name": "Has Issues?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [940, 560],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            { "id": "c1", "leftValue": "={{ $json.has_issues }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equal" } }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "issue-alert",
+      "name": "Issue Alert → Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1180, 480],
+      "parameters": {
+        "authentication": "headerAuth",
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "chat_id", "value": "={{ $env.TELEGRAM_CHAT_ID }}" },
+            { "name": "text", "value": "=⚠️ SYSTEM ATTENTION NEEDED\n\n💀 Dead Letters: {{ $json.dead_letter_count }} unresolved\n🎫 Open Tickets: {{ $json.open_ticket_count }}\n\nCheck 🩺 Health in the Telegram bot." }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "heartbeat",
+      "name": "Heartbeat to Bot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1180, 680],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_INGEST_SENDER_URL }}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Content-Type", "value": "application/json" }] },
+        "sendBody": true,
+        "jsonBody": "={{ { payload: { schema_version: '5.3', event_type: 'n8n.heartbeat', source: 'wf_v9_08', direction: 'inbound', trace_id: $execution.id, idempotency_key: 'heartbeat|wf_v9_08|' + $now, payload: { workflow: 'WF-V9-08', status: 'ok' } } } }}"
+      }
+    },
+    {
+      "id": "error-trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [200, 940],
+      "parameters": {}
+    },
+    {
+      "id": "error-notify",
+      "name": "Error → Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [440, 940],
+      "parameters": {
+        "authentication": "headerAuth",
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "chat_id", "value": "={{ $env.TELEGRAM_CHAT_ID }}" },
+            { "name": "text", "value": "=⚠️ WF-V9-08 DAILY OPS ERROR\n{{ $json.error.message }}\nExecution: {{ $execution.id }}" }
+          ]
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Daily 7 AM ET": {
+      "main": [[
+        { "node": "Get Campaign Metrics", "type": "main", "index": 0 },
+        { "node": "Get Today Submissions", "type": "main", "index": 0 },
+        { "node": "Get Dead Letters", "type": "main", "index": 0 },
+        { "node": "Get Open Tickets", "type": "main", "index": 0 }
+      ]]
+    },
+    "Get Campaign Metrics": { "main": [[{ "node": "Build Daily Summary", "type": "main", "index": 0 }]] },
+    "Get Today Submissions": { "main": [[{ "node": "Build Daily Summary", "type": "main", "index": 0 }]] },
+    "Get Dead Letters": { "main": [[{ "node": "Build Daily Summary", "type": "main", "index": 0 }]] },
+    "Get Open Tickets": { "main": [[{ "node": "Build Daily Summary", "type": "main", "index": 0 }]] },
+    "Build Daily Summary": {
+      "main": [[
+        { "node": "Send Daily Summary", "type": "main", "index": 0 },
+        { "node": "Has Issues?", "type": "main", "index": 0 }
+      ]]
+    },
+    "Has Issues?": {
+      "main": [
+        [{ "node": "Issue Alert → Telegram", "type": "main", "index": 0 }],
+        [{ "node": "Heartbeat to Bot", "type": "main", "index": 0 }]
+      ]
+    },
+    "Issue Alert → Telegram": { "main": [[{ "node": "Heartbeat to Bot", "type": "main", "index": 0 }]] },
+    "Send Daily Summary": { "main": [[{ "node": "Heartbeat to Bot", "type": "main", "index": 0 }]] },
+    "Error Trigger": { "main": [[{ "node": "Error → Telegram", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "tags": [{ "name": "V9" }]
+}

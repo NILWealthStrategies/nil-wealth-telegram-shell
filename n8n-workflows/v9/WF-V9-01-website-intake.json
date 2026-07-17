@@ -1,0 +1,283 @@
+{
+  "name": "WF-V9-01 | Website Intake Hub",
+  "nodes": [
+    {
+      "id": "note",
+      "name": "📋 About This Workflow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 60],
+      "parameters": {
+        "content": "## WF-V9-01 — Website Intake Hub\n\n**What it does:** Receives every form submission from the NIL Wealth Strategies website, validates the data, checks for duplicates, stores it in Supabase (nil.submissions), sends a SendGrid confirmation email, sends a Twilio SMS if a phone number was provided, and notifies the Telegram ops dashboard.\n\n**Why it matters:** This is the front door. Every parent or athlete who fills out the website form comes through here. Without this workflow, submissions are lost, no one gets a confirmation, and the bot's /submissions screen stays empty.\n\n**Webhook path:** vercel-instant-submission — unchanged from V20, Vercel already points here. No URL change needed.\n\n**Tables written:** nil.submissions\n\n**Replaces:** NIL WF01 — Form & Calendly Intake — V20",
+        "height": 240,
+        "width": 860,
+        "color": 4
+      }
+    },
+    {
+      "id": "webhook",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 360],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "vercel-instant-submission",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "validate",
+      "name": "Validate Submission",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 360],
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst submissionId = body.idempotency_key || `sub_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;\nconst submission = {\n  submission_id: submissionId,\n  first_name: body.first_name || '',\n  last_name: body.last_name || '',\n  email: (body.email || '').toLowerCase().trim(),\n  phone: String(body.phone || '').replace(/\\D/g, ''),\n  state: body.state || '',\n  role: body.role || 'parent',\n  coverage_accident: body.coverage_accident || false,\n  coverage_hospital_indemnity: body.coverage_hospital_indemnity || false,\n  athlete_name: body.athlete_name || '',\n  athlete_age: body.athlete_age || null,\n  sport: body.sport || '',\n  notes: body.notes || '',\n  utm_source: body.utm_source || '',\n  utm_campaign: body.utm_campaign || '',\n  tracking_code: body.pk || body.tracking_code || '',\n  submission_payload: body\n};\nif (!submission.email && !submission.first_name) throw new Error('Missing required fields');\nreturn [{ json: submission }];"
+      }
+    },
+    {
+      "id": "dedup-check",
+      "name": "Check Duplicate",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [680, 360],
+      "parameters": {
+        "operation": "get",
+        "schema": "nil",
+        "tableId": "submissions",
+        "returnAll": false,
+        "limit": 1,
+        "filters": {
+          "conditions": [
+            { "keyName": "submission_id", "value": "={{ $json.submission_id }}" }
+          ]
+        }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-nil", "name": "Supabase NIL Wealth" } }
+    },
+    {
+      "id": "is-new",
+      "name": "New or Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [920, 360],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            { "id": "c1", "leftValue": "={{ $json.id }}", "rightValue": "", "operator": { "type": "string", "operation": "empty" } }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "store",
+      "name": "Store in Supabase",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1160, 240],
+      "parameters": {
+        "operation": "insert",
+        "schema": "nil",
+        "tableId": "submissions",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "submission_id": "={{ $('Validate Submission').item.json.submission_id }}",
+            "first_name": "={{ $('Validate Submission').item.json.first_name }}",
+            "last_name": "={{ $('Validate Submission').item.json.last_name }}",
+            "email": "={{ $('Validate Submission').item.json.email }}",
+            "phone": "={{ $('Validate Submission').item.json.phone }}",
+            "state": "={{ $('Validate Submission').item.json.state }}",
+            "role": "={{ $('Validate Submission').item.json.role }}",
+            "coverage_accident": "={{ $('Validate Submission').item.json.coverage_accident }}",
+            "coverage_hospital_indemnity": "={{ $('Validate Submission').item.json.coverage_hospital_indemnity }}",
+            "athlete_name": "={{ $('Validate Submission').item.json.athlete_name }}",
+            "athlete_age": "={{ $('Validate Submission').item.json.athlete_age }}",
+            "sport": "={{ $('Validate Submission').item.json.sport }}",
+            "notes": "={{ $('Validate Submission').item.json.notes }}",
+            "utm_source": "={{ $('Validate Submission').item.json.utm_source }}",
+            "utm_campaign": "={{ $('Validate Submission').item.json.utm_campaign }}",
+            "submission_payload": "={{ $('Validate Submission').item.json.submission_payload }}",
+            "n8n_status": "v9_processed"
+          }
+        },
+        "options": { "onConflict": "ignore" }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-nil", "name": "Supabase NIL Wealth" } }
+    },
+    {
+      "id": "send-email",
+      "name": "Send Email (SendGrid)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1400, 140],
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "url": "https://api.sendgrid.com/v3/mail/send",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.SENDGRID_API_KEY }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"personalizations\": [\n    {\n      \"to\": [{ \"email\": \"{{ $('Validate Submission').item.json.email }}\", \"name\": \"{{ $('Validate Submission').item.json.first_name }} {{ $('Validate Submission').item.json.last_name }}\" }],\n      \"dynamic_template_data\": {\n        \"first_name\": \"{{ $('Validate Submission').item.json.first_name }}\",\n        \"athlete_name\": \"{{ $('Validate Submission').item.json.athlete_name || 'your athlete' }}\",\n        \"sport\": \"{{ $('Validate Submission').item.json.sport || 'their sport' }}\",\n        \"coverage_type\": \"{{ $('Validate Submission').item.json.coverage_accident && $('Validate Submission').item.json.coverage_hospital_indemnity ? 'Comprehensive' : ($('Validate Submission').item.json.coverage_accident ? 'Accident' : 'Hospital Indemnity') }}\",\n        \"calendly_link\": \"https://calendly.com/protection-mynilwealthstrategies/questions\"\n      }\n    }\n  ],\n  \"from\": { \"email\": \"hello@mynilwealthstrategies.com\", \"name\": \"NIL Wealth Strategies\" },\n  \"reply_to\": { \"email\": \"support@mynilwealthstrategies.com\" },\n  \"template_id\": \"{{ $env.SENDGRID_TEMPLATE_ID || 'd-default' }}\"\n}",
+        "options": {}
+      }
+    },
+    {
+      "id": "has-phone",
+      "name": "Has Phone?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1400, 320],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            { "id": "c1", "leftValue": "={{ $('Validate Submission').item.json.phone.length }}", "rightValue": 9, "operator": { "type": "number", "operation": "gt" } }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "send-sms",
+      "name": "Send SMS (Twilio)",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [1640, 220],
+      "parameters": {
+        "operation": "send",
+        "from": "={{ $env.TWILIO_PHONE_NUMBER }}",
+        "to": "={{ $('Validate Submission').item.json.phone.startsWith('+') ? $('Validate Submission').item.json.phone : '+1' + $('Validate Submission').item.json.phone }}",
+        "message": "=Hi {{ $('Validate Submission').item.json.first_name }}! Thanks for your interest in NIL Wealth protection for {{ $('Validate Submission').item.json.athlete_name || 'your athlete' }}. We'll email you shortly with next steps. Book a call: https://calendly.com/protection-mynilwealthstrategies/questions",
+        "options": {}
+      },
+      "credentials": { "twilioApi": { "id": "twilio-account", "name": "Twilio NIL" } }
+    },
+    {
+      "id": "notify-telegram",
+      "name": "Notify Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1640, 420],
+      "parameters": {
+        "authentication": "headerAuth",
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "chat_id", "value": "={{ $env.TELEGRAM_CHAT_ID }}" },
+            { "name": "text", "value": "=🎯 NEW SUBMISSION!\n\n👤 {{ $('Validate Submission').item.json.first_name }} {{ $('Validate Submission').item.json.last_name }}\n📧 {{ $('Validate Submission').item.json.email }}\n📱 {{ $('Validate Submission').item.json.phone || 'no phone' }}\n🏃 Athlete: {{ $('Validate Submission').item.json.athlete_name || 'Not provided' }}\n⚽️ Sport: {{ $('Validate Submission').item.json.sport || 'Not provided' }}\n📍 State: {{ $('Validate Submission').item.json.state }}\n💼 Role: {{ $('Validate Submission').item.json.role }}\n\n📋 Coverage:\n{{ $('Validate Submission').item.json.coverage_accident ? '✅ Accident' : '❌ Accident' }}\n{{ $('Validate Submission').item.json.coverage_hospital_indemnity ? '✅ Hospital Indemnity' : '❌ Hospital Indemnity' }}\n\n✉️ Email sent via SendGrid\n📲 SMS sent via Twilio\n⏱️ {{ $now.toLocaleString() }}\n\n💡 Check /submissions in bot" },
+            { "name": "parse_mode", "value": "HTML" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "heartbeat",
+      "name": "Heartbeat to Bot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1640, 580],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_INGEST_SENDER_URL }}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Content-Type", "value": "application/json" }] },
+        "sendBody": true,
+        "jsonBody": "={{ { payload: { schema_version: '5.3', event_type: 'n8n.heartbeat', source: 'wf_v9_01', direction: 'inbound', trace_id: $execution.id, idempotency_key: 'heartbeat|wf_v9_01|' + $now, payload: { workflow: 'WF-V9-01', status: 'ok' } } } }}"
+      }
+    },
+    {
+      "id": "respond-ok",
+      "name": "Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1160, 460],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: true, submission_id: $('Validate Submission').item.json.submission_id, message: 'Thank you! Email and SMS sent.' } }}",
+        "options": { "responseCode": 200 }
+      }
+    },
+    {
+      "id": "respond-dup",
+      "name": "Duplicate Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1160, 580],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"success\": true, \"duplicate\": true }",
+        "options": { "responseCode": 200 }
+      }
+    },
+    {
+      "id": "error-trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [200, 700],
+      "parameters": {}
+    },
+    {
+      "id": "error-notify",
+      "name": "Error → Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [440, 700],
+      "parameters": {
+        "authentication": "headerAuth",
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "chat_id", "value": "={{ $env.TELEGRAM_CHAT_ID }}" },
+            { "name": "text", "value": "=⚠️ WF-V9-01 ERROR\n{{ $json.error.message }}\nExecution: {{ $execution.id }}" }
+          ]
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": { "main": [[{ "node": "Validate Submission", "type": "main", "index": 0 }]] },
+    "Validate Submission": { "main": [[{ "node": "Check Duplicate", "type": "main", "index": 0 }]] },
+    "Check Duplicate": { "main": [[{ "node": "New or Duplicate?", "type": "main", "index": 0 }]] },
+    "New or Duplicate?": {
+      "main": [
+        [{ "node": "Store in Supabase", "type": "main", "index": 0 }],
+        [{ "node": "Duplicate Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "Store in Supabase": {
+      "main": [[
+        { "node": "Send Email (SendGrid)", "type": "main", "index": 0 },
+        { "node": "Has Phone?", "type": "main", "index": 0 },
+        { "node": "Success Response", "type": "main", "index": 0 }
+      ]]
+    },
+    "Has Phone?": {
+      "main": [
+        [{ "node": "Send SMS (Twilio)", "type": "main", "index": 0 }],
+        [{ "node": "Notify Telegram", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send SMS (Twilio)": { "main": [[{ "node": "Notify Telegram", "type": "main", "index": 0 }]] },
+    "Notify Telegram": { "main": [[{ "node": "Heartbeat to Bot", "type": "main", "index": 0 }]] },
+    "Error Trigger": { "main": [[{ "node": "Error → Telegram", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "tags": [{ "name": "V9" }]
+}

@@ -340,10 +340,90 @@ TRENDS (vs last month)\n\n` +
   );
 }
 
+// =====================================================
+// V9 DASHBOARD FORMATTER  (gated by V9_DASHBOARD_ENABLED)
+// Exact approved wording from V9.0 Engineering Manual §3
+// =====================================================
+function buildDashboardTextV9({
+  codeVersion,
+  buildVersion,
+  today,
+  time,
+  filterLabel,
+  lastSyncLabel,
+  snapshot,
+  coverage,
+  deliveryHealth,
+}) {
+  const n = (v) => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
+  const s = snapshot || {};
+  const cov = coverage || {};
+  const dh = deliveryHealth || {};
+
+  const dbTotal = n(cov.schoolsDatabase);
+  const contacted = n(cov.schoolsContacted);
+  const pct = dbTotal > 0 ? Math.min(100, (contacted / dbTotal) * 100) : 0;
+  const pctStr = Number.isInteger(pct) ? `${pct}` : pct.toFixed(1);
+  const filled = Math.round(pct / 10);
+  const coverageBar = `[${'█'.repeat(filled)}${'░'.repeat(10 - filled)}] ${pctStr}%`;
+
+  const he = (status) =>
+    status === 'healthy' ? '🟢' : status === 'degraded' ? '🟡' : status === 'failed' ? '🔴' : '⚪';
+  const hl = (status, label) =>
+    `${he(status)} ${label} ${status === 'healthy' ? 'Healthy' : status === 'degraded' ? 'Degraded' : 'Unknown'}`;
+
+  return `🏠 NIL WEALTH OPS DASHBOARD
+${codeVersion} • Build: ${String(buildVersion).slice(0, 8)}
+
+📅 Today: ${today}
+🕐 NY Time: ${time}
+🌎 Filter: ${filterLabel}
+🔄 Last Sync: ${lastSyncLabel || '—'}
+
+📊 BUSINESS SNAPSHOT
+
+📧 Emails Sent: ${n(s.emailsSent)}
+💬 Coach Replies: ${n(s.coachReplies)}
+👍 Positive Replies: ${n(s.positiveReplies)}
+📦 Resource Packets Sent: ${n(s.resourcePacketsSent)}
+🤝 Coaches Sharing: ${n(s.coachesSharing)}
+
+📘 Parent Guide Opens: ${n(s.parentGuideOpens)}
+🌐 NILWS Website Opens: ${n(s.websiteOpens)}
+🏥 Supplemental Health Guide Opens: ${n(s.supplementalHealthOpens)}
+⚠️ Risk Awareness Guide Opens: ${n(s.riskAwarenessOpens)}
+💰 Tax Education Guide Opens: ${n(s.taxEducationOpens)}
+📝 Enrollment Portal Visits: ${n(s.enrollmentVisits)}
+📱 eApp Visits: ${n(s.eappVisits)}
+
+📧 Email Questions: ${n(s.emailQuestions)}
+📋 Website Forms: ${n(s.websiteForms)}
+☎️ Meetings Scheduled: ${n(s.meetingsScheduled)}
+⏳ Waiting for Response: ${n(s.waitingForResponse)}
+
+🎯 MARKET COVERAGE
+
+🏫 Schools Database: ${n(cov.schoolsDatabase)}
+📬 Schools Contacted: ${n(cov.schoolsContacted)}
+🤝 Schools Sharing: ${n(cov.schoolsSharing)}
+${coverageBar}
+
+🚚 DELIVERY HEALTH
+
+${hl(dh.instantly, 'Instantly')}
+${hl(dh.website, 'Website')}
+${hl(dh.support, 'Support')}
+${hl(dh.cloudflareTracking, 'Cloudflare Tracking')}
+${hl(dh.database, 'Database')}
+
+Use buttons below.`;
+}
+
 module.exports = {
   allQueuesText,
   buildDashboardMetricsText,
   buildDashboardText,
+  buildDashboardTextV9,
   buildSchoolsDatabaseSummary,
   buildStateCoverageWithResponses,
   buildOpsHealthText,

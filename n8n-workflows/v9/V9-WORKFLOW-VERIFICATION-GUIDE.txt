@@ -1,0 +1,679 @@
+================================================================================
+NIL WEALTH STRATEGIES — VERSION 9 N8N WORKFLOW VERIFICATION GUIDE
+For use by any Claude agent auditing or debugging the V9 n8n workflow set
+Date: 2026-07-16
+================================================================================
+
+PURPOSE OF THIS DOCUMENT
+-------------------------
+This document gives a Claude agent the full context needed to verify, debug,
+or update the 6 V9 n8n workflows for NIL Wealth Strategies. Read this entire
+file before touching any workflow. The V9 system replaced a V20 workflow set.
+The goals of V9 are: simplicity, reliability, no lead scraping, no automated
+lead import, and a clean Telegram dashboard that shows real campaign metrics.
+
+
+================================================================================
+SYSTEM OVERVIEW
+================================================================================
+
+NIL Wealth Strategies sells supplemental sports health insurance (Aflac-backed)
+to families of student-athletes. Coaches act as the distribution channel — they
+forward a resource packet to their team's parent group chat. The technology stack:
+
+  - Instantly.ai         Outreach emails to coaches (we do NOT control this)
+  - Vercel website       Public form for parent/athlete signups
+  - Supabase (nil schema) Single source of truth for all operational data
+  - n8n                  Workflow automation (the 6 V9 workflows below)
+  - Telegram bot         Ops dashboard (runs on Render at nil-wealth-telegram-shell)
+  - Cloudflare           Tracks when families open the Parent Guide / website
+  - SendGrid             Transactional email (confirmations, support replies)
+  - Twilio               Transactional SMS (confirmations)
+  - Calendly             Meeting scheduling
+
+The Telegram bot lives at: https://nil-wealth-telegram-shell.onrender.com
+The bot's ops ingest endpoint: https://nil-wealth-telegram-shell.onrender.com/ops/ingest
+n8n workflows send heartbeats to the bot via $env.OPS_INGEST_SENDER_URL which
+points to the WF09 webhook (nil-ops-ingest-sender, an infrastructure workflow
+that must stay active and untouched).
+
+
+================================================================================
+SUPABASE SCHEMA — KEY TABLES (schema: nil)
+================================================================================
+
+All Supabase queries in V9 workflows use schema: nil
+
+TABLES THAT MUST EXIST (verify these exist before running workflows):
+  nil.submissions          Website form submissions from Vercel
+  nil.leads                Coach/lead records from Instantly outreach
+  nil.lead_metrics         Per-lead metric events (opens, clicks, replies)
+  nil.support_tickets      Support tickets created from Instantly replies
+  nil.message_drafts       Auto-answer queue (WF-V9-02 writes, WF-V9-03 reads)
+  nil.email_sequences      Email sequence tracking per lead
+  nil.analytics_metrics    Aggregate campaign totals from Instantly sync
+  nil.ops_events           General operational events (heartbeats, clicks, meetings)
+  nil.dead_letters         Failed events that need manual review
+
+CREDENTIAL NAME IN N8N:
+  Supabase credential must be named exactly: "Supabase NIL Wealth"
+  Credential type: supabaseApi
+  Internal n8n ID used in files: supabase-nil
+
+
+================================================================================
+ENVIRONMENT VARIABLES (n8n Settings → Variables)
+================================================================================
+
+These variables must be set in n8n for the workflows to function:
+
+  INSTANTLY_API_KEY               Instantly.ai API key
+  INSTANTLY_OUTREACH_CAMPAIGN_ID  The campaign ID being tracked
+  SENDGRID_API_KEY                SendGrid API key for email sending
+  SENDGRID_TEMPLATE_ID            Dynamic template ID for confirmation emails
+  TWILIO_PHONE_NUMBER             Twilio sending number (e.g. +15551234567)
+  TELEGRAM_BOT_TOKEN              The Telegram bot token
+  TELEGRAM_CHAT_ID                The ops chat ID where alerts go
+  OPENAI_API_KEY                  OpenAI key used by WF-V9-02 for classification
+  URGENT_AFTER_MINUTES            SLA threshold in minutes (default: 180)
+  OPS_INGEST_SENDER_URL           Full URL to the WF09 ops-ingest-sender webhook
+  NIL_SECRET                      Shared secret for webhook auth (used by WF-V9-06)
+                                  May also be named BASE_WEBHOOK_SECRET — check
+                                  which one exists in your n8n Variables panel
+
+CREDENTIALS THAT MUST EXIST IN N8N (Settings → Credentials):
+  "Supabase NIL Wealth"   supabaseApi type, points to Supabase project URL
+  "Twilio NIL"            twilioApi type (id: twilio-account in JSON files)
+  "SendGrid"              sendGridApi type (used by outbox workflow WF08)
+  "Telegram"              telegramApi type (used by WF08 outbox)
+  Note: WF-V9-01 through WF-V9-06 use HTTP Request nodes for SendGrid/Telegram
+  (not the native credential nodes) because they use $env.SENDGRID_API_KEY and
+  $env.TELEGRAM_BOT_TOKEN directly. The native credentials are only used by
+  the infrastructure WF08 outbox.
+
+
+================================================================================
+INFRASTRUCTURE WORKFLOWS — DO NOT TOUCH, DO NOT DEACTIVATE
+================================================================================
+
+These two workflows were in place before V9 and must remain active unchanged.
+They are the backbone that all 6 V9 workflows depend on.
+
+WF09 — nil-ops-ingest-sender
+  What it does: Receives POST requests from all other workflows (heartbeats,
+                events, status updates) and forwards them to the Render bot at
+                https://nil-wealth-telegram-shell.onrender.com/ops/ingest
+  Webhook path: nil-ops-ingest-sender
+  n8n name:     NIL WF09 — Ops Ingest Sender — V20
+  Status:       Must stay ACTIVE. Do not rename, deactivate, or modify.
+  Verification: If any V9 workflow's heartbeat node fails, this is likely broken.
+                Check that OPS_INGEST_SENDER_URL points to its webhook URL.
+
+WF08 — Outbox Dispatcher
+  What it does: Polls the Render bot's /api/nil-outbox/claim endpoint every
+                30 seconds. Picks up queued emails/SMS, sends them via SendGrid
+                or Twilio, reports result back to the bot.
+  Render URL:   https://nil-wealth-telegram-shell.onrender.com/api/nil-outbox/claim
+  Auth header:  x-nil-secret: $env.NIL_SECRET
+  n8n name:     NIL WF08 — Outbox Dispatcher — V20
+  Status:       Must stay ACTIVE. Do not rename, deactivate, or modify.
+  Verification: If confirmation emails stop going out, check this workflow's
+                execution history. The claim endpoint should return items.
+
+
+================================================================================
+WORKFLOWS TO ARCHIVE (deactivate + rename, never delete)
+================================================================================
+
+After all 6 V9 workflows are active and verified, deactivate and rename these:
+
+  NIL WF01 — Form & Calendly Intake — V20    → ARCHIVED_V20_20260716_WF01
+  NIL WF02 — Gmail Support Watch — V20        → ARCHIVED_V20_20260716_WF02
+  NIL WF03 — Send Executor + CC Support — V20 → ARCHIVED_V20_20260716_WF03
+  NIL WF04v2 — Lead Pipeline — CLEAN          → ARCHIVED_V20_20260716_WF04v2
+  NIL WF05 — Ops & Maintenance — V20          → ARCHIVED_V20_20260716_WF05
+  NIL WF06 — Analytics Ingest — V20           → ARCHIVED_V20_20260716_WF06
+  NIL WF07 — Event Intelligence — V20         → ARCHIVED_V20_20260716_WF07
+  Leads to Instantly                           → ARCHIVED_V20_20260716_LeadsToInstantly
+
+RULE: Never delete archived workflows. They are the rollback path. Keep them
+deactivated and renamed. Delete only after explicit owner approval months later.
+
+
+================================================================================
+THE 6 V9 WORKFLOWS — FULL SPECIFICATION
+================================================================================
+
+------------------------------------------------------------------------
+WF-V9-01 | Website Intake Hub
+File: WF-V9-01-website-intake.json
+Replaces: NIL WF01 — Form & Calendly Intake — V20
+------------------------------------------------------------------------
+
+TRIGGER: Webhook POST to path "vercel-instant-submission"
+  CRITICAL: This path must NOT change. Vercel already sends to this path.
+  If you change the path, form submissions from the website break immediately.
+
+WHAT IT DOES (node by node):
+  1. Webhook Trigger          Receives the POST from Vercel website form
+  2. Validate Submission      Normalizes body, generates submission_id,
+                              lowercases email, strips non-digits from phone
+  3. Check Duplicate          Queries nil.submissions where submission_id matches
+  4. New or Duplicate?        IF node — true path = new, false path = duplicate
+  5. Store in Supabase        INSERT into nil.submissions (onConflict: ignore)
+  6. Send Email (SendGrid)    POST to SendGrid API using SENDGRID_API_KEY and
+                              SENDGRID_TEMPLATE_ID dynamic template
+  7. Has Phone?               IF node — checks phone.length > 9
+  8. Send SMS (Twilio)        Twilio native node using "Twilio NIL" credential
+  9. Notify Telegram          HTTP POST to Telegram API with submission details
+  10. Heartbeat to Bot        HTTP POST to OPS_INGEST_SENDER_URL
+  11. Success Response        respondToWebhook with 200 + submission_id
+  12. Duplicate Response      respondToWebhook with 200 + duplicate:true
+  13. Error Trigger           Catches all errors
+  14. Error → Telegram        Sends error text to Telegram chat
+
+TABLES WRITTEN: nil.submissions
+CREDENTIALS USED: supabaseApi "Supabase NIL Wealth", twilioApi "Twilio NIL"
+ENV VARS USED: SENDGRID_API_KEY, SENDGRID_TEMPLATE_ID, TWILIO_PHONE_NUMBER,
+               TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, OPS_INGEST_SENDER_URL
+
+HOW TO VERIFY IT'S WORKING:
+  - Submit a test form on the Vercel website
+  - Check nil.submissions in Supabase for a new row
+  - Check that a confirmation email arrived at the test address
+  - Check Telegram ops chat for the NEW SUBMISSION alert
+  - Check n8n execution history — all nodes should be green
+
+COMMON ISSUES:
+  - "Cannot read property 'body' of undefined": body parsing issue. The code node
+    tries $input.first().json.body — if Vercel sends the body at the root level,
+    the fallback ($input.first().json) should handle it.
+  - SMS node fails: check that the phone number includes country code. The code
+    prepends +1 if not starting with +.
+  - Duplicate submissions: expected behavior, returns 200 with duplicate:true.
+
+------------------------------------------------------------------------
+WF-V9-02 | Support Ingest & Triage
+File: WF-V9-02-support-ingest-triage.json
+Replaces: NIL WF02 + SLA logic from NIL WF07
+------------------------------------------------------------------------
+
+TRIGGER: Schedule — every 15 minutes ("*/15 * * * *")
+
+WHAT IT DOES (two parallel paths):
+
+PATH 1 — Reply Ingest:
+  1. Every 15 Minutes         Schedule trigger fires
+  2. Fetch Instantly Replies  GET from Instantly API, limit 100
+  3. Filter Recent Replies    Code node: keeps only replies from last 24 hours
+  4. Loop Each Reply          splitInBatches, batchSize 1
+  5. Find Lead in Supabase    Query nil.leads where email matches reply email
+  6. Classify Intent (OpenAI) POST to OpenAI gpt-4o-mini with system prompt
+                              Returns JSON: {category, confidence, auto_reply_allowed, summary}
+  7. Parse Classification     Code node: merges reply + lead + classification result
+  8. Create Support Ticket    INSERT into nil.support_tickets
+  9. Update Lead Status       UPDATE nil.leads set status='replied'
+  10. Log Reply Metric        INSERT into nil.lead_metrics
+  11. Auto or Triage?         IF node: auto_reply_allowed === true
+  12a. Queue Auto-Answer      UPSERT into nil.message_drafts (WF-V9-03 picks up)
+  12b. Triage Alert → Telegram HTTP POST to Telegram with reply preview
+
+PATH 2 — SLA Check (runs in parallel from the same trigger):
+  1. Get Overdue Tickets      SELECT from nil.support_tickets where status IN
+                              (new, queued_auto, needs_human)
+  2. Find SLA Breaches        Code node: filters tickets older than URGENT_AFTER_MINUTES
+  3. SLA Alert → Telegram     Sends one Telegram message per breach
+
+HEARTBEAT: Posts to OPS_INGEST_SENDER_URL after successful auto-answer queuing
+
+CRITICAL RULE: This workflow must NEVER send email. It only classifies and queues.
+If you see an email sending node in this workflow, it was added incorrectly.
+
+TABLES WRITTEN: nil.support_tickets, nil.leads (status), nil.lead_metrics,
+                nil.message_drafts
+CREDENTIALS USED: supabaseApi "Supabase NIL Wealth"
+ENV VARS USED: INSTANTLY_API_KEY, INSTANTLY_OUTREACH_CAMPAIGN_ID, OPENAI_API_KEY,
+               URGENT_AFTER_MINUTES, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+               OPS_INGEST_SENDER_URL
+
+HOW TO VERIFY IT'S WORKING:
+  - Trigger manually in n8n
+  - Check execution: Fetch Instantly Replies should return data (even if 0 replies)
+  - If a coach has replied in last 24h, check nil.support_tickets for a new row
+  - Check nil.leads for status='replied' on that coach's record
+  - If auto_reply_allowed was true, check nil.message_drafts for a queued row
+
+COMMON ISSUES:
+  - OpenAI returns malformed JSON: the Parse Classification code node has a
+    try/catch that defaults to category='unsupported', auto_reply_allowed=false
+    so classification failures are safe — they go to triage instead of auto-reply
+  - "Filter Recent Replies returns []": expected if no replies in last 24h.
+    The loop will just not execute any iterations.
+  - SLA path errors if nil.support_tickets doesn't exist yet. Verify the table.
+
+------------------------------------------------------------------------
+WF-V9-03 | Support Response Executor
+File: WF-V9-03-support-response-executor.json
+Replaces: NIL WF03 — Send Executor + CC Support — V20
+------------------------------------------------------------------------
+
+TRIGGER: Schedule — every 5 minutes ("*/5 * * * *")
+
+WHAT IT DOES (node by node):
+  1. Every 5 Minutes          Schedule trigger fires
+  2. Get Queued Drafts        SELECT from nil.message_drafts where status='queued'
+                              AND draft_type='auto_reply', LIMIT 5
+  3. Filter Ready to Send     Code node: only items where scheduled_for <= now()
+                              Skips items with missing idempotency_key or lead_email
+  4. Loop Drafts              splitInBatches, batchSize 1
+  5. Lock — Mark Sending      UPDATE nil.message_drafts set status='sending'
+                              WHERE idempotency_key matches AND status='queued'
+                              (This is the idempotency lock — prevents double send)
+  6. Send Reply (SendGrid)    HTTP POST to SendGrid API from
+                              support@mynilwealthstrategies.com
+  7. Mark Sent                UPDATE nil.message_drafts set status='sent', sent_at=now
+  8. Close Support Ticket     UPDATE nil.support_tickets set status='auto_replied'
+                              where contact_email matches and status='queued_auto'
+  9. Heartbeat to Bot         HTTP POST to OPS_INGEST_SENDER_URL
+  Error path: Error Trigger → Error → Telegram
+
+IDEMPOTENCY MECHANISM:
+  Step 5 (Lock) updates WHERE status='queued'. If two executions run at the same
+  time, only one will successfully update to 'sending' because Supabase applies
+  the WHERE clause atomically. The second execution will find 0 rows updated and
+  the send will not happen. This is the safety net — do not remove it.
+
+CRITICAL RULE: This is the ONLY workflow that sends email to customers.
+If you see email sending in WF-V9-02, WF-V9-05, WF-V9-06, or WF-V9-08, that
+is incorrect and must be removed.
+
+TABLES WRITTEN: nil.message_drafts (status), nil.support_tickets (status)
+CREDENTIALS USED: supabaseApi "Supabase NIL Wealth"
+ENV VARS USED: SENDGRID_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+               OPS_INGEST_SENDER_URL
+
+HOW TO VERIFY IT'S WORKING:
+  - Manually insert a test row into nil.message_drafts:
+      status='queued', draft_type='auto_reply', lead_email='test@test.com',
+      idempotency_key='test_key_001', scheduled_for=now()-5 minutes
+  - Trigger the workflow manually
+  - The row should update to status='sending' then 'sent'
+  - A SendGrid email should be sent (check SendGrid activity feed)
+
+COMMON ISSUES:
+  - "Filter Ready to Send returns []": normal if no queued drafts exist yet.
+  - Lock node returns 0 rows updated: another execution already claimed it.
+    This is correct idempotent behavior, not an error.
+  - SendGrid 400/403: check SENDGRID_API_KEY is set in n8n Variables.
+
+------------------------------------------------------------------------
+WF-V9-05 | Instantly Analytics Sync
+File: WF-V9-05-instantly-analytics-sync.json
+Replaces: NIL WF06 — Analytics Ingest (Click + Metrics + eApp) — V20
+------------------------------------------------------------------------
+
+TRIGGER: Schedule — every hour at minute 0 ("0 * * * *")
+
+WHAT IT DOES (two parallel paths after data is fetched):
+
+PATH 1 — Aggregate Metrics:
+  1. Every Hour               Schedule trigger
+  2. Fetch Campaign Summary   GET Instantly /analytics/campaign/summary
+                              Uses INSTANTLY_API_KEY and INSTANTLY_OUTREACH_CAMPAIGN_ID
+  3. Fetch Campaign Emails    GET Instantly /analytics/campaign/{id}/emails, limit 500
+  4. Build Aggregate Metrics  Code node: counts emails_sent, coach_replies,
+                              positive_replies (keyword-detected), packets_detected
+                              Builds list of lead-level events for Path 2
+  5. Upsert Analytics Metrics UPSERT nil.analytics_metrics
+                              WHERE metric_key='instantly_campaign_totals'
+                              Updates: emails_sent, coach_replies, positive_replies,
+                                       packets_detected, synced_at
+
+PATH 2 — Per-Lead Events:
+  4. Prepare Lead Events      Code node: extracts lead events from Build node output
+  5. Loop Lead Events         splitInBatches, batchSize 10
+  6. Find Lead by Email       SELECT nil.leads where email matches
+  7. Combine Event with Lead  Code node: merges lead_id with event data
+  8. Log Analytics Metric     INSERT nil.lead_metrics
+  9. Update Sequence Status   UPDATE nil.email_sequences set status based on event_type
+
+HEARTBEAT: Posted after upsert completes
+
+WHY nil.analytics_metrics MATTERS:
+  The Telegram bot's dashboard reads from nil.analytics_metrics to show
+  "Emails Sent: X", "Coach Replies: X", "Positive Replies: X" in the
+  Business Snapshot section. If this workflow fails, those numbers go stale.
+
+POSITIVE REPLY DETECTION (in Build Aggregate Metrics code node):
+  Keywords used: 'interested','yes','share','forward','send','love to',
+  'sounds good','tell me more','learn more','would like','please send',
+  'great','absolutely'
+  These are checked against the reply_text/reply_snippet field in lowercase.
+  Adjust the keyword list if false positives become an issue.
+
+TABLES WRITTEN: nil.analytics_metrics (upsert), nil.lead_metrics (insert),
+                nil.email_sequences (update)
+CREDENTIALS USED: supabaseApi "Supabase NIL Wealth"
+ENV VARS USED: INSTANTLY_API_KEY, INSTANTLY_OUTREACH_CAMPAIGN_ID,
+               TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, OPS_INGEST_SENDER_URL
+
+HOW TO VERIFY IT'S WORKING:
+  - Trigger manually in n8n
+  - Check nil.analytics_metrics in Supabase for row with
+    metric_key='instantly_campaign_totals'
+  - Columns emails_sent, coach_replies should have non-zero values if campaign
+    has been running
+  - Check synced_at timestamp — should be recent
+
+COMMON ISSUES:
+  - Instantly API returns 401: check INSTANTLY_API_KEY in n8n Variables
+  - Instantly API returns 404 on campaign: check INSTANTLY_OUTREACH_CAMPAIGN_ID
+  - "Build Aggregate Metrics: Cannot read property 'data'": Instantly API
+    response format may differ. Check the raw response in execution details.
+    The code uses ($input.first().json.data || []) as a safe fallback.
+  - nil.email_sequences update fails: table may not have a row for that lead yet.
+    This is non-critical — the metric is still logged in nil.lead_metrics.
+
+------------------------------------------------------------------------
+WF-V9-06 | Event Ingest Hub
+File: WF-V9-06-event-ingest-hub.json
+Replaces: NIL WF07 — Event Intelligence (Handoff + Identity) — V20
+------------------------------------------------------------------------
+
+TRIGGER: Webhook POST to path "v9-event-ingest"
+  NOTE: This is a NEW path that did not exist in V20. You must configure
+  external services (Cloudflare, Calendly, SendGrid, Twilio) to send to
+  this new webhook URL after activating the workflow.
+
+AUTHENTICATION: Every request must include header x-nil-secret with the
+  value of $env.NIL_SECRET (or BASE_WEBHOOK_SECRET — whichever is set in
+  your n8n Variables panel). Requests without this header are rejected with
+  an error before any data is written.
+
+ROUTING: The workflow reads x-event-source header to determine the source:
+  "cloudflare"  → Normalize Cloudflare Event → Store in Ops Events
+  "calendly"    → Normalize Calendly Event   → Store in Ops Events
+  "sendgrid"    → Normalize Delivery Status  → Store in Ops Events
+  "twilio"      → Normalize Delivery Status  → Store in Ops Events
+  (anything else is dropped by the Switch node fallback)
+
+WHAT EACH SOURCE STORES:
+  Cloudflare events: event_type='click.event', payload contains tracking_code,
+    destination_type (parent_guide, website, enrollment, etc.), occurred_at
+  Calendly events: event_type='meeting.scheduled' or 'meeting.cancelled',
+    payload contains invitee details, scheduled times, cancel/reschedule URLs
+  SendGrid/Twilio events: event_type='delivery.status', payload contains
+    provider_message_id, status (delivered/bounced/failed), provider name
+
+ALL events are stored in nil.ops_events with an idempotency_key to prevent
+duplicates. The Switch node routes to the correct normalizer, all normalizers
+feed into the same "Store in Ops Events" upsert node.
+
+CONFIGURATION NEEDED AFTER ACTIVATING:
+  1. Get the webhook URL from n8n after activation (it will look like
+     https://nilwealthstrategies.app.n8n.cloud/webhook/v9-event-ingest)
+  2. Update Cloudflare Worker to POST to this URL with:
+       Header: x-event-source: cloudflare
+       Header: x-nil-secret: <NIL_SECRET value>
+       Body: { pk: <tracking_code>, destination: <destination_type>,
+               occurred_at: <timestamp> }
+  3. Add this URL to Calendly as a webhook endpoint (Calendly → Integrations
+     → Webhooks). Add header x-event-source: calendly
+  4. Add this URL to SendGrid activity webhooks with x-event-source: sendgrid
+  5. Add this URL to Twilio status callback with x-event-source: twilio
+
+TABLES WRITTEN: nil.ops_events
+CREDENTIALS USED: supabaseApi "Supabase NIL Wealth"
+ENV VARS USED: NIL_SECRET (or BASE_WEBHOOK_SECRET), OPS_INGEST_SENDER_URL,
+               TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+
+HOW TO VERIFY IT'S WORKING:
+  - Use curl or Postman to send a test POST:
+      URL: <n8n webhook URL for v9-event-ingest>
+      Header: x-nil-secret: <your NIL_SECRET value>
+      Header: x-event-source: cloudflare
+      Header: Content-Type: application/json
+      Body: {"pk":"test123","destination":"parent_guide","occurred_at":"2026-07-16T12:00:00Z"}
+  - Response should be {"ok":true}
+  - Check nil.ops_events for a row with event_type='click.event'
+  - Test without the secret header — should fail with an error
+
+COMMON ISSUES:
+  - "Unauthorized: invalid x-nil-secret": NIL_SECRET env var not set in n8n,
+    or the value sent doesn't match. Check n8n Variables panel.
+  - Switch node routes to "none": x-event-source header value doesn't match
+    any of: cloudflare, calendly, sendgrid, twilio. Check the header being sent.
+  - Upsert fails: nil.ops_events may not have an idempotency_key column.
+    Verify the table schema in Supabase.
+
+------------------------------------------------------------------------
+WF-V9-08 | Daily Ops & Health Monitor
+File: WF-V9-08-daily-ops-health.json
+Replaces: NIL WF05 — Ops & Maintenance — V20
+Also retires: NIL Mirror Reconciler, NIL Role Conflict Resolver,
+              NIL Dead Letter Replayer, NIL Conversation Identity Linker
+------------------------------------------------------------------------
+
+TRIGGER: Schedule — daily at 12:00 UTC = 7:00 AM ET ("0 12 * * *")
+
+WHAT IT DOES (four parallel reads, then combine):
+  1. Daily 7 AM ET            Schedule trigger fires all four reads at once
+  2a. Get Campaign Metrics    SELECT nil.analytics_metrics where
+                              metric_key='instantly_campaign_totals'
+  2b. Get Today Submissions   SELECT nil.submissions where created_at >= today midnight
+  2c. Get Dead Letters        SELECT nil.dead_letters where resolved_at IS NULL, limit 100
+  2d. Get Open Tickets        SELECT nil.support_tickets where status IN
+                              (new, needs_human, queued_auto)
+  3. Build Daily Summary      Code node: waits for all 4 reads, builds summary text
+  4. Send Daily Summary       HTTP POST to Telegram — one message to ops chat
+  5. Has Issues?              IF node: dead_letter_count > 5
+  6a. Issue Alert → Telegram  Sends a separate urgent alert if issues found
+  6b. Heartbeat to Bot        Sent whether issues exist or not
+
+THE DAILY SUMMARY MESSAGE FORMAT:
+  📅 DAILY OPS SUMMARY — <date>
+  
+  📊 CAMPAIGN (All-Time)
+  📧 Emails Sent: <from analytics_metrics>
+  💬 Coach Replies: <from analytics_metrics>
+  👍 Positive Replies: <from analytics_metrics>
+  
+  📋 TODAY
+  🌐 Website Forms: <count from submissions today>
+  🎫 Open Support Tickets: <count from support_tickets>
+  💀 Unresolved Dead Letters: <count from dead_letters>
+  
+  🔄 Last Instantly Sync: <synced_at from analytics_metrics>
+  
+  <time> ET — V9 Daily Check
+
+TABLES READ: nil.analytics_metrics, nil.submissions, nil.dead_letters,
+             nil.support_tickets (read-only, nothing is written)
+CREDENTIALS USED: supabaseApi "Supabase NIL Wealth"
+ENV VARS USED: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, OPS_INGEST_SENDER_URL
+
+HOW TO VERIFY IT'S WORKING:
+  - Trigger manually in n8n (click Execute Workflow)
+  - A daily summary message should appear in the Telegram ops chat
+  - All four Supabase read nodes should be green
+  - If nil.dead_letters table doesn't exist, that node will error —
+    create the table or remove that read node if dead letters aren't used yet
+
+COMMON ISSUES:
+  - Build Daily Summary shows 0 for everything: WF-V9-05 hasn't synced yet.
+    Run WF-V9-05 manually first to populate nil.analytics_metrics.
+  - nil.dead_letters doesn't exist: either create the table or modify the
+    Get Dead Letters node to query a different table. Non-critical path.
+  - Workflow runs at wrong time: n8n uses UTC. 12:00 UTC = 7:00 AM ET in
+    summer (EDT). In winter (EST) you'd need 13:00 UTC. Adjust cron if needed.
+
+
+================================================================================
+FULL WORKFLOW DEPENDENCY MAP
+================================================================================
+
+WF-V9-01 (Website Intake)
+  → Reads from:  Vercel form POST
+  → Writes to:   nil.submissions
+  → Depends on:  Supabase NIL Wealth, Twilio NIL credential,
+                 SENDGRID_API_KEY, TWILIO_PHONE_NUMBER, TELEGRAM_BOT_TOKEN,
+                 TELEGRAM_CHAT_ID, OPS_INGEST_SENDER_URL → WF09
+
+WF-V9-02 (Support Ingest)
+  → Reads from:  Instantly API, nil.leads, nil.support_tickets
+  → Writes to:   nil.support_tickets, nil.leads, nil.lead_metrics,
+                 nil.message_drafts
+  → Depends on:  INSTANTLY_API_KEY, INSTANTLY_OUTREACH_CAMPAIGN_ID,
+                 OPENAI_API_KEY, URGENT_AFTER_MINUTES,
+                 TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, OPS_INGEST_SENDER_URL → WF09
+
+WF-V9-03 (Support Executor)
+  → Reads from:  nil.message_drafts (written by WF-V9-02)
+  → Writes to:   nil.message_drafts (status), nil.support_tickets (status)
+  → Depends on:  SENDGRID_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+                 OPS_INGEST_SENDER_URL → WF09
+
+WF-V9-05 (Instantly Sync)
+  → Reads from:  Instantly API
+  → Writes to:   nil.analytics_metrics, nil.lead_metrics, nil.email_sequences
+  → Depends on:  INSTANTLY_API_KEY, INSTANTLY_OUTREACH_CAMPAIGN_ID,
+                 TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, OPS_INGEST_SENDER_URL → WF09
+
+WF-V9-06 (Event Ingest Hub)
+  → Reads from:  Cloudflare Worker / Calendly / SendGrid / Twilio (incoming POSTs)
+  → Writes to:   nil.ops_events
+  → Depends on:  NIL_SECRET (auth), OPS_INGEST_SENDER_URL → WF09
+
+WF-V9-08 (Daily Ops)
+  → Reads from:  nil.analytics_metrics, nil.submissions, nil.dead_letters,
+                 nil.support_tickets
+  → Writes to:   nothing (read-only)
+  → Depends on:  TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, OPS_INGEST_SENDER_URL → WF09
+
+WF09 (Infrastructure — do not touch)
+  → Receives heartbeats/events from all V9 workflows
+  → Forwards to: https://nil-wealth-telegram-shell.onrender.com/ops/ingest
+
+WF08 (Infrastructure — do not touch)
+  → Polls: https://nil-wealth-telegram-shell.onrender.com/api/nil-outbox/claim
+  → Sends: queued emails/SMS via SendGrid + Twilio
+  → Auth:  x-nil-secret: $env.NIL_SECRET
+
+
+================================================================================
+ACTIVATION ORDER (follow this exact sequence)
+================================================================================
+
+1. Import WF-V9-01-website-intake.json
+   → Reconnect "Supabase NIL Wealth" and "Twilio NIL" credentials
+   → Activate
+   → Send test form from Vercel website
+   → Verify nil.submissions has new row
+   → Verify Telegram received alert
+   → THEN deactivate NIL WF01 and rename it ARCHIVED_V20_20260716_WF01
+
+2. Import WF-V9-05-instantly-analytics-sync.json
+   → Reconnect "Supabase NIL Wealth" credential
+   → Activate
+   → Click "Execute Workflow" to run immediately
+   → Verify nil.analytics_metrics has row with metric_key='instantly_campaign_totals'
+   → THEN deactivate NIL WF06 and rename it ARCHIVED_V20_20260716_WF06
+
+3. Import WF-V9-02-support-ingest-triage.json
+   → Reconnect "Supabase NIL Wealth" credential
+   → Activate
+   → Wait 15 minutes or trigger manually
+   → Check execution — no errors expected even if 0 replies
+   → THEN deactivate NIL WF02 and rename it ARCHIVED_V20_20260716_WF02
+
+4. Import WF-V9-03-support-response-executor.json
+   → Reconnect "Supabase NIL Wealth" credential
+   → Activate (will idle until WF-V9-02 queues something)
+   → THEN deactivate NIL WF03 and rename it ARCHIVED_V20_20260716_WF03
+
+5. Import WF-V9-06-event-ingest-hub.json
+   → Reconnect "Supabase NIL Wealth" credential
+   → Activate and copy the webhook URL from n8n
+   → Verify NIL_SECRET or BASE_WEBHOOK_SECRET is in n8n Variables
+   → Test with curl (see verification steps above)
+   → Configure Cloudflare/Calendly to send to new webhook URL
+   → THEN deactivate NIL WF07 and rename it ARCHIVED_V20_20260716_WF07
+
+6. Import WF-V9-08-daily-ops-health.json
+   → Reconnect "Supabase NIL Wealth" credential
+   → Activate
+   → Trigger manually to verify Telegram receives daily summary
+   → THEN deactivate NIL WF05 and rename it ARCHIVED_V20_20260716_WF05
+
+7. Archive remaining V20 workflows (no replacement needed):
+   → NIL WF04v2 — Lead Pipeline → ARCHIVED_V20_20260716_WF04v2
+   → Leads to Instantly → ARCHIVED_V20_20260716_LeadsToInstantly
+   → Any other V20 workflows not listed above → ARCHIVED_V20_20260716_<name>
+
+
+================================================================================
+WHAT "ALL GOOD" LOOKS LIKE AFTER FULL ACTIVATION
+================================================================================
+
+Active workflows in n8n (8 total):
+  WF-V9-01 | Website Intake Hub          (webhook trigger)
+  WF-V9-02 | Support Ingest & Triage     (every 15 min)
+  WF-V9-03 | Support Response Executor   (every 5 min)
+  WF-V9-05 | Instantly Analytics Sync    (every hour)
+  WF-V9-06 | Event Ingest Hub            (webhook trigger)
+  WF-V9-08 | Daily Ops & Health Monitor  (daily 7 AM ET)
+  NIL WF08 — Outbox Dispatcher           (every 30 seconds — infrastructure)
+  NIL WF09 — Ops Ingest Sender           (webhook trigger — infrastructure)
+
+Supabase state:
+  nil.analytics_metrics has row: metric_key='instantly_campaign_totals'
+  nil.submissions receives rows when website form is submitted
+  nil.support_tickets receives rows when coaches reply to outreach
+  nil.message_drafts has rows queued when auto-reply is appropriate
+  nil.ops_events receives rows when Cloudflare/Calendly/delivery events arrive
+
+Telegram bot behavior:
+  /dashboard shows real Emails Sent, Coach Replies, Positive Replies numbers
+  /submissions shows today's website form submissions
+  /support shows open support tickets
+  Triage alerts arrive when coach replies need human attention
+  SLA alerts arrive when support tickets go unanswered too long
+  7 AM daily summary arrives every morning
+  Health screen shows all 6 V9 workflows as recently heartbeated
+
+
+================================================================================
+IF SOMETHING IS BROKEN — DIAGNOSTIC STEPS
+================================================================================
+
+Step 1: Check n8n execution history for the failing workflow
+         Look at which node failed and what the error message says
+
+Step 2: Check that all env vars are set (n8n → Settings → Variables)
+         Missing INSTANTLY_API_KEY, OPENAI_API_KEY, etc. are common causes
+
+Step 3: Check Supabase — does the table the node is trying to write to exist?
+         Run: SELECT table_name FROM information_schema.tables
+              WHERE table_schema = 'nil' ORDER BY table_name
+         Compare against the table list in this document
+
+Step 4: Check credentials — in n8n → Settings → Credentials, verify
+         "Supabase NIL Wealth" shows as connected (green)
+         "Twilio NIL" shows as connected (green)
+
+Step 5: Check that WF09 (Ops Ingest Sender) is still active
+         If it's been deactivated, all heartbeats fail and the bot's health
+         screen goes dark
+
+Step 6: For webhook workflows (WF-V9-01 and WF-V9-06), verify the webhook
+         URL is still the same after any n8n updates. n8n can change webhook
+         URLs if workflows are deactivated and reactivated.
+
+Step 7: If the issue is in V9 workflow code (Code nodes), get the exact error
+         from n8n execution details and the input data that caused it.
+         Code nodes use standard JavaScript — errors are usually property
+         access on undefined or wrong data shape from the upstream API.
+
+================================================================================
+END OF VERIFICATION GUIDE
+================================================================================

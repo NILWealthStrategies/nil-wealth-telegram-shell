@@ -1,0 +1,194 @@
+{
+  "name": "WF-V9-06 | Event Ingest Hub",
+  "nodes": [
+    {
+      "id": "note",
+      "name": "📋 About This Workflow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 60],
+      "parameters": {
+        "content": "## WF-V9-06 — Event Ingest Hub\n\n**What it does:** Single authenticated webhook that receives events from three sources and stores them in nil.ops_events:\n\n1. **Cloudflare** (x-event-source: cloudflare) — when a family member opens the Parent Guide, visits the website, or clicks the enrollment portal, the Cloudflare Worker POSTs the event here. Stored as event_type: click.event.\n\n2. **Calendly** (x-event-source: calendly) — when a meeting is scheduled, cancelled, or rescheduled, Calendly POSTs the webhook here. Stored as event_type: meeting.scheduled / meeting.cancelled.\n\n3. **SendGrid / Twilio** (x-event-source: sendgrid or twilio) — delivery status updates (delivered, bounced, failed) for confirmation emails and SMS. Stored as event_type: delivery.status.\n\n**Auth:** Every POST must include the header x-nil-secret with the value of $env.NIL_SECRET. Requests without it are rejected with 401.\n\n**Why it matters:** Without this, coach impact data is empty — you cannot see which coaches are driving family engagement.\n\n**Webhook path:** v9-event-ingest (new — configure Cloudflare Worker and Calendly to POST to this path)\n\n**Tables written:** nil.ops_events\n\n**Replaces:** NIL WF07 — Event Intelligence (Handoff + Identity) — V20",
+        "height": 340,
+        "width": 920,
+        "color": 4
+      }
+    },
+    {
+      "id": "webhook",
+      "name": "Webhook — Event Ingest",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 460],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "v9-event-ingest",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "auth-route",
+      "name": "Validate Auth & Extract Source",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 460],
+      "parameters": {
+        "jsCode": "const headers = $input.first().json.headers || {};\nconst secret = String(headers['x-nil-secret'] || headers['X-Nil-Secret'] || '').trim();\nconst expected = String($env.NIL_SECRET || $env.BASE_WEBHOOK_SECRET || '').trim();\nif (!expected || secret !== expected) throw new Error('Unauthorized: invalid x-nil-secret');\nconst body = $input.first().json.body || $input.first().json;\nconst source = String(headers['x-event-source'] || body.event_source || body.source || 'unknown').toLowerCase();\nconst crypto = require('crypto');\nconst eventId = body.event_id || crypto.createHash('md5').update(JSON.stringify(body) + Date.now().toString()).digest('hex');\nreturn [{ json: { ...body, _source: source, _event_id: eventId, _received_at: new Date().toISOString() } }];"
+      }
+    },
+    {
+      "id": "route",
+      "name": "Route by Source",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [680, 460],
+      "parameters": {
+        "mode": "expression",
+        "output": "={{ $json._source }}",
+        "rules": {
+          "values": [
+            { "value": "cloudflare" },
+            { "value": "calendly" },
+            { "value": "sendgrid" },
+            { "value": "twilio" }
+          ]
+        },
+        "options": { "fallbackOutput": "none" }
+      }
+    },
+    {
+      "id": "cf-normalize",
+      "name": "Normalize Cloudflare Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 280],
+      "parameters": {
+        "jsCode": "const b = $json;\nreturn [{ json: {\n  event_type: 'click.event',\n  source: 'wf_v9_06_cloudflare',\n  idempotency_key: 'cf_event|' + b._event_id,\n  payload: {\n    event_id: b._event_id,\n    tracking_code: b.pk || b.tracking_code || '',\n    destination_type: b.destination || b.destination_type || 'unknown',\n    occurred_at: b.occurred_at || b._received_at,\n    country: b.country || '',\n    device: b.device || ''\n  }\n} }];"
+      }
+    },
+    {
+      "id": "cal-normalize",
+      "name": "Normalize Calendly Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 460],
+      "parameters": {
+        "jsCode": "const b = $json;\nconst payload = b.payload || b;\nconst eventType = String(b.event || '').toLowerCase();\nconst status = eventType.includes('cancel') ? 'cancelled' : eventType.includes('reschedule') ? 'rescheduled' : 'scheduled';\nconst invitee = payload.invitee || {};\nreturn [{ json: {\n  event_type: 'meeting.' + status,\n  source: 'wf_v9_06_calendly',\n  idempotency_key: 'calendly_meeting|' + (payload.event?.uuid || b._event_id),\n  payload: {\n    external_event_id: payload.event?.uuid || b._event_id,\n    invitee_name: invitee.name || '',\n    invitee_email: (invitee.email || '').toLowerCase(),\n    event_name: payload.event_type?.name || 'Meeting',\n    status,\n    scheduled_start: payload.scheduled_event?.start_time || null,\n    scheduled_end: payload.scheduled_event?.end_time || null,\n    cancel_url: payload.cancel_url || '',\n    reschedule_url: payload.reschedule_url || ''\n  }\n} }];"
+      }
+    },
+    {
+      "id": "delivery-normalize",
+      "name": "Normalize Delivery Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 640],
+      "parameters": {
+        "jsCode": "const b = $json;\nconst events = Array.isArray(b) ? b : [b];\nreturn events.map(e => ({ json: {\n  event_type: 'delivery.status',\n  source: 'wf_v9_06_' + b._source,\n  idempotency_key: 'delivery|' + (e.sg_message_id || e.MessageSid || e.message_id || b._event_id),\n  payload: {\n    provider_message_id: e.sg_message_id || e.MessageSid || '',\n    status: e.event === 'delivered' ? 'delivered' : e.event === 'bounce' ? 'bounced' : e.event === 'failed' ? 'failed' : e.event || 'unknown',\n    provider: b._source,\n    error: e.reason || e.ErrorCode || ''\n  }\n} }));"
+      }
+    },
+    {
+      "id": "store-event",
+      "name": "Store in Ops Events",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1160, 460],
+      "parameters": {
+        "operation": "upsert",
+        "schema": "nil",
+        "tableId": "ops_events",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "event_type": "={{ $json.event_type }}",
+            "source": "={{ $json.source }}",
+            "idempotency_key": "={{ $json.idempotency_key }}",
+            "payload": "={{ $json.payload }}"
+          }
+        },
+        "options": { "onConflict": "idempotency_key" }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-nil", "name": "Supabase NIL Wealth" } }
+    },
+    {
+      "id": "respond",
+      "name": "Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1400, 380],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": true }",
+        "options": { "responseCode": 200 }
+      }
+    },
+    {
+      "id": "heartbeat",
+      "name": "Heartbeat to Bot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1400, 540],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_INGEST_SENDER_URL }}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Content-Type", "value": "application/json" }] },
+        "sendBody": true,
+        "jsonBody": "={{ { payload: { schema_version: '5.3', event_type: 'n8n.heartbeat', source: 'wf_v9_06', direction: 'inbound', trace_id: $execution.id, idempotency_key: 'heartbeat|wf_v9_06|' + $now, payload: { workflow: 'WF-V9-06', status: 'ok' } } } }}"
+      }
+    },
+    {
+      "id": "error-trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [200, 840],
+      "parameters": {}
+    },
+    {
+      "id": "error-notify",
+      "name": "Error → Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [440, 840],
+      "parameters": {
+        "authentication": "headerAuth",
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "chat_id", "value": "={{ $env.TELEGRAM_CHAT_ID }}" },
+            { "name": "text", "value": "=⚠️ WF-V9-06 EVENT INGEST ERROR\n{{ $json.error.message }}\nExecution: {{ $execution.id }}" }
+          ]
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Webhook — Event Ingest": { "main": [[{ "node": "Validate Auth & Extract Source", "type": "main", "index": 0 }]] },
+    "Validate Auth & Extract Source": { "main": [[{ "node": "Route by Source", "type": "main", "index": 0 }]] },
+    "Route by Source": {
+      "main": [
+        [{ "node": "Normalize Cloudflare Event", "type": "main", "index": 0 }],
+        [{ "node": "Normalize Calendly Event", "type": "main", "index": 0 }],
+        [{ "node": "Normalize Delivery Status", "type": "main", "index": 0 }],
+        [{ "node": "Normalize Delivery Status", "type": "main", "index": 0 }]
+      ]
+    },
+    "Normalize Cloudflare Event": { "main": [[{ "node": "Store in Ops Events", "type": "main", "index": 0 }]] },
+    "Normalize Calendly Event": { "main": [[{ "node": "Store in Ops Events", "type": "main", "index": 0 }]] },
+    "Normalize Delivery Status": { "main": [[{ "node": "Store in Ops Events", "type": "main", "index": 0 }]] },
+    "Store in Ops Events": {
+      "main": [[
+        { "node": "Respond 200", "type": "main", "index": 0 },
+        { "node": "Heartbeat to Bot", "type": "main", "index": 0 }
+      ]]
+    },
+    "Error Trigger": { "main": [[{ "node": "Error → Telegram", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "tags": [{ "name": "V9" }]
+}

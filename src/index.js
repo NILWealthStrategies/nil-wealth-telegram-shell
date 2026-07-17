@@ -46,10 +46,16 @@ const {
 const {
   allQueuesText,
   buildDashboardText,
+  buildDashboardTextV9,
   buildOpsHealthText,
   buildYearSummaryText,
   buildStateCoverageWithResponses,
 } = require("./lib/dashboard-formatters");
+const {
+  sbV9BusinessSnapshot,
+  sbV9CoverageSummary,
+  sbV9DeliveryHealth,
+} = require("./lib/v9-queries");
 const {
   buildSubmissionCard,
   coverageLabel,
@@ -168,6 +174,12 @@ const WATCHDOG_NOTIFY_ADMINS =
 String(process.env.WATCHDOG_NOTIFY_ADMINS || "true").toLowerCase() === "true";
 const WATCHDOG_ALERT_ONLY_WARN =
 String(process.env.WATCHDOG_ALERT_ONLY_WARN || "true").toLowerCase() === "true";
+// ---------- V9 FEATURE FLAGS (all default false — V8 behavior preserved when unset) ----------
+const V9_DASHBOARD_ENABLED = String(process.env.V9_DASHBOARD_ENABLED || "false").toLowerCase() === "true";
+const V9_COACHES_ENABLED   = String(process.env.V9_COACHES_ENABLED   || "false").toLowerCase() === "true";
+const V9_SUPPORT_ENABLED   = String(process.env.V9_SUPPORT_ENABLED   || "false").toLowerCase() === "true";
+const V9_TRACKING_ENABLED  = String(process.env.V9_TRACKING_ENABLED  || "false").toLowerCase() === "true";
+const V9_METRICS_ENABLED   = String(process.env.V9_METRICS_ENABLED   || "false").toLowerCase() === "true";
 const ADMIN_IDLE_DASHBOARD_RESET_HOURS = Number(process.env.ADMIN_IDLE_DASHBOARD_RESET_HOURS || 5);
 const ADMIN_IDLE_DASHBOARD_CHECK_MS = Number(process.env.ADMIN_IDLE_DASHBOARD_CHECK_MS || 5 * 60 * 1000);
 const DASHBOARD_CACHE_TTL_MS = Number(process.env.DASHBOARD_CACHE_TTL_MS || 3000);
@@ -4408,6 +4420,8 @@ async function sbStateCoverageWithResponses() {
 }
 
 async function dashboardText(filterSource = "all") {
+// V9 routing — all V8 behavior preserved when V9_DASHBOARD_ENABLED is false
+if (V9_DASHBOARD_ENABLED) return dashboardTextV9(filterSource);
 const cacheKey = String(filterSource || "all");
 const cached = dashboardTextCache.get(cacheKey);
 if (cached && Date.now() - cached.ts < DASHBOARD_CACHE_TTL_MS) {
@@ -4568,8 +4582,44 @@ opsDelivery,
 dashboardTextCache.set(cacheKey, { ts: Date.now(), text: rendered });
 return rendered;
 }
+// =====================================================
+// V9 DASHBOARD TEXT (active only when V9_DASHBOARD_ENABLED=true)
+// =====================================================
+async function dashboardTextV9(filterSource = "all") {
+  const cacheKey = `v9:${String(filterSource || "all")}`;
+  const cached = dashboardTextCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < DASHBOARD_CACHE_TTL_MS) return cached.text;
+  const filterLabel =
+    filterSource === "support" ? "🧑‍🧒 Support"
+    : filterSource === "programs" ? "🏈 Programs"
+    : "🌐 All";
+  const { time } = nyParts(new Date());
+  const today = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York" }).format(new Date());
+  const [snapshot, coverage, deliveryHealth] = await Promise.all([
+    sbV9BusinessSnapshot(supabase, filterSource).catch(() => ({})),
+    sbV9CoverageSummary(supabase).catch(() => ({})),
+    sbV9DeliveryHealth(supabase).catch(() => ({})),
+  ]);
+  const lastSyncLabel = snapshot?.lastSyncAt
+    ? new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit", hour12: true }).format(new Date(snapshot.lastSyncAt))
+    : "—";
+  const rendered = buildDashboardTextV9({
+    codeVersion: "Index.js V9.0",
+    buildVersion: BUILD_VERSION,
+    today,
+    time,
+    filterLabel,
+    lastSyncLabel,
+    snapshot,
+    coverage,
+    deliveryHealth,
+  });
+  dashboardTextCache.set(cacheKey, { ts: Date.now(), text: rendered });
+  return rendered;
+}
 // ✅ EXACT v5.1 dashboard keyboard: filters row + nav row + metrics row (ONLY 3 rows)
 function dashboardKeyboardV50() {
+if (V9_DASHBOARD_ENABLED) return dashboardKeyboardV9();
 return Markup.inlineKeyboard([
 // Row 1 (filters)
 [
@@ -4596,6 +4646,26 @@ Markup.button.callback("↻ Refresh", "DASH:refresh"),
 Markup.button.callback("🎯 Coverage", "COVERAGE:open"),
 ],
 ]);
+}
+// V9 dashboard keyboard — approved 3×3 grid from Engineering Manual §3.1
+function dashboardKeyboardV9() {
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback("🏫 Coaches",  "V9COACHES:open"),
+      Markup.button.callback("🤖 Support",  "V9SUPPORT:open"),
+      Markup.button.callback("⚡ Triage",   "TRIAGE:open"),
+    ],
+    [
+      Markup.button.callback("📊 Metrics",  "METRICS:open"),
+      Markup.button.callback("📅 Today",    "TODAY:open"),
+      Markup.button.callback("🎯 Coverage", "COVERAGE:open"),
+    ],
+    [
+      Markup.button.callback("🩺 Health",   "HEALTH:open"),
+      Markup.button.callback("🔍 Search",   "SEARCH:help"),
+      Markup.button.callback("🔄 Refresh",  "DASH:refresh"),
+    ],
+  ]);
 }
 
 // ======================================================
@@ -5537,6 +5607,25 @@ const filterSource = getAdminFilter(ctx);
 await trackPerf(`handler.dashboard.refresh.${filterSource}`, async () => {
 await smartRender(ctx, await dashboardText(filterSource), dashboardKeyboardV50());
 });
+}));
+
+// V9 stub handlers — safe placeholders until Phase 4 Coaches + Support screens are built
+bot.action("V9COACHES:open", safeAction(async (ctx) => {
+if (!isAdmin(ctx)) return;
+await smartRender(
+  ctx,
+  "🏫 Coaches\n\nCoach impact, relationship status, and resource packet tools are coming in V9 Phase 4.\n\nFor now, use /search to look up a coach by email.",
+  Markup.inlineKeyboard([[Markup.button.callback("⬅ Dashboard", "DASH:back")]])
+);
+}));
+
+bot.action("V9SUPPORT:open", safeAction(async (ctx) => {
+if (!isAdmin(ctx)) return;
+await smartRender(
+  ctx,
+  "🤖 Support\n\nThe V9 Support Center (Email, Website Forms, AI Answered, Waiting, Resolved) is coming in V9 Phase 4.\n\nFor now, use ⚡ Triage to see items needing attention.",
+  Markup.inlineKeyboard([[Markup.button.callback("⬅ Dashboard", "DASH:back")]])
+);
 }));
 
 bot.action("HEALTH:open", safeAction(async (ctx) => {

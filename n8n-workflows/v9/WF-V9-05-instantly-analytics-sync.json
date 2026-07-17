@@ -1,0 +1,258 @@
+{
+  "name": "WF-V9-05 | Instantly Analytics Sync",
+  "nodes": [
+    {
+      "id": "note",
+      "name": "📋 About This Workflow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 60],
+      "parameters": {
+        "content": "## WF-V9-05 — Instantly Analytics Sync\n\n**What it does:** Runs every hour. Fetches campaign analytics from Instantly.ai — total emails sent, how many coaches replied, how many were positive replies (detected by keywords in the reply text). Upserts the totals into nil.analytics_metrics so the Telegram dashboard Business Snapshot has real numbers. Also loops through each email event and updates nil.lead_metrics and nil.email_sequences per lead.\n\n**Why it matters:** The V9 dashboard Business Snapshot section (Emails Sent, Coach Replies, Positive Replies) pulls entirely from nil.analytics_metrics. Without this hourly sync, those metrics show 0 forever and you have no visibility into campaign performance.\n\n**Runs:** Every hour on the hour.\n\n**Tables written:** nil.analytics_metrics (upsert by metric_key), nil.lead_metrics (insert), nil.email_sequences (update status)\n\n**Replaces:** NIL WF06 — Analytics Ingest (Click + Metrics + eApp) — V20",
+        "height": 260,
+        "width": 860,
+        "color": 4
+      }
+    },
+    {
+      "id": "schedule",
+      "name": "Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [200, 380],
+      "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "0 * * * *" }] }
+      }
+    },
+    {
+      "id": "fetch-summary",
+      "name": "Fetch Campaign Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [440, 280],
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.instantly.ai/api/v1/analytics/campaign/summary",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "api_key", "value": "={{ $env.INSTANTLY_API_KEY }}" },
+            { "name": "campaign_id", "value": "={{ $env.INSTANTLY_OUTREACH_CAMPAIGN_ID }}" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "fetch-emails",
+      "name": "Fetch Campaign Emails",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [440, 480],
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.instantly.ai/api/v1/analytics/campaign/{{ $env.INSTANTLY_OUTREACH_CAMPAIGN_ID }}/emails",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "api_key", "value": "={{ $env.INSTANTLY_API_KEY }}" },
+            { "name": "limit", "value": "500" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "build-metrics",
+      "name": "Build Aggregate Metrics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 380],
+      "parameters": {
+        "jsCode": "const summary = $('Fetch Campaign Summary').first()?.json || {};\nconst emailList = ($('Fetch Campaign Emails').first()?.json?.data || []);\nconst positiveKw = ['interested','yes','share','forward','send','love to','sounds good','tell me more','learn more','would like','please send','great','absolutely'];\nconst emailsSent = Number(summary.total_sent || summary.emails_sent || 0);\nconst coachReplies = Number(summary.total_replied || 0);\nlet positiveReplies = 0;\nlet packetsDetected = 0;\nconst leadEvents = [];\nfor (const e of emailList) {\n  if (e.replied) {\n    const txt = (e.reply_text || e.reply_snippet || '').toLowerCase();\n    if (positiveKw.some(k => txt.includes(k))) positiveReplies++;\n  }\n  if (e.clicked) packetsDetected++;\n  const eventType = e.replied ? 'email_reply' : e.clicked ? 'email_click' : e.opened ? 'email_open' : null;\n  if (eventType && e.email) {\n    leadEvents.push({ email: e.email.toLowerCase().trim(), event_type: eventType, event_data: { opened_at: e.opened_at, clicked_at: e.clicked_at, replied_at: e.replied_at, campaign_id: e.campaign_id } });\n  }\n}\nreturn [{ json: { emails_sent: emailsSent, coach_replies: coachReplies, positive_replies: positiveReplies, packets_detected: packetsDetected, synced_at: new Date().toISOString(), lead_events: leadEvents } }];"
+      }
+    },
+    {
+      "id": "upsert-analytics",
+      "name": "Upsert Analytics Metrics",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [940, 280],
+      "parameters": {
+        "operation": "upsert",
+        "schema": "nil",
+        "tableId": "analytics_metrics",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "metric_key": "instantly_campaign_totals",
+            "emails_sent": "={{ $json.emails_sent }}",
+            "coach_replies": "={{ $json.coach_replies }}",
+            "positive_replies": "={{ $json.positive_replies }}",
+            "packets_detected": "={{ $json.packets_detected }}",
+            "synced_at": "={{ $json.synced_at }}"
+          }
+        },
+        "options": { "onConflict": "metric_key" }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-nil", "name": "Supabase NIL Wealth" } }
+    },
+    {
+      "id": "prep-events",
+      "name": "Prepare Lead Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [940, 480],
+      "parameters": {
+        "jsCode": "const events = $('Build Aggregate Metrics').item.json.lead_events || [];\nif (!events.length) return [];\nreturn events.map(e => ({ json: e }));"
+      }
+    },
+    {
+      "id": "loop-events",
+      "name": "Loop Lead Events",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1180, 480],
+      "parameters": { "batchSize": 10, "options": {} }
+    },
+    {
+      "id": "find-lead",
+      "name": "Find Lead by Email",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1420, 480],
+      "parameters": {
+        "operation": "get",
+        "schema": "nil",
+        "tableId": "leads",
+        "returnAll": false,
+        "limit": 1,
+        "filters": { "conditions": [{ "keyName": "email", "value": "={{ $json.email }}" }] }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-nil", "name": "Supabase NIL Wealth" } }
+    },
+    {
+      "id": "combine-event",
+      "name": "Combine Event with Lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1660, 480],
+      "parameters": {
+        "jsCode": "const eventData = $('Loop Lead Events').item.json;\nconst leadResults = $input.first().json;\nif (!leadResults || (Array.isArray(leadResults) && !leadResults.length)) return [];\nconst lead = Array.isArray(leadResults) ? leadResults[0] : leadResults;\nreturn [{ json: { lead_id: lead.id, event_type: eventData.event_type, event_data: eventData.event_data } }];"
+      }
+    },
+    {
+      "id": "log-metric",
+      "name": "Log Analytics Metric",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1900, 480],
+      "parameters": {
+        "operation": "insert",
+        "schema": "nil",
+        "tableId": "lead_metrics",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lead_id": "={{ $json.lead_id }}",
+            "metric_type": "={{ $json.event_type }}",
+            "metric_value": "={{ $json.event_data.open_count || $json.event_data.click_count || $json.event_data.reply_count || 1 }}",
+            "metadata": "={{ $json.event_data }}"
+          }
+        },
+        "options": { "onConflict": "ignore" }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-nil", "name": "Supabase NIL Wealth" } }
+    },
+    {
+      "id": "update-sequence",
+      "name": "Update Sequence Status",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2140, 480],
+      "parameters": {
+        "operation": "update",
+        "schema": "nil",
+        "tableId": "email_sequences",
+        "filters": { "conditions": [{ "keyName": "lead_id", "value": "={{ $json.lead_id }}" }] },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "={{ $json.event_type === 'email_reply' ? 'replied' : ($json.event_type === 'email_click' ? 'clicked' : 'opened') }}"
+          }
+        }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-nil", "name": "Supabase NIL Wealth" } }
+    },
+    {
+      "id": "heartbeat",
+      "name": "Heartbeat to Bot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2380, 380],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_INGEST_SENDER_URL }}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Content-Type", "value": "application/json" }] },
+        "sendBody": true,
+        "jsonBody": "={{ { payload: { schema_version: '5.3', event_type: 'n8n.heartbeat', source: 'wf_v9_05', direction: 'inbound', trace_id: $execution.id, idempotency_key: 'heartbeat|wf_v9_05|' + $now, payload: { workflow: 'WF-V9-05', emails_sent: $('Build Aggregate Metrics').item.json.emails_sent, coach_replies: $('Build Aggregate Metrics').item.json.coach_replies, status: 'ok' } } } }}"
+      }
+    },
+    {
+      "id": "error-trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [200, 700],
+      "parameters": {}
+    },
+    {
+      "id": "error-notify",
+      "name": "Error → Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [440, 700],
+      "parameters": {
+        "authentication": "headerAuth",
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "chat_id", "value": "={{ $env.TELEGRAM_CHAT_ID }}" },
+            { "name": "text", "value": "=⚠️ WF-V9-05 INSTANTLY SYNC FAILED\n{{ $json.error.message }}\n\nDashboard metrics may be stale.\nExecution: {{ $execution.id }}" }
+          ]
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Every Hour": {
+      "main": [[
+        { "node": "Fetch Campaign Summary", "type": "main", "index": 0 },
+        { "node": "Fetch Campaign Emails", "type": "main", "index": 0 }
+      ]]
+    },
+    "Fetch Campaign Summary": { "main": [[{ "node": "Build Aggregate Metrics", "type": "main", "index": 0 }]] },
+    "Fetch Campaign Emails": { "main": [[{ "node": "Build Aggregate Metrics", "type": "main", "index": 0 }]] },
+    "Build Aggregate Metrics": {
+      "main": [[
+        { "node": "Upsert Analytics Metrics", "type": "main", "index": 0 },
+        { "node": "Prepare Lead Events", "type": "main", "index": 0 }
+      ]]
+    },
+    "Upsert Analytics Metrics": { "main": [[{ "node": "Heartbeat to Bot", "type": "main", "index": 0 }]] },
+    "Prepare Lead Events": { "main": [[{ "node": "Loop Lead Events", "type": "main", "index": 0 }]] },
+    "Loop Lead Events": { "main": [[{ "node": "Find Lead by Email", "type": "main", "index": 0 }]] },
+    "Find Lead by Email": { "main": [[{ "node": "Combine Event with Lead", "type": "main", "index": 0 }]] },
+    "Combine Event with Lead": { "main": [[{ "node": "Log Analytics Metric", "type": "main", "index": 0 }]] },
+    "Log Analytics Metric": { "main": [[{ "node": "Update Sequence Status", "type": "main", "index": 0 }]] },
+    "Update Sequence Status": { "main": [[{ "node": "Heartbeat to Bot", "type": "main", "index": 0 }]] },
+    "Error Trigger": { "main": [[{ "node": "Error → Telegram", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "tags": [{ "name": "V9" }]
+}

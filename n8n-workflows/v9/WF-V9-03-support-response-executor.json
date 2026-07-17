@@ -1,0 +1,213 @@
+{
+  "name": "WF-V9-03 | Support Response Executor",
+  "nodes": [
+    {
+      "id": "note",
+      "name": "📋 About This Workflow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 60],
+      "parameters": {
+        "content": "## WF-V9-03 — Support Response Executor\n\n**What it does:** Runs every 5 minutes. Checks nil.message_drafts for auto_reply entries where status = queued and the scheduled_for time has passed. For each one, it locks the record (marks it 'sending' to prevent double-sends), sends the reply from support@mynilwealthstrategies.com via SendGrid, then marks it 'sent' and closes the corresponding support ticket in nil.support_tickets.\n\n**Why it matters:** This is the ONLY workflow that sends email to coaches or families from the support queue. The 5–18 minute random delay set by WF-V9-02 makes replies feel human. The lock-before-send pattern prevents the same email going out twice even if the workflow is triggered concurrently.\n\n**Critical rule:** Never modify this to send more than one email per support ticket. The idempotency_key on nil.message_drafts is the safety mechanism — do not remove it.\n\n**Tables written:** nil.message_drafts (status), nil.support_tickets (status)\n\n**Replaces:** NIL WF03 — Send Executor + CC Support — V20",
+        "height": 260,
+        "width": 880,
+        "color": 4
+      }
+    },
+    {
+      "id": "schedule",
+      "name": "Every 5 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [200, 380],
+      "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "*/5 * * * *" }] }
+      }
+    },
+    {
+      "id": "get-queued",
+      "name": "Get Queued Drafts",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [440, 380],
+      "parameters": {
+        "operation": "get",
+        "schema": "nil",
+        "tableId": "message_drafts",
+        "returnAll": false,
+        "limit": 5,
+        "filters": {
+          "conditions": [
+            { "keyName": "status", "value": "queued" },
+            { "keyName": "draft_type", "value": "auto_reply" }
+          ]
+        }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-nil", "name": "Supabase NIL Wealth" } }
+    },
+    {
+      "id": "filter-ready",
+      "name": "Filter Ready to Send",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 380],
+      "parameters": {
+        "jsCode": "const now = Date.now();\nconst ready = $input.all().map(i => i.json).filter(d => {\n  if (!d.idempotency_key || !d.lead_email) return false;\n  if (!d.scheduled_for) return true;\n  return new Date(d.scheduled_for).getTime() <= now;\n});\nif (!ready.length) return [];\nreturn ready.map(d => ({ json: d }));"
+      }
+    },
+    {
+      "id": "loop",
+      "name": "Loop Drafts",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [920, 380],
+      "parameters": { "batchSize": 1, "options": {} }
+    },
+    {
+      "id": "mark-sending",
+      "name": "Lock — Mark Sending",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1160, 380],
+      "parameters": {
+        "operation": "update",
+        "schema": "nil",
+        "tableId": "message_drafts",
+        "filters": {
+          "conditions": [
+            { "keyName": "idempotency_key", "value": "={{ $json.idempotency_key }}" },
+            { "keyName": "status", "value": "queued" }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": { "status": "sending" }
+        }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-nil", "name": "Supabase NIL Wealth" } }
+    },
+    {
+      "id": "send-email",
+      "name": "Send Reply (SendGrid)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1400, 380],
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "url": "https://api.sendgrid.com/v3/mail/send",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.SENDGRID_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"personalizations\": [{ \"to\": [{ \"email\": \"{{ $json.lead_email }}\" }] }],\n  \"from\": { \"email\": \"support@mynilwealthstrategies.com\", \"name\": \"NIL Wealth Strategies Support\" },\n  \"reply_to\": { \"email\": \"support@mynilwealthstrategies.com\" },\n  \"subject\": \"{{ $json.subject || 'Re: NIL Wealth Strategies' }}\",\n  \"content\": [{ \"type\": \"text/plain\", \"value\": \"Thank you for your reply. A member of our team will follow up with you shortly.\\n\\nIf you have any questions in the meantime, please visit https://mynilwealthstrategies.com or reply to this email.\\n\\nNIL Wealth Strategies Support\\nsupport@mynilwealthstrategies.com\" }]\n}",
+        "options": {}
+      }
+    },
+    {
+      "id": "mark-sent",
+      "name": "Mark Sent",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1640, 280],
+      "parameters": {
+        "operation": "update",
+        "schema": "nil",
+        "tableId": "message_drafts",
+        "filters": { "conditions": [{ "keyName": "idempotency_key", "value": "={{ $json.idempotency_key }}" }] },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": { "status": "sent", "sent_at": "={{ $now }}" }
+        }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-nil", "name": "Supabase NIL Wealth" } }
+    },
+    {
+      "id": "close-ticket",
+      "name": "Close Support Ticket",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1640, 460],
+      "parameters": {
+        "operation": "update",
+        "schema": "nil",
+        "tableId": "support_tickets",
+        "filters": {
+          "conditions": [{ "keyName": "contact_email", "value": "={{ $json.lead_email }}" }, { "keyName": "status", "value": "queued_auto" }]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": { "status": "auto_replied", "resolved_at": "={{ $now }}" }
+        }
+      },
+      "credentials": { "supabaseApi": { "id": "supabase-nil", "name": "Supabase NIL Wealth" } }
+    },
+    {
+      "id": "heartbeat",
+      "name": "Heartbeat to Bot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1880, 380],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_INGEST_SENDER_URL }}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Content-Type", "value": "application/json" }] },
+        "sendBody": true,
+        "jsonBody": "={{ { payload: { schema_version: '5.3', event_type: 'n8n.heartbeat', source: 'wf_v9_03', direction: 'inbound', trace_id: $execution.id, idempotency_key: 'heartbeat|wf_v9_03|' + $now, payload: { workflow: 'WF-V9-03', status: 'ok' } } } }}"
+      }
+    },
+    {
+      "id": "error-trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [200, 620],
+      "parameters": {}
+    },
+    {
+      "id": "error-notify",
+      "name": "Error → Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [440, 620],
+      "parameters": {
+        "authentication": "headerAuth",
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "chat_id", "value": "={{ $env.TELEGRAM_CHAT_ID }}" },
+            { "name": "text", "value": "=⚠️ WF-V9-03 SEND ERROR\n{{ $json.error.message }}\nExecution: {{ $execution.id }}" }
+          ]
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Every 5 Minutes": { "main": [[{ "node": "Get Queued Drafts", "type": "main", "index": 0 }]] },
+    "Get Queued Drafts": { "main": [[{ "node": "Filter Ready to Send", "type": "main", "index": 0 }]] },
+    "Filter Ready to Send": { "main": [[{ "node": "Loop Drafts", "type": "main", "index": 0 }]] },
+    "Loop Drafts": { "main": [[{ "node": "Lock — Mark Sending", "type": "main", "index": 0 }]] },
+    "Lock — Mark Sending": { "main": [[{ "node": "Send Reply (SendGrid)", "type": "main", "index": 0 }]] },
+    "Send Reply (SendGrid)": {
+      "main": [[
+        { "node": "Mark Sent", "type": "main", "index": 0 },
+        { "node": "Close Support Ticket", "type": "main", "index": 0 }
+      ]]
+    },
+    "Mark Sent": { "main": [[{ "node": "Heartbeat to Bot", "type": "main", "index": 0 }]] },
+    "Error Trigger": { "main": [[{ "node": "Error → Telegram", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "tags": [{ "name": "V9" }]
+}
