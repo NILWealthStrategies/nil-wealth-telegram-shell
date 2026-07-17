@@ -78,8 +78,8 @@ function buildDashboardMetricsText(metrics = {}) {
 Total Clicks: ${totalClicks}
 Total NILWS Website Opens: ${metrics.websiteOpens || metrics.nilwsWebsiteOpens || 0}
 Total Parent Guide Opens: ${metrics.programLinkOpens || 0}
-Total Supplemental Health Guide Clicks: ${metrics.supplementalHealthGuideClicks || 0}
-Total Risk Awareness Guide Clicks: ${metrics.riskAwarenessGuideClicks || 0}
+Total SH Guide Clicks: ${metrics.supplementalHealthGuideClicks || 0}
+🎰 Risk Awareness Guide Clicks: ${metrics.riskAwarenessGuideClicks || 0}
 Total Tax Education Guide Clicks: ${metrics.taxEducationGuideClicks || 0}
 Total Enroll Portal Visits: ${metrics.enrollClicks || 0}
 Total eApp Visits: ${metrics.eappVisits || 0}
@@ -309,8 +309,8 @@ TOTALS
     `• Clicks: ${n(d.totalClicks)} (Avg ${avg(d.totalClicks)}/mo)\n` +
     `• NILWS Website Opens: ${n(d.websiteOpens || d.nilwsWebsiteOpens)} (Avg ${avg(d.websiteOpens || d.nilwsWebsiteOpens)}/mo)\n` +
     `• Parent Guides Opened: ${n(d.programLinkOpens)} (Avg ${avg(d.programLinkOpens)}/mo)\n` +
-    `• Supplemental Health Guide Clicks: ${n(d.supplementalHealthGuideClicks)} (Avg ${avg(d.supplementalHealthGuideClicks)}/mo)\n` +
-    `• Risk Awareness Guide Clicks: ${n(d.riskAwarenessGuideClicks)} (Avg ${avg(d.riskAwarenessGuideClicks)}/mo)\n` +
+    `• SH Guide Clicks: ${n(d.supplementalHealthGuideClicks)} (Avg ${avg(d.supplementalHealthGuideClicks)}/mo)\n` +
+    `• 🎰 Risk Awareness Guide Clicks: ${n(d.riskAwarenessGuideClicks)} (Avg ${avg(d.riskAwarenessGuideClicks)}/mo)\n` +
     `• Tax Education Guide Clicks: ${n(d.taxEducationGuideClicks)} (Avg ${avg(d.taxEducationGuideClicks)}/mo)\n` +
     `• Enroll Clicks: ${n(d.enrollClicks)} (Avg ${avg(d.enrollClicks)}/mo)\n` +
     `• eApp Visits: ${n(d.eappVisits)} (Avg ${avg(d.eappVisits)}/mo)\n` +
@@ -329,8 +329,8 @@ TRENDS (vs last month)\n\n` +
     `• Clicks: ${trendEmoji(t.totalClicks)}\n` +
     `• NILWS Website Opens: ${trendEmoji(t.websiteOpens)}\n` +
     `• Parent Guides: ${trendEmoji(t.opens)}\n` +
-    `• Supplemental Health: ${trendEmoji(t.supplementalHealthGuideClicks)}\n` +
-    `• Risk Awareness: ${trendEmoji(t.riskAwarenessGuideClicks)}\n` +
+    `• SH Guide: ${trendEmoji(t.supplementalHealthGuideClicks)}\n` +
+    `• 🎰 Risk Awareness: ${trendEmoji(t.riskAwarenessGuideClicks)}\n` +
     `• Tax Education: ${trendEmoji(t.taxEducationGuideClicks)}\n` +
     `• Enroll Clicks: ${trendEmoji(t.enrollClicks)}\n` +
     `• eApp Visits: ${trendEmoji(t.eappVisits)}\n` +
@@ -380,7 +380,7 @@ ${codeVersion} • Build: ${String(buildVersion).slice(0, 8)}
 🌎 Filter: ${filterLabel}
 🔄 Last Sync: ${lastSyncLabel || '—'}
 
-📊 BUSINESS SNAPSHOT
+� BUSINESS SNAPSHOT
 
 📧 Emails Sent: ${n(s.emailsSent)}
 💬 Coach Replies: ${n(s.coachReplies)}
@@ -390,15 +390,15 @@ ${codeVersion} • Build: ${String(buildVersion).slice(0, 8)}
 
 📘 Parent Guide Opens: ${n(s.parentGuideOpens)}
 🌐 NILWS Website Opens: ${n(s.websiteOpens)}
-🏥 Supplemental Health Guide Opens: ${n(s.supplementalHealthOpens)}
-⚠️ Risk Awareness Guide Opens: ${n(s.riskAwarenessOpens)}
+🏥 SH Guide Opens: ${n(s.supplementalHealthOpens)}
+🎰 Risk Awareness Guide Opens: ${n(s.riskAwarenessOpens)}
 💰 Tax Education Guide Opens: ${n(s.taxEducationOpens)}
 📝 Enrollment Portal Visits: ${n(s.enrollmentVisits)}
 📱 eApp Visits: ${n(s.eappVisits)}
 
-📧 Email Questions: ${n(s.emailQuestions)}
+📧 Questions: ${n(s.emailQuestions)}
 📋 Website Forms: ${n(s.websiteForms)}
-☎️ Meetings Scheduled: ${n(s.meetingsScheduled)}
+📞 Meetings Scheduled: ${n(s.meetingsScheduled)}
 ⏳ Waiting for Response: ${n(s.waitingForResponse)}
 
 🎯 MARKET COVERAGE

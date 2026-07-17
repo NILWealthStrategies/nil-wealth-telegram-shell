@@ -7805,10 +7805,10 @@ NILWS Website Opens: ${metrics.websiteOpens || metrics.nilwsWebsiteOpens || 0}
 Parent Guide Clicks: ${metrics.parentGuideClicks || 0}
   (Avg ${avg(metrics.parentGuideClicks)}${perLabel})
 
-Supplemental Health Guide Clicks: ${metrics.supplementalHealthGuideClicks || 0}
+SH Guide Clicks: ${metrics.supplementalHealthGuideClicks || 0}
   (Avg ${avg(metrics.supplementalHealthGuideClicks)}${perLabel})
 
-Risk Awareness Guide Clicks: ${metrics.riskAwarenessGuideClicks || 0}
+🎰 Risk Awareness Guide Clicks: ${metrics.riskAwarenessGuideClicks || 0}
   (Avg ${avg(metrics.riskAwarenessGuideClicks)}${perLabel})
 
 Tax Education Guide Clicks: ${metrics.taxEducationGuideClicks || 0}
