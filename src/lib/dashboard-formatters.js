@@ -399,7 +399,7 @@ ${codeVersion} • Build: ${String(buildVersion).slice(0, 8)}
 📦 Resource Packets Sent: ${n(s.resourcePacketsSent)}
 🤝 Coaches Sharing: ${n(s.coachesSharing)}
 
-🗣️ Coach Campaign
+🗣️ COACH CAMPAIGN
 
 �📘 Parent Guide Opens: ${n(s.parentGuideOpens)}
 🌐 NILWS Website Opens: ${n(s.websiteOpens)}

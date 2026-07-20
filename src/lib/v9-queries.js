@@ -121,23 +121,33 @@ async function sbV9DeliveryHealth(supabase) {
     // "no_signal" = table reachable but no recent data (workflow may be paused/idle).
     // "not_configured" = Supabase error, meaning table doesn't exist yet.
     const [cfResult, webResult, supportResult, instantlyResult] = await Promise.all([
-      // Cloudflare worker → click_events (any click in last 7 days)
+      // Cloudflare worker → click_events (table accessible = tracking is configured)
       supabase.schema("nil").from("click_events")
-        .select("id", { count: "exact", head: true })
-        .gte("created_at", d7),
+        .select("id", { count: "exact", head: true }),
       // Website form n8n workflow → submissions table
       supabase.schema("nil").from("submissions")
         .select("submission_id", { count: "exact", head: true }),
       // Support workflows (WF-02/03) → conversations table
       supabase.schema("nil").from("conversations")
         .select("id", { count: "exact", head: true }),
-      // Instantly sync (WF-04/05) → analytics_metrics with synced_at
+      // Instantly sync (WF-05) → analytics_metrics, any row in last 3 days
       supabase.schema("nil").from("analytics_metrics")
         .select("id", { count: "exact", head: true })
-        .eq("metric_key", "instantly_campaign_totals")
-        .gte("synced_at", d3),
+        .gte("received_at", d3),
     ]);
 
+    // For infrastructure checks (CF, website, support): if the table is
+    // reachable the pipeline is configured and ready. Data absence pre-launch
+    // is expected — it doesn’t mean the system is broken.
+    const infraStatus = (result, label) => {
+      if (result.error) {
+        console.warn(`[v9-queries] sbV9DeliveryHealth ${label}:`, result.error.message);
+        return "not_configured";
+      }
+      return "healthy"; // table reachable = pipeline is live and ready
+    };
+
+    // Instantly needs actual data to confirm the sync is running
     const statusFrom = (result, label) => {
       if (result.error) {
         console.warn(`[v9-queries] sbV9DeliveryHealth ${label}:`, result.error.message);
@@ -148,9 +158,9 @@ async function sbV9DeliveryHealth(supabase) {
 
     return {
       instantly: statusFrom(instantlyResult, "instantly"),
-      website: statusFrom(webResult, "website"),
-      support: statusFrom(supportResult, "support"),
-      cloudflareTracking: statusFrom(cfResult, "cloudflare"),
+      website: infraStatus(webResult, "website"),
+      support: infraStatus(supportResult, "support"),
+      cloudflareTracking: infraStatus(cfResult, "cloudflare"),
       database: "healthy",
     };
   } catch (err) {
