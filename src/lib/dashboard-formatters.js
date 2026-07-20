@@ -401,7 +401,7 @@ ${codeVersion} • Build: ${String(buildVersion).slice(0, 8)}
 
 🗣️ COACH CAMPAIGN
 
-�📘 Parent Guide Opens: ${n(s.parentGuideOpens)}
+📘 Parent Guide Opens: ${n(s.parentGuideOpens)}
 🌐 NILWS Website Opens: ${n(s.websiteOpens)}
 🏥 SH Guide Opens: ${n(s.supplementalHealthOpens)}
 🎰 Risk Awareness Guide Opens: ${n(s.riskAwarenessOpens)}
