@@ -402,7 +402,7 @@ ${codeVersion} • Build: ${String(buildVersion).slice(0, 8)}
 📘 Parent Guide Opens: ${n(s.parentGuideOpens)}
 🌐 NILWS Website Opens: ${n(s.websiteOpens)}
 🏥 SH Guide Opens: ${n(s.supplementalHealthOpens)}
-Risk Awareness Guide Opens: ${n(s.riskAwarenessOpens)}
+🎰 Risk Awareness Guide Opens: ${n(s.riskAwarenessOpens)}
 💰 Tax Education Guide Opens: ${n(s.taxEducationOpens)}
 📝 Enrollment Portal Visits: ${n(s.enrollmentVisits)}
 📱 eApp Visits: ${n(s.eappVisits)}
