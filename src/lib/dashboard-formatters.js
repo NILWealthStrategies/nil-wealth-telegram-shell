@@ -368,9 +368,21 @@ function buildDashboardTextV9({
   const coverageBar = `[${'█'.repeat(filled)}${'░'.repeat(10 - filled)}] ${pctStr}%`;
 
   const he = (status) =>
-    status === 'healthy' ? '🟢' : status === 'degraded' ? '🟡' : status === 'failed' ? '🔴' : '⚪';
+    status === 'healthy' ? '🟢'
+    : status === 'degraded' ? '🟡'
+    : status === 'failed' ? '🔴'
+    : status === 'no_signal' ? '🟡'
+    : status === 'not_configured' ? '🔵'
+    : '⚪';
+  const statusLabel = (status) =>
+    status === 'healthy' ? 'Healthy'
+    : status === 'degraded' ? 'Degraded'
+    : status === 'failed' ? 'Failed'
+    : status === 'no_signal' ? 'No Signal (workflow not sending heartbeat)'
+    : status === 'not_configured' ? 'Not Configured (V9 migration pending)'
+    : 'Unknown';
   const hl = (status, label) =>
-    `${he(status)} ${label} ${status === 'healthy' ? 'Healthy' : status === 'degraded' ? 'Degraded' : 'Unknown'}`;
+    `${he(status)} ${label}: ${statusLabel(status)}`;
 
   return `🏠 NIL WEALTH OPS DASHBOARD
 ${codeVersion} • Build: ${String(buildVersion).slice(0, 8)}

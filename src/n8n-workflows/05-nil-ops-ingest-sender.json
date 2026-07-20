@@ -15,7 +15,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const crypto = require('crypto');\nconst body = JSON.stringify($node.Webhook.json.payload || {});\nconst secret = process.env.OPS_WEBHOOK_HMAC_SECRET || '';\nconst signature = crypto\n  .createHmac('sha256', secret)\n  .update(body)\n  .digest('hex');\n\nreturn {\n  payload: $node.Webhook.json.payload,\n  signature: signature,\n  timestamp: new Date().toISOString()\n};"
+        "jsCode": "const crypto = require('crypto');\n\nconst payload = $node.Webhook.json.payload || {};\nconst secret = String(process.env.OPS_WEBHOOK_HMAC_SECRET || '').trim();\n\nconst raw_body = JSON.stringify(payload ?? {});\n\nif (!secret) {\n  throw new Error('WF09 config error: OPS_WEBHOOK_HMAC_SECRET is missing');\n}\n\nconst signature = crypto\n  .createHmac('sha256', secret)\n  .update(raw_body)\n  .digest('hex');\n\nreturn {\n  raw_body,\n  signature,\n  signature_header: 'x-ops-signature',\n  endpoint: String(process.env.OPS_INGEST_ENDPOINT || 'https://nil-wealth-telegram-shell.onrender.com/ops/ingest').trim(),\n  event_type: payload?.event_type || null,\n  trace_id: payload?.trace_id || null,\n  idempotency_key: payload?.idempotency_key || null,\n  debug_preview: {\n    raw_body_length: raw_body.length,\n    signature,\n  },\n};"
       },
       "name": "Generate HMAC Signature",
       "type": "n8n-nodes-base.code",
@@ -24,14 +24,14 @@
     },
     {
       "parameters": {
-        "url": "={{ $env.OPS_INGEST_ENDPOINT || 'https://nil-wealth-telegram-shell.onrender.com/ops/ingest' }}",
+        "url": "={{ $node['Generate HMAC Signature'].json.endpoint }}",
         "method": "POST",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "x-ops-signature",
-              "value": "{{ $node['Generate HMAC Signature'].json.signature }}"
+              "value": "={{ $node['Generate HMAC Signature'].json.signature }}"
             },
             {
               "name": "Content-Type",
@@ -41,7 +41,7 @@
         },
         "sendBody": true,
         "contentType": "application/json",
-        "body": "={{ JSON.stringify($node['Generate HMAC Signature'].json.payload) }}"
+        "body": "={{ $node['Generate HMAC Signature'].json.raw_body }}"
       },
       "name": "Forward to bot /ops/ingest",
       "type": "n8n-nodes-base.httpRequest",
@@ -50,7 +50,7 @@
     },
     {
       "parameters": {
-        "jsCode": "return {\n  ok: true,\n  forwarded_at: new Date().toISOString(),\n  event_type: $node.Webhook.json.payload?.event_type,\n  source: $node.Webhook.json.payload?.source\n};"
+        "jsCode": "return {\n  ok: true,\n  forwarded_at: new Date().toISOString(),\n  event_type: $node['Generate HMAC Signature'].json.event_type,\n  trace_id: $node['Generate HMAC Signature'].json.trace_id,\n  idempotency_key: $node['Generate HMAC Signature'].json.idempotency_key,\n  signature: $node['Generate HMAC Signature'].json.signature,\n  raw_body_length: $node['Generate HMAC Signature'].json.debug_preview.raw_body_length,\n};"
       },
       "name": "Return Success",
       "type": "n8n-nodes-base.code",

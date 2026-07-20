@@ -55,6 +55,8 @@ const {
   sbV9BusinessSnapshot,
   sbV9CoverageSummary,
   sbV9DeliveryHealth,
+  sbV9ListWebsiteForms,
+  sbV9ListSupportTickets,
 } = require("./lib/v9-queries");
 const {
   buildSubmissionCard,
@@ -5609,20 +5611,67 @@ await smartRender(ctx, await dashboardText(filterSource), dashboardKeyboardV50()
 // V9 stub handlers — safe placeholders until Phase 4 Coaches + Support screens are built
 bot.action("V9COACHES:open", safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
-await smartRender(
-  ctx,
-  "🏫 Coaches\n\nCoach impact, relationship status, and resource packet tools are coming in V9 Phase 4.\n\nFor now, use /search to look up a coach by email.",
-  Markup.inlineKeyboard([[Markup.button.callback("⬅ Dashboard", "DASH:back")]])
-);
+const [snapshot, followups] = await Promise.all([
+  sbV9BusinessSnapshot(supabase).catch(() => ({})),
+  sbListCoachFollowupsDueNow({ source: "all", limit: 5 }).catch(() => []),
+]);
+const s = snapshot || {};
+const n = (v) => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
+const dueLines = (followups || []).slice(0, 3).map((f, i) => {
+  const coach = tSafe(f.coach_full_name || f.coach_name || "—", 30);
+  const prog = f.program_name || f.program || f.school || "";
+  return `${i + 1}) Coach ${coach}${prog ? ` · ${tShortProgram(prog)}` : ""}`;
+});
+const dueText = dueLines.length > 0 ? dueLines.join("\n") : "None due now";
+const text =
+  `🏫 COACHES\n\n` +
+  `📧 Campaign Replies: ${n(s.coachReplies)}\n` +
+  `👍 Positive Replies: ${n(s.positiveReplies)}\n` +
+  `📦 Resource Packets Sent: ${n(s.resourcePacketsSent)}\n` +
+  `🤝 Coaches Sharing: ${n(s.coachesSharing)}\n` +
+  `\n📚 Follow-Ups Due Now:\n${dueText}\n` +
+  `\nUse 🔍 Search to look up a coach by name or email.`;
+const kb = Markup.inlineKeyboard([
+  [Markup.button.callback("📚 All Follow-Ups", "VIEW:followups")],
+  [Markup.button.callback("🔍 Search Coach", "SEARCH:help")],
+  [Markup.button.callback("⬅ Dashboard", "DASH:back")],
+]);
+await smartRender(ctx, text, kb);
 }));
 
 bot.action("V9SUPPORT:open", safeAction(async (ctx) => {
 if (!isAdmin(ctx)) return;
-await smartRender(
-  ctx,
-  "🤖 Support\n\nThe V9 Support Center (Email, Website Forms, AI Answered, Waiting, Resolved) is coming in V9 Phase 4.\n\nFor now, use ⚡ Triage to see items needing attention.",
-  Markup.inlineKeyboard([[Markup.button.callback("⬅ Dashboard", "DASH:back")]])
-);
+const [snapshot, webForms, tickets] = await Promise.all([
+  sbV9BusinessSnapshot(supabase).catch(() => ({})),
+  sbV9ListWebsiteForms(supabase, 5).catch(() => []),
+  sbV9ListSupportTickets(supabase, 5).catch(() => []),
+]);
+const s = snapshot || {};
+const n = (v) => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
+const formLines = (webForms || []).slice(0, 3).map((f, i) => {
+  const name = [f.first_name, f.last_name].filter(Boolean).join(" ") || f.email || "Unknown";
+  const sport = f.sport ? ` · ${f.sport}` : "";
+  const when = f.created_at ? ` (${tFmtDateShort(f.created_at)})` : "";
+  return `${i + 1}) ${tSafe(name, 28)}${sport}${when}`;
+});
+const ticketLines = (tickets || []).slice(0, 3).map((t, i) => {
+  const sub = tSafe(t.subject || t.email || "—", 40);
+  const when = t.created_at ? ` (${tFmtDateShort(t.created_at)})` : "";
+  return `${i + 1}) ${sub}${when}`;
+});
+const text =
+  `🤖 SUPPORT CENTER\n\n` +
+  `📧 Email Questions Open: ${n(s.emailQuestions)}\n` +
+  `📋 Website Forms Total: ${n(s.websiteForms)}\n` +
+  `⏳ Waiting for Response: ${n(s.waitingForResponse)}\n` +
+  `\n📋 Recent Website Forms:\n${formLines.length > 0 ? formLines.join("\n") : "None"}\n` +
+  `\n📧 Open Email Tickets:\n${ticketLines.length > 0 ? ticketLines.join("\n") : "None"}\n` +
+  `\nUse ⚡ Triage to act on items needing attention.`;
+const kb = Markup.inlineKeyboard([
+  [Markup.button.callback("⚡ Triage", "TRIAGE:open")],
+  [Markup.button.callback("⬅ Dashboard", "DASH:back")],
+]);
+await smartRender(ctx, text, kb);
 }));
 
 bot.action("HEALTH:open", safeAction(async (ctx) => {
@@ -6997,11 +7046,10 @@ async function triageOpen(ctx, activeSection = "all", activePage = 1) {
 const filterSource = getAdminFilter(ctx) || "all";
 const roleFilter = getAdminRoleFilter(ctx) || "all";
 const pageSize = 10;
-const OVERDUE_THRESHOLD_HOURS = 24; // Items waiting > 24h are urgent
+const OVERDUE_THRESHOLD_HOURS = 24;
 
-// Fetch all items for all sections
-const [handoffRaw, needsRaw, callsRaw, followupsRaw] = await Promise.all([
-  sbListHandoffPending({ source: filterSource, limit: 24 }).catch((err) => {
+// V9: also fetch website form submissions when V9 dashboard is active
+const fetchPromises = [  sbListHandoffPending({ source: filterSource, limit: 24 }).catch((err) => {
     logError("triageOpen:handoff", err);
     return [];
   }),
@@ -7017,7 +7065,10 @@ const [handoffRaw, needsRaw, callsRaw, followupsRaw] = await Promise.all([
     logError("triageOpen:followups", err);
     return [];
   }),
-]);
+];
+
+const results = await Promise.all(fetchPromises);
+const [handoffRaw, needsRaw, callsRaw, followupsRaw] = results;
 
 const handoff = roleFilter === "all"
   ? (handoffRaw || [])
@@ -7031,17 +7082,14 @@ const OVERDUE_MINUTES = OVERDUE_THRESHOLD_HOURS * 60;
 for (const c of needsRaw || []) {
   if (!c?.id || seen.has(c.id)) continue;
   seen.add(c.id);
-  
-  // Check if overdue (waiting > 24 hours)
   const waitingMin = tComputeWaitingMinutes(c);
   if (waitingMin != null && waitingMin > OVERDUE_MINUTES) {
-    urgent.push(c); // Elevate overdue to urgent
+    urgent.push(c);
   } else {
-    needs.push(c); // Keep non-overdue in needs
+    needs.push(c);
   }
 }
 
-// Sort
 const waitSort = (a, b) => (tComputeWaitingMinutes(b) || 0) - (tComputeWaitingMinutes(a) || 0);
 urgent.sort(waitSort);
 needs.sort(waitSort);
@@ -7060,7 +7108,25 @@ const followups = (followupsRaw || []).slice().sort((a, b) => {
   return (ad ? new Date(ad).getTime() : Infinity) - (bd ? new Date(bd).getTime() : Infinity);
 });
 
-// Build unified item list with tier info
+// V9 tier headers reflect the outreach goals:
+// - handoff = coaches who replied in Instantly and need human follow-up
+const v9TierHeaders = {
+  handoff: "📌 COACH REPLIES — Ready for Outreach (Instantly)",
+  urgent: "‼ URGENT (Overdue > 24h)",
+  needs: "📝 NEEDS REPLY",
+  calls: "📱 CALLS (DUE)",
+  followups: "📚 COACH FOLLOW-UPS (DUE)",
+};
+const v8TierHeaders = {
+  handoff: "📌 NEEDS LOOP — AI Ready (Instantly)",
+  urgent: "‼ URGENT (Overdue > 24h)",
+  needs: "📝 NEEDS REPLY",
+  calls: "📱 CALLS (DUE)",
+  followups: "📚 COACH FOLLOW-UPS (DUE)",
+};
+const tierHeaders = V9_DASHBOARD_ENABLED ? v9TierHeaders : v8TierHeaders;
+
+// Build unified item list
 const allItems = [];
 handoff.forEach(c => allItems.push({ type: "convo", tier: "handoff", item: c }));
 urgent.forEach(c => allItems.push({ type: "convo", tier: "urgent", item: c }));
@@ -7074,35 +7140,33 @@ const safePage = Math.min(totalPages, Math.max(1, Number(activePage) || 1));
 const start = (safePage - 1) * pageSize;
 const pageItems = allItems.slice(start, start + pageSize);
 
-// Build text with tier headers
+// Build text
 const lines = [];
 const title = (typeof viewTitle === "function") ? viewTitle("triage") : "⚡ Triage";
 lines.push(`${title} · ${roleFilterLabel(roleFilter)}`);
-lines.push(`‼ ${urgent.length} · 📌 ${handoff.length} · 📝 ${needs.length} · 📱 ${calls.length} · 📚 ${followups.length}`);
+const summaryParts = [
+  `‼ ${urgent.length}`,
+  `📌 ${handoff.length}`,
+  `📝 ${needs.length}`,
+  `📱 ${calls.length}`,
+  `📚 ${followups.length}`,
+];
+lines.push(summaryParts.join(" · "));
 lines.push("");
 
 if (pageItems.length === 0) {
-  lines.push("No items.");
+  lines.push(V9_DASHBOARD_ENABLED ? "All clear — no items need attention." : "No items.");
 } else {
   let currentTier = null;
   let itemNum = start + 1;
-  
+
   pageItems.forEach((entry) => {
-    // Add tier header if switching tiers
     if (entry.tier !== currentTier) {
-      if (currentTier !== null) lines.push(""); // Blank line between tiers
-      const tierHeaders = {
-        handoff: "📌 NEEDS LOOP — AI Ready (Instantly)",
-        urgent: "‼ URGENT (Overdue > 24h)",
-        needs: "📝 NEEDS REPLY",
-        calls: "📱 CALLS (DUE)",
-        followups: "📚 COACH FOLLOW-UPS (DUE)"
-      };
-      lines.push(tierHeaders[entry.tier]);
+      if (currentTier !== null) lines.push("");
+      lines.push(tierHeaders[entry.tier] || entry.tier);
       currentTier = entry.tier;
     }
-    
-    // Add item line
+
     if (entry.type === "call") {
       lines.push(tCallLine(entry.item, itemNum));
     } else if (entry.type === "followup") {
@@ -7113,7 +7177,7 @@ if (pageItems.length === 0) {
       const lineWithTierPrefix = baseLine.replace(/^(\d+\))\s+•\s/, `$1 ${prefixByTier[entry.tier] || "•"} `);
       if (entry.item?.needs_support_handoff === true && !entry.item?.cc_support_suggested) {
         const reason = entry.item?.handoff_detected_reason ? `\n Reason: ${entry.item.handoff_detected_reason}` : "";
-        lines.push(`${lineWithTierPrefix}\n 🤖 AI Ready for Loop in Support${reason}`);
+        lines.push(`${lineWithTierPrefix}\n 🤖 AI Ready for Outreach${reason}`);
       } else {
         lines.push(lineWithTierPrefix);
       }
@@ -7126,7 +7190,6 @@ lines.push("");
 // Build buttons
 const kb = [];
 
-// Pagination
 if (totalPages > 1) {
   const navRow = [];
   if (safePage > 1) {
@@ -7139,7 +7202,6 @@ if (totalPages > 1) {
   kb.push(navRow);
 }
 
-// Open buttons for displayed items
 pageItems.forEach((entry) => {
   if (entry.type === "call") {
     const action = tCallOpenAction(entry.item);
@@ -7151,7 +7213,7 @@ pageItems.forEach((entry) => {
     const row = [Markup.button.callback(tConvoBtnLabelTriage(entry.item), `OPENCARD:${entry.item.id}`)];
     const needsLoop = entry.item?.needs_support_handoff === true && !entry.item?.cc_support_suggested && isProgramLaneConversation(entry.item);
     if (needsLoop) {
-      row.push(Markup.button.callback("📌 Needs Loop", `CC:${entry.item.id}`));
+      row.push(Markup.button.callback("📌 Loop In", `CC:${entry.item.id}`));
     }
     kb.push(row);
   }

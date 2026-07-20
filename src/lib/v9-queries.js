@@ -113,29 +113,45 @@ async function sbV9CoverageSummary(supabase) {
  */
 async function sbV9DeliveryHealth(supabase) {
   try {
-    const staleThresholdMs = 3 * 60 * 60 * 1000; // 3 hours
-    const cutoff = new Date(Date.now() - staleThresholdMs).toISOString();
+    const d7 = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();  // 7 days
+    const d3 = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();  // 3 days
 
-    const { data: heartbeats } = await supabase
-      .schema("nil")
-      .from("ops_events")
-      .select("source, created_at")
-      .eq("event_type", "n8n.heartbeat")
-      .gte("created_at", cutoff)
-      .order("created_at", { ascending: false })
-      .limit(20);
+    // Each integration is checked against its actual output table — not a heartbeat
+    // that was never wired up. "healthy" = recent activity proves the pipeline ran.
+    // "no_signal" = table reachable but no recent data (workflow may be paused/idle).
+    // "not_configured" = Supabase error, meaning table doesn't exist yet.
+    const [cfResult, webResult, supportResult, instantlyResult] = await Promise.all([
+      // Cloudflare worker → click_events (any click in last 7 days)
+      supabase.schema("nil").from("click_events")
+        .select("id", { count: "exact", head: true })
+        .gte("created_at", d7),
+      // Website form n8n workflow → submissions table
+      supabase.schema("nil").from("submissions")
+        .select("submission_id", { count: "exact", head: true }),
+      // Support workflows (WF-02/03) → conversations table
+      supabase.schema("nil").from("conversations")
+        .select("id", { count: "exact", head: true }),
+      // Instantly sync (WF-04/05) → analytics_metrics with synced_at
+      supabase.schema("nil").from("analytics_metrics")
+        .select("id", { count: "exact", head: true })
+        .eq("metric_key", "instantly_campaign_totals")
+        .gte("synced_at", d3),
+    ]);
 
-    const seen = new Set((heartbeats || []).map((h) => h.source));
-
-    const status = (sources) =>
-      sources.some((s) => seen.has(s)) ? "healthy" : "unknown";
+    const statusFrom = (result, label) => {
+      if (result.error) {
+        console.warn(`[v9-queries] sbV9DeliveryHealth ${label}:`, result.error.message);
+        return "not_configured";
+      }
+      return (result.count || 0) > 0 ? "healthy" : "no_signal";
+    };
 
     return {
-      instantly: status(["wf_v9_05"]),
-      website: status(["wf_v9_01"]),
-      support: status(["wf_v9_02", "wf_v9_03"]),
-      cloudflareTracking: status(["wf_v9_06"]),
-      database: "healthy", // If we got this far, Supabase is up
+      instantly: statusFrom(instantlyResult, "instantly"),
+      website: statusFrom(webResult, "website"),
+      support: statusFrom(supportResult, "support"),
+      cloudflareTracking: statusFrom(cfResult, "cloudflare"),
+      database: "healthy",
     };
   } catch (err) {
     console.error("[v9-queries] sbV9DeliveryHealth error:", err.message);
@@ -149,8 +165,51 @@ async function sbV9DeliveryHealth(supabase) {
   }
 }
 
+/**
+ * List recent website form submissions for the Support Center and V9 Triage.
+ * @param {object} supabase
+ * @param {number} limit
+ */
+async function sbV9ListWebsiteForms(supabase, limit = 10) {
+  try {
+    const { data } = await supabase
+      .schema("nil")
+      .from("submissions")
+      .select("submission_id, first_name, last_name, email, sport, school, created_at")
+      .order("created_at", { ascending: false })
+      .limit(limit);
+    return data || [];
+  } catch (err) {
+    console.error("[v9-queries] sbV9ListWebsiteForms error:", err.message);
+    return [];
+  }
+}
+
+/**
+ * List open support tickets needing a human response.
+ * @param {object} supabase
+ * @param {number} limit
+ */
+async function sbV9ListSupportTickets(supabase, limit = 10) {
+  try {
+    const { data } = await supabase
+      .schema("nil")
+      .from("support_tickets")
+      .select("id, subject, status, email, created_at")
+      .in("status", ["new", "needs_human", "queued_auto"])
+      .order("created_at", { ascending: false })
+      .limit(limit);
+    return data || [];
+  } catch (err) {
+    console.error("[v9-queries] sbV9ListSupportTickets error:", err.message);
+    return [];
+  }
+}
+
 module.exports = {
   sbV9BusinessSnapshot,
   sbV9CoverageSummary,
   sbV9DeliveryHealth,
+  sbV9ListWebsiteForms,
+  sbV9ListSupportTickets,
 };

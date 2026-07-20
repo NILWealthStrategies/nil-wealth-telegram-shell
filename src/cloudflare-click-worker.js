@@ -8,6 +8,7 @@
  * - SUPPLEMENTAL_HEALTH_GUIDE_URL
  * - RISK_AWARENESS_GUIDE_URL
  * - TAX_EDUCATION_GUIDE_URL
+ * - WEALTH_STRATEGIES_SITE_URL
  * - ENROLL_URL
  * - EAPP_URL
  *
@@ -41,6 +42,11 @@ const ROUTES = {
     kind: "tax_education_guide_click",
     legacyKind: "tax_education_click"
   },
+    website: {
+      targetEnv: "WEALTH_STRATEGIES_SITE_URL",
+      defaultUrl: "https://mynilwealthstrategies.com",
+      kind: "official_website_click"
+    },
   enroll: {
     targetEnv: "ENROLL_URL",
     defaultUrl: "https://enrollment.mynilwealthstrategies.com",
@@ -69,6 +75,11 @@ const ALIASES = {
   taxeducation: "tax-education-guide",
   "tax-education": "tax-education-guide",
   "tax-education-guide": "tax-education-guide",
+  website: "website",
+  "official-site": "website",
+  "official-website": "website",
+  wealthstrategies: "website",
+  "wealth-strategies": "website",
   enroll: "enroll",
   enrollment: "enroll",
   "enrollment-page": "enroll",
@@ -125,7 +136,12 @@ function parseCookies(cookieHeader) {
     const key = String(k || "").trim();
     if (!key) continue;
     const val = rest.join("=").trim();
-    out[key] = decodeURIComponent(val || "");
+    try {
+      out[key] = decodeURIComponent(val || "");
+    } catch (_) {
+      // Malformed cookie values should not crash the worker.
+      out[key] = val || "";
+    }
   }
   return out;
 }
@@ -195,6 +211,34 @@ async function postMetric(env, payload) {
   }
 }
 
+async function postWorkerSoftErrorMetric(env, request, err) {
+  let parsed;
+  try {
+    parsed = new URL(String(request?.url || ""));
+  } catch (_) {
+    parsed = null;
+  }
+
+  const nowIso = new Date().toISOString();
+  const payload = {
+    kind: "cloudflare_worker_soft_error",
+    value: 1,
+    ts: nowIso,
+    source: "cloudflare",
+    link: parsed ? parsed.toString() : String(request?.url || ""),
+    meta: {
+      path: parsed?.pathname || "",
+      query: parsed ? Object.fromEntries(parsed.searchParams.entries()) : {},
+      error: String(err),
+      cf_ray: String(request?.headers?.get("cf-ray") || ""),
+      ...cleanHeaders(request),
+      ts: nowIso
+    }
+  };
+
+  await postMetric(env, payload);
+}
+
 function redirectOr404(env, badKey) {
   const fallback = String(env?.FALLBACK_URL || "").trim();
   if (fallback) return Response.redirect(fallback, 302);
@@ -206,92 +250,111 @@ function redirectOr404(env, badKey) {
 
 export default {
   async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-    const rawPath = normalizePath(url.pathname);
-    if (!rawPath) return redirectOr404(env, "");
+    try {
+      const url = new URL(request.url);
+      const rawPath = normalizePath(url.pathname);
+      if (!rawPath) return redirectOr404(env, "");
 
-    const { key, actorId } = parseKey(rawPath);
-    const canonicalKey = ALIASES[key];
-    if (!canonicalKey || !ROUTES[canonicalKey]) return redirectOr404(env, key);
+      const { key, actorId } = parseKey(rawPath);
+      const canonicalKey = ALIASES[key];
+      if (!canonicalKey || !ROUTES[canonicalKey]) return redirectOr404(env, key);
 
-    const route = ROUTES[canonicalKey];
-    const destination = String(env?.[route.targetEnv] || route.defaultUrl || "").trim();
-    if (!destination) {
-      console.error("Missing destination for route", canonicalKey, route.targetEnv);
-      return new Response("Route not configured", { status: 500 });
-    }
+      const route = ROUTES[canonicalKey];
+      const destination = String(env?.[route.targetEnv] || route.defaultUrl || "").trim();
+      if (!destination) {
+        console.error("Missing destination for route", canonicalKey, route.targetEnv);
+        return new Response("Route not configured", { status: 500 });
+      }
 
-    const isCoach = Boolean(actorId);
-    const coachIdFromPath = actorId || null;
-    const actorTypeFromQuery = String(url.searchParams.get("actor_type") || "").trim().toLowerCase();
-    const actorIdFromQuery = String(url.searchParams.get("actor_id") || url.searchParams.get("actorId") || "").trim() || null;
-    const explicitCoachSelfClick = parseBool(url.searchParams.get("coach_self_click") || url.searchParams.get("self_click") || url.searchParams.get("internal_test"));
+      const isCoach = Boolean(actorId);
+      const coachIdFromPath = actorId || null;
+      const actorTypeFromQuery = String(url.searchParams.get("actor_type") || url.searchParams.get("at") || "").trim().toLowerCase();
+      const actorIdFromQuery = String(url.searchParams.get("actor_id") || url.searchParams.get("actorId") || url.searchParams.get("aid") || "").trim() || null;
+      const explicitCoachSelfClick = parseBool(url.searchParams.get("coach_self_click") || url.searchParams.get("self_click") || url.searchParams.get("internal_test"));
 
-    const cookies = parseCookies(request.headers.get("cookie"));
-    const cookiePersonKey = String(cookies.nil_person_key || "").trim() || null;
+      const cookies = parseCookies(request.headers.get("cookie"));
+      const cookiePersonKey = String(cookies.nil_person_key || "").trim() || null;
 
-    const personId = String(url.searchParams.get("person_id") || url.searchParams.get("personId") || "").trim() || null;
-    const personEmail = String(url.searchParams.get("person_email") || url.searchParams.get("personEmail") || "").trim() || null;
-    const personKeyFromQuery = String(url.searchParams.get("person_key") || url.searchParams.get("personKey") || "").trim() || null;
-    const personKey = personKeyFromQuery || cookiePersonKey || makePersonCookieValue();
-    const personKeySource = personKeyFromQuery ? "query" : (cookiePersonKey ? "cookie" : "generated");
+      const personId = String(url.searchParams.get("person_id") || url.searchParams.get("personId") || url.searchParams.get("pid") || "").trim() || null;
+      const personEmail = String(url.searchParams.get("person_email") || url.searchParams.get("personEmail") || url.searchParams.get("pe") || "").trim() || null;
+      const personKeyFromQuery = String(url.searchParams.get("person_key") || url.searchParams.get("personKey") || url.searchParams.get("pk") || "").trim() || null;
+      const personKey = personKeyFromQuery || cookiePersonKey || makePersonCookieValue();
+      const personKeySource = personKeyFromQuery ? "query" : (cookiePersonKey ? "cookie" : "generated");
 
-    // Default coach-id links without recipient identity to coach; only treat as parent when recipient identity is present.
-    const hasRecipientIdentity = Boolean(personId || personEmail || personKeyFromQuery);
-    const actorType = explicitCoachSelfClick
-      ? "coach"
-      : (actorTypeFromQuery || (isCoach ? (hasRecipientIdentity ? "parent" : "coach") : "support"));
-    const actorIsCoachLike = actorType.includes("coach") || actorType.includes("program");
-    const actor = actorIdFromQuery || (actorIsCoachLike ? (coachIdFromPath || "support") : personKey);
-    const isBotLike = detectBotLikeTraffic(request);
-    const nowIso = new Date().toISOString();
+      // Default coach-id links without recipient identity to coach; only treat as parent when recipient identity is present.
+      const hasRecipientIdentity = Boolean(personId || personEmail || personKeyFromQuery);
+      const actorType = explicitCoachSelfClick
+        ? "coach"
+        : (actorTypeFromQuery || (isCoach ? (hasRecipientIdentity ? "parent" : "coach") : "support"));
+      const actorIsCoachLike = actorType.includes("coach") || actorType.includes("program");
+      const actor = actorIdFromQuery || (actorIsCoachLike ? (coachIdFromPath || "support") : personKey);
+      const isBotLike = detectBotLikeTraffic(request);
+      const nowIso = new Date().toISOString();
 
-    const payload = {
-      coach_id: coachIdFromPath,
-      guide_key: canonicalKey,
-      actor_id: actor,
-      actor_type: actorType,
-      person_id: personId,
-      person_email: personEmail,
-      person_key: personKey,
-      person_key_source: personKeySource,
-      kind: route.kind,
-      link: url.toString(),
-      value: 1,
-      ts: nowIso,
-      source: "cloudflare",
-      meta: {
-        path: url.pathname,
-        query: Object.fromEntries(url.searchParams.entries()),
-        link_key: key,
-        canonical_key: canonicalKey,
-        destination,
+      const payload = {
         coach_id: coachIdFromPath,
+        guide_key: canonicalKey,
         actor_id: actor,
         actor_type: actorType,
         person_id: personId,
         person_email: personEmail,
         person_key: personKey,
         person_key_source: personKeySource,
-        is_coach_self_click: explicitCoachSelfClick,
-        is_bot_traffic: isBotLike,
-        legacy_kind: route.legacyKind || route.kind,
-        ...cleanHeaders(request),
-        ts: nowIso
+        kind: route.kind,
+        link: url.toString(),
+        value: 1,
+        ts: nowIso,
+        source: "cloudflare",
+        meta: {
+          path: url.pathname,
+          query: Object.fromEntries(url.searchParams.entries()),
+          link_key: key,
+          canonical_key: canonicalKey,
+          destination,
+          coach_id: coachIdFromPath,
+          actor_id: actor,
+          actor_type: actorType,
+          person_id: personId,
+          person_email: personEmail,
+          person_key: personKey,
+          person_key_source: personKeySource,
+          is_coach_self_click: explicitCoachSelfClick,
+          is_bot_traffic: isBotLike,
+          legacy_kind: route.legacyKind || route.kind,
+          ...cleanHeaders(request),
+          ts: nowIso
+        }
+      };
+
+      if (String(env?.DRY_RUN || "") !== "1" && !isBotLike) {
+        ctx.waitUntil(postMetric(env, payload));
       }
-    };
 
-    if (String(env?.DRY_RUN || "") !== "1" && !isBotLike) {
-      ctx.waitUntil(postMetric(env, payload));
+      // Build a mutable redirect response so we can append the tracking cookie.
+      // Response.redirect() returns an immutable object; headers.append() on it
+      // throws TypeError which triggers the soft-error catch block on every request.
+      const respHeaders = new Headers({ Location: destination });
+      if (!isBotLike && !cookiePersonKey && personKey && String(env?.DRY_RUN || "") !== "1") {
+        respHeaders.append(
+          "set-cookie",
+          `nil_person_key=${encodeURIComponent(personKey)}; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=Lax`
+        );
+      }
+      return new Response(null, { status: 302, headers: respHeaders });
+    } catch (err) {
+      console.error("Worker request failed", {
+        error: String(err),
+        url: String(request?.url || "")
+      });
+      if (String(env?.DRY_RUN || "") !== "1") {
+        ctx.waitUntil(postWorkerSoftErrorMetric(env, request, err));
+      }
+      const fallback = String(env?.FALLBACK_URL || "").trim();
+      if (fallback) return Response.redirect(fallback, 302);
+      return new Response("Temporary redirect error", {
+        status: 503,
+        headers: { "content-type": "text/plain; charset=utf-8" }
+      });
     }
-
-    const resp = Response.redirect(destination, 302);
-    if (!isBotLike && !cookiePersonKey && personKey && String(env?.DRY_RUN || "") !== "1") {
-      resp.headers.append(
-        "set-cookie",
-        `nil_person_key=${encodeURIComponent(personKey)}; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=Lax`
-      );
-    }
-    return resp;
   }
 };
