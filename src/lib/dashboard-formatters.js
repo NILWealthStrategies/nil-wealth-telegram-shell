@@ -79,7 +79,7 @@ Total Clicks: ${totalClicks}
 Total NILWS Website Opens: ${metrics.websiteOpens || metrics.nilwsWebsiteOpens || 0}
 Total Parent Guide Opens: ${metrics.programLinkOpens || 0}
 Total SH Guide Clicks: ${metrics.supplementalHealthGuideClicks || 0}
-🎰 Risk Awareness Guide Clicks: ${metrics.riskAwarenessGuideClicks || 0}
+Risk Awareness Guide Clicks: ${metrics.riskAwarenessGuideClicks || 0}
 Total Tax Education Guide Clicks: ${metrics.taxEducationGuideClicks || 0}
 Total Enroll Portal Visits: ${metrics.enrollClicks || 0}
 Total eApp Visits: ${metrics.eappVisits || 0}
@@ -310,7 +310,7 @@ TOTALS
     `• NILWS Website Opens: ${n(d.websiteOpens || d.nilwsWebsiteOpens)} (Avg ${avg(d.websiteOpens || d.nilwsWebsiteOpens)}/mo)\n` +
     `• Parent Guides Opened: ${n(d.programLinkOpens)} (Avg ${avg(d.programLinkOpens)}/mo)\n` +
     `• SH Guide Clicks: ${n(d.supplementalHealthGuideClicks)} (Avg ${avg(d.supplementalHealthGuideClicks)}/mo)\n` +
-    `• 🎰 Risk Awareness Guide Clicks: ${n(d.riskAwarenessGuideClicks)} (Avg ${avg(d.riskAwarenessGuideClicks)}/mo)\n` +
+    `• Risk Awareness Guide Clicks: ${n(d.riskAwarenessGuideClicks)} (Avg ${avg(d.riskAwarenessGuideClicks)}/mo)\n` +
     `• Tax Education Guide Clicks: ${n(d.taxEducationGuideClicks)} (Avg ${avg(d.taxEducationGuideClicks)}/mo)\n` +
     `• Enroll Clicks: ${n(d.enrollClicks)} (Avg ${avg(d.enrollClicks)}/mo)\n` +
     `• eApp Visits: ${n(d.eappVisits)} (Avg ${avg(d.eappVisits)}/mo)\n` +
@@ -330,7 +330,7 @@ TRENDS (vs last month)\n\n` +
     `• NILWS Website Opens: ${trendEmoji(t.websiteOpens)}\n` +
     `• Parent Guides: ${trendEmoji(t.opens)}\n` +
     `• SH Guide: ${trendEmoji(t.supplementalHealthGuideClicks)}\n` +
-    `• 🎰 Risk Awareness: ${trendEmoji(t.riskAwarenessGuideClicks)}\n` +
+    `• Risk Awareness: ${trendEmoji(t.riskAwarenessGuideClicks)}\n` +
     `• Tax Education: ${trendEmoji(t.taxEducationGuideClicks)}\n` +
     `• Enroll Clicks: ${trendEmoji(t.enrollClicks)}\n` +
     `• eApp Visits: ${trendEmoji(t.eappVisits)}\n` +
@@ -402,7 +402,7 @@ ${codeVersion} • Build: ${String(buildVersion).slice(0, 8)}
 📘 Parent Guide Opens: ${n(s.parentGuideOpens)}
 🌐 NILWS Website Opens: ${n(s.websiteOpens)}
 🏥 SH Guide Opens: ${n(s.supplementalHealthOpens)}
-🎰 Risk Awareness Guide Opens: ${n(s.riskAwarenessOpens)}
+Risk Awareness Guide Opens: ${n(s.riskAwarenessOpens)}
 💰 Tax Education Guide Opens: ${n(s.taxEducationOpens)}
 📝 Enrollment Portal Visits: ${n(s.enrollmentVisits)}
 📱 eApp Visits: ${n(s.eappVisits)}

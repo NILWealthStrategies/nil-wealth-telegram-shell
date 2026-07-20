@@ -3618,7 +3618,9 @@ function deriveWfHealthFromLive(wfDef, liveWorkflows, executions, workflowDetail
   // Check last execution status across active matched workflows only.
   const matchedIds = new Set(activeMatches.map((w) => w.id));
   const relevantExecs = executions.filter((e) => matchedIds.has(e.workflowId));
-  const latestExec = relevantExecs[0] || null; // already ordered desc by n8n API
+  // Use trigger-mode execs for health checks — error-handler execs are short by design and cause false positives
+  const triggerExecs = relevantExecs.filter((e) => e.mode === "trigger" || e.mode === "manual" || e.mode === "scheduled");
+  const latestExec = triggerExecs[0] || relevantExecs[0] || null;
   if (latestExec) {
     const finished = latestExec.stoppedAt || latestExec.finishedAt || latestExec.startedAt || null;
     if (latestExec.status === "error" || latestExec.status === "crashed") {
