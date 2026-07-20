@@ -75,7 +75,7 @@ function buildDashboardMetricsText(metrics = {}) {
       (metrics.enrollPortalClicks || metrics.enrollClicks || 0) +
       (metrics.eappVisits || 0));
   return `📊 METRICS
-Total Clicks: ${totalClicks}
+Total Clicks: ${totalClicks} (all traffic — coaches + parents + web)
 Total NILWS Website Opens: ${metrics.websiteOpens || metrics.nilwsWebsiteOpens || 0}
 Total Parent Guide Opens: ${metrics.programLinkOpens || 0}
 Total SH Guide Clicks: ${metrics.supplementalHealthGuideClicks || 0}
@@ -399,7 +399,8 @@ ${codeVersion} • Build: ${String(buildVersion).slice(0, 8)}
 📦 Resource Packets Sent: ${n(s.resourcePacketsSent)}
 🤝 Coaches Sharing: ${n(s.coachesSharing)}
 
-📘 Parent Guide Opens: ${n(s.parentGuideOpens)}
+� GUIDE OPENS (from coach campaigns)
+�📘 Parent Guide Opens: ${n(s.parentGuideOpens)}
 🌐 NILWS Website Opens: ${n(s.websiteOpens)}
 🏥 SH Guide Opens: ${n(s.supplementalHealthOpens)}
 🎰 Risk Awareness Guide Opens: ${n(s.riskAwarenessOpens)}
