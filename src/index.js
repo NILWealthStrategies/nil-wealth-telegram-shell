@@ -7634,37 +7634,58 @@ return 0;
 return Number(count) || 0;
 }
 // ---------- TODAY ----------
+async function sbGetTodayEmailStats() {
+  try {
+    const { data, error } = await ops().from("v_analytics_summary").select("emails_sent_today,replies_today,opens_today,leads_today").single();
+    if (error || !data) return { emailsSent: 0, replies: 0, opens: 0, leads: 0, positiveReplies: 0 };
+    return {
+      emailsSent: Number(data.emails_sent_today) || 0,
+      replies:    Number(data.replies_today)     || 0,
+      opens:      Number(data.opens_today)       || 0,
+      leads:      Number(data.leads_today)       || 0,
+      positiveReplies: 0, // populated once WF-V9-05 Instantly sync is active
+    };
+  } catch (_) {
+    return { emailsSent: 0, replies: 0, opens: 0, leads: 0, positiveReplies: 0 };
+  }
+}
+
 bot.action("TODAY:open", safeAction(async (ctx) => {
 try {
 if (!isAdmin(ctx)) return;
 const filterSource = getAdminFilter(ctx) || "all";
 const now = new Date();
 const { dayKey, time, dayStartISO, dayEndISO } = nyParts(now);
-// nyParts MUST return:
-// - dayKey: e.g. "Tuesday"
-// - time: e.g. "3:42 PM"
-// - dayStartISO: ISO string at NY 00:00
-// - dayEndISO: ISO string at next day NY 00:00
-// Pull counts (parallel)
-const [triageDue, callsToday] = await Promise.all([
+
+const [triageDue, callsToday, emailStats] = await Promise.all([
   sbCountTriageDueNow({ source: filterSource }).catch(() => 0),
   sbCountCallsToday({ source: filterSource, dayStartISO, dayEndISO }).catch(() => 0),
+  sbGetTodayEmailStats().catch(() => ({ emailsSent: 0, replies: 0, opens: 0, leads: 0, positiveReplies: 0 })),
 ]);
 
-const text =
-`📅 TODAY
---
-${dayKey} · ${time}
+const fmt = (n) => Number(n) || 0;
 
-⚡️ Triage Items: ${triageDue}
-📱 Calls Scheduled: ${callsToday}
+const text =
+`📅 TODAY  ·  ${dayKey}
+--
+${time}
+
+📧 Outreach
+Emails Sent: ${fmt(emailStats.emailsSent)}
+Replies: ${fmt(emailStats.replies)}
+Positive: ${fmt(emailStats.positiveReplies)}
+Opens: ${fmt(emailStats.opens)}
+
+🎯 Pipeline
+New Leads: ${fmt(emailStats.leads)}
+Triage Items: ${fmt(triageDue)}
+Calls Scheduled: ${fmt(callsToday)}
 --`;
 const kb = Markup.inlineKeyboard([
 [Markup.button.callback("⚡️ Triage", "TRIAGE:open"), Markup.button.callback("📱 Calls", "CALLS:hub")],
 [Markup.button.callback("⬅ Dashboard", "DASH:back")],
 ]);
 const msg = await smartRender(ctx, text, kb);
-// ✅ live refresh registration
 registerLiveCard(msg, {
 type: "today",
 card_key: `today:${filterSource}`,
