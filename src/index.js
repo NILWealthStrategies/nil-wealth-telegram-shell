@@ -663,7 +663,7 @@ for (const node of nodes) {
     });
   }
 
-  if (authHeader.includes("Bearer ") && !authHeader.includes("$env.")) {
+  if (authHeader.includes("Bearer ") && !authHeader.includes("$env.") && !authHeader.includes("$vars.")) {
     issues.push({
       severity: "warn",
       type: "hardcoded_bearer",
@@ -7049,12 +7049,9 @@ const pageSize = 10;
 const OVERDUE_THRESHOLD_HOURS = 24;
 
 // V9: also fetch website form submissions when V9 dashboard is active
-const fetchPromises = [  sbListHandoffPending({ source: filterSource, limit: 24 }).catch((err) => {
+const fetchPromises = [
+  sbListHandoffPending({ source: filterSource, limit: 24 }).catch((err) => {
     logError("triageOpen:handoff", err);
-    return [];
-  }),
-  sbListConversations({ pipeline: "needs_reply", source: filterSource, role: roleFilter, limit: 48 }).catch((err) => {
-    logError("triageOpen:needs_reply", err);
     return [];
   }),
   sbListCallsTriage({ source: filterSource, limit: 24, windowHours: TRIAGE_CALL_WINDOW_HOURS }).catch((err) => {
@@ -7068,31 +7065,11 @@ const fetchPromises = [  sbListHandoffPending({ source: filterSource, limit: 24 
 ];
 
 const results = await Promise.all(fetchPromises);
-const [handoffRaw, needsRaw, callsRaw, followupsRaw] = results;
+const [handoffRaw, callsRaw, followupsRaw] = results;
 
 const handoff = roleFilter === "all"
   ? (handoffRaw || [])
   : (handoffRaw || []).filter((c) => conversationRoleForDisplay(c) === roleFilter);
-
-// Separate overdue needs_reply from regular needs_reply
-const seen = new Set();
-const urgent = [];
-const needs = [];
-const OVERDUE_MINUTES = OVERDUE_THRESHOLD_HOURS * 60;
-for (const c of needsRaw || []) {
-  if (!c?.id || seen.has(c.id)) continue;
-  seen.add(c.id);
-  const waitingMin = tComputeWaitingMinutes(c);
-  if (waitingMin != null && waitingMin > OVERDUE_MINUTES) {
-    urgent.push(c);
-  } else {
-    needs.push(c);
-  }
-}
-
-const waitSort = (a, b) => (tComputeWaitingMinutes(b) || 0) - (tComputeWaitingMinutes(a) || 0);
-urgent.sort(waitSort);
-needs.sort(waitSort);
 
 const calls = (callsRaw || []).slice().sort((a, b) => {
   const ak = tCallSortKey(a);
@@ -7108,29 +7085,16 @@ const followups = (followupsRaw || []).slice().sort((a, b) => {
   return (ad ? new Date(ad).getTime() : Infinity) - (bd ? new Date(bd).getTime() : Infinity);
 });
 
-// V9 tier headers reflect the outreach goals:
-// - handoff = coaches who replied in Instantly and need human follow-up
-const v9TierHeaders = {
-  handoff: "📌 COACH REPLIES — Ready for Outreach (Instantly)",
-  urgent: "‼ URGENT (Overdue > 24h)",
-  needs: "📝 NEEDS REPLY",
-  calls: "📱 CALLS (DUE)",
-  followups: "📚 COACH FOLLOW-UPS (DUE)",
+// V9 tier headers — outreach-focused
+const tierHeaders = {
+  handoff: "📌 COACH REPLIES — Needs Follow-Up",
+  calls: "📱 CALLS DUE",
+  followups: "📚 COACH FOLLOW-UPS DUE",
 };
-const v8TierHeaders = {
-  handoff: "📌 NEEDS LOOP — AI Ready (Instantly)",
-  urgent: "‼ URGENT (Overdue > 24h)",
-  needs: "📝 NEEDS REPLY",
-  calls: "📱 CALLS (DUE)",
-  followups: "📚 COACH FOLLOW-UPS (DUE)",
-};
-const tierHeaders = V9_DASHBOARD_ENABLED ? v9TierHeaders : v8TierHeaders;
 
 // Build unified item list
 const allItems = [];
 handoff.forEach(c => allItems.push({ type: "convo", tier: "handoff", item: c }));
-urgent.forEach(c => allItems.push({ type: "convo", tier: "urgent", item: c }));
-needs.forEach(c => allItems.push({ type: "convo", tier: "needs", item: c }));
 calls.forEach(c => allItems.push({ type: "call", tier: "calls", item: c }));
 followups.forEach(f => allItems.push({ type: "followup", tier: "followups", item: f }));
 
@@ -7142,12 +7106,9 @@ const pageItems = allItems.slice(start, start + pageSize);
 
 // Build text
 const lines = [];
-const title = (typeof viewTitle === "function") ? viewTitle("triage") : "⚡ Triage";
-lines.push(`${title} · ${roleFilterLabel(roleFilter)}`);
+lines.push("⚡️ Triage");
 const summaryParts = [
-  `‼ ${urgent.length}`,
   `📌 ${handoff.length}`,
-  `📝 ${needs.length}`,
   `📱 ${calls.length}`,
   `📚 ${followups.length}`,
 ];
@@ -7173,11 +7134,10 @@ if (pageItems.length === 0) {
       lines.push(tFollowupLine(entry.item, itemNum));
     } else {
       const baseLine = tConvoLine(entry.item, itemNum);
-      const prefixByTier = { handoff: "📌", urgent: "‼", needs: "📝" };
-      const lineWithTierPrefix = baseLine.replace(/^(\d+\))\s+•\s/, `$1 ${prefixByTier[entry.tier] || "•"} `);
+      const lineWithTierPrefix = baseLine.replace(/^(\d+\))\s+•\s/, `$1 📌 `);
       if (entry.item?.needs_support_handoff === true && !entry.item?.cc_support_suggested) {
         const reason = entry.item?.handoff_detected_reason ? `\n Reason: ${entry.item.handoff_detected_reason}` : "";
-        lines.push(`${lineWithTierPrefix}\n 🤖 AI Ready for Outreach${reason}`);
+        lines.push(`${lineWithTierPrefix}\n 🤖 Ready for Follow-Up${reason}`);
       } else {
         lines.push(lineWithTierPrefix);
       }
@@ -7694,15 +7654,13 @@ const [triageDue, callsToday] = await Promise.all([
 const text =
 `📅 TODAY
 --
-${dayKey} • ${time}
+${dayKey} · ${time}
 
-⚡️ Triage Due: ${triageDue}
+⚡️ Triage Items: ${triageDue}
 📱 Calls Scheduled: ${callsToday}
 --`;
 const kb = Markup.inlineKeyboard([
-[Markup.button.callback("⚡️ Triage", "TRIAGE:open")],
-[Markup.button.callback("📱 Calls", "CALLS:hub"), Markup.button.callback("🗂 Queues", "ALLQ:open")],
-[Markup.button.callback("🔎 Search", "SEARCH:help"), Markup.button.callback("🕘 Recent", "SEARCH:recent")],
+[Markup.button.callback("⚡️ Triage", "TRIAGE:open"), Markup.button.callback("📱 Calls", "CALLS:hub")],
 [Markup.button.callback("⬅ Dashboard", "DASH:back")],
 ]);
 const msg = await smartRender(ctx, text, kb);
@@ -7867,7 +7825,7 @@ Parent Guide Clicks: ${metrics.parentGuideClicks || 0}
 SH Guide Clicks: ${metrics.supplementalHealthGuideClicks || 0}
   (Avg ${avg(metrics.supplementalHealthGuideClicks)}${perLabel})
 
-🎰 Risk Awareness Guide Clicks: ${metrics.riskAwarenessGuideClicks || 0}
+Risk Awareness Guide Clicks: ${metrics.riskAwarenessGuideClicks || 0}
   (Avg ${avg(metrics.riskAwarenessGuideClicks)}${perLabel})
 
 Tax Education Guide Clicks: ${metrics.taxEducationGuideClicks || 0}
