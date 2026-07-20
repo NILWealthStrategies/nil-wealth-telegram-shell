@@ -7105,47 +7105,44 @@ const start = (safePage - 1) * pageSize;
 const pageItems = allItems.slice(start, start + pageSize);
 
 // Build text
-const lines = [];
-lines.push("⚡️ Triage");
-const summaryParts = [
-  `📌 ${handoff.length}`,
-  `📱 ${calls.length}`,
-  `📚 ${followups.length}`,
-];
-lines.push(summaryParts.join(" · "));
-lines.push("");
+const hasItems = allItems.length > 0;
+const parts = [];
 
-if (pageItems.length === 0) {
-  lines.push(V9_DASHBOARD_ENABLED ? "All clear — no items need attention." : "No items.");
+if (!hasItems) {
+  parts.push("⚡️ Triage\n--\nAll clear — no items need attention.");
 } else {
+  const countLine = [`📌 ${handoff.length}`, `📱 ${calls.length}`, `📚 ${followups.length}`]
+    .filter((_, i) => [handoff.length, calls.length, followups.length][i] > 0)
+    .join("  ·  ");
+  parts.push(`⚡️ Triage\n--\n${countLine}`);
+
   let currentTier = null;
   let itemNum = start + 1;
+  const itemLines = [];
 
   pageItems.forEach((entry) => {
     if (entry.tier !== currentTier) {
-      if (currentTier !== null) lines.push("");
-      lines.push(tierHeaders[entry.tier] || entry.tier);
+      if (currentTier !== null) itemLines.push("");
+      itemLines.push(tierHeaders[entry.tier] || entry.tier);
       currentTier = entry.tier;
     }
-
     if (entry.type === "call") {
-      lines.push(tCallLine(entry.item, itemNum));
+      itemLines.push(tCallLine(entry.item, itemNum));
     } else if (entry.type === "followup") {
-      lines.push(tFollowupLine(entry.item, itemNum));
+      itemLines.push(tFollowupLine(entry.item, itemNum));
     } else {
       const baseLine = tConvoLine(entry.item, itemNum);
-      const lineWithTierPrefix = baseLine.replace(/^(\d+\))\s+•\s/, `$1 📌 `);
       if (entry.item?.needs_support_handoff === true && !entry.item?.cc_support_suggested) {
-        const reason = entry.item?.handoff_detected_reason ? `\n Reason: ${entry.item.handoff_detected_reason}` : "";
-        lines.push(`${lineWithTierPrefix}\n 🤖 Ready for Follow-Up${reason}`);
+        const reason = entry.item?.handoff_detected_reason ? ` · ${entry.item.handoff_detected_reason}` : "";
+        itemLines.push(`${baseLine}\n🤖 Ready for follow-up${reason}`);
       } else {
-        lines.push(lineWithTierPrefix);
+        itemLines.push(baseLine);
       }
     }
     itemNum++;
   });
+  parts.push(itemLines.join("\n"));
 }
-lines.push("");
 
 // Build buttons
 const kb = [];
@@ -7181,7 +7178,7 @@ pageItems.forEach((entry) => {
 
 kb.push([Markup.button.callback("⬅ Dashboard", "DASH:back")]);
 
-const msg = await smartRender(ctx, lines.join("\n\n"), Markup.inlineKeyboard(kb));
+const msg = await smartRender(ctx, parts.join("\n\n"), Markup.inlineKeyboard(kb));
 registerLiveCard(msg, {
   type: "triage",
   card_key: `triage:${filterSource}:${safePage}`,
