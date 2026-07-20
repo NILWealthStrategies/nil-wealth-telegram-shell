@@ -7087,9 +7087,9 @@ const followups = (followupsRaw || []).slice().sort((a, b) => {
 
 // V9 tier headers — outreach-focused
 const tierHeaders = {
-  handoff: "📌 COACH REPLIES — Needs Follow-Up",
-  calls: "📱 CALLS DUE",
-  followups: "📚 COACH FOLLOW-UPS DUE",
+  handoff: "📌 Coach Replies",
+  calls:   "📱 Calls Due",
+  followups: "📚 Follow-Ups Due",
 };
 
 // Build unified item list

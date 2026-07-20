@@ -57,10 +57,10 @@ function tConvoLine(c, idx) {
   const snippet = c.last_message_snippet || c.inbound_snippet || c.snippet || "";
   const waitingMin = tComputeWaitingMinutes(c);
   const waiting = waitingMin != null ? tFmtMin(waitingMin) : null;
-  const programBit = program ? ` (${tShortProgram(program)})` : "";
-  const waitBit = waiting ? `\n Waiting: ${waiting}` : "";
-  const msgBit = snippet ? `\n "${tSafe(snippet, 92)}"` : "";
-  return `${idx}) • ${name}${programBit}${waitBit}${msgBit}`;
+  const programBit = program ? `  \u00b7  ${tShortProgram(program)}` : "";
+  const waitBit = waiting ? `  \u00b7  ${waiting}` : "";
+  const msgBit = snippet ? `\n\u201c${tSafe(snippet, 90)}\u201d` : "";
+  return `${name}${programBit}${waitBit}${msgBit}`;
 }
 
 function tConvoBtnLabel(c) {
@@ -91,21 +91,15 @@ function tConvoBtnLabelTriage(c) {
 // ---------- follow-up helpers ----------
 
 function tFollowupLine(f, idx) {
-  const coach = tSafe(f.coach_full_name || f.coach_name || "—", 40);
-  const program = tShortProgram(f.program_name || f.program || f.school || "—");
+  const coach = tSafe(f.coach_full_name || f.coach_name || "\u2014", 40).replace(/^Coach\s+/i, "").trim();
+  const program = tShortProgram(f.program_name || f.program || f.school || "");
   const dueAt = f.due_at || f.followup_next_action_at || f.next_action_at;
   const last = f.last_contact_at || f.last_contacted_at || null;
-  const reason = f.reason ? tSafe(f.reason, 84) : null;
-  const activityBit =
-    typeof f.guide_opens_year === "number" || typeof f.enroll_clicks_year === "number"
-    ? `\n Activity: Guide ${f.guide_opens_year || 0} | Enroll ${f.enroll_clicks_year || 0}`
-    : "";
-  return (
-    `${idx}) 📚 Coach Follow-Up Due — Coach ${coach} (${program})\n` +
-    ` Due: ${tFmtDateShort(dueAt)} | Last Contact: ${tFmtDateShort(last)}` +
-    (reason ? `\n Reason: ${reason}` : "") +
-    activityBit
-  );
+  const programBit = program ? `  \u00b7  ${program}` : "";
+  const dueBit = dueAt ? `Due ${tFmtDateShort(dueAt)}` : "";
+  const lastBit = last ? `Last contact ${tFmtDateShort(last)}` : "";
+  const timeLine = [dueBit, lastBit].filter(Boolean).join("  \u00b7  ");
+  return `\ud83d\udcda ${coach}${programBit}${timeLine ? `\n${timeLine}` : ""}`;
 }
 
 function tFollowupBtnLabel(f) {
@@ -167,28 +161,16 @@ function tCallSortKey(call) {
 function tCallLine(call, idx) {
   const emoji = tCallTypeEmoji(call);
   const who = tCallContext(call);
+  const sched = tCallScheduledAt(call) || call.due_at || null;
+  const timeStr = sched ? tFmtTimeShort(sched) : null;
   if (emoji === "📘") {
-    return (
-      `${idx}) 📘 Rescheduled — ${who}\n` +
-      ` Next Call: ${tFmtTimeShort(tCallScheduledAt(call))}`
-    );
+    return `📘 ${who}${timeStr ? `  ·  ${timeStr}` : ""}  ·  Rescheduled`;
   }
   if (emoji === "❌") {
-    const attempted = call.attempted_at || call.updated_at || null;
     const followupDue = call.next_action_at || null;
-    return (
-      `${idx}) ❌ No Answer — ${who}\n` +
-      ` Attempted: ${tFmtMin(call.waiting_minutes || call.minutes_since_attempt || 0) ||
-        tFmtTimeShort(attempted)} ago\n` +
-      ` Follow-Up Due: ${tFmtDateShort(followupDue)}`
-    );
+    return `❌ ${who}  ·  No Answer${followupDue ? `  ·  Follow-up ${tFmtDateShort(followupDue)}` : ""}`;
   }
-  const sched = tCallScheduledAt(call) || call.due_at || null;
-  return (
-    `${idx}) 📱 Scheduled Call — ${who}\n` +
-    ` Time: ${tFmtTimeShort(sched)}\n` +
-    ` Status: Outcome Needed`
-  );
+  return `📱 ${who}${timeStr ? `  ·  ${timeStr}` : ""}`;
 }
 
 function tCallBtnLabel(call) {
